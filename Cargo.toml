@@ -1,0 +1,21 @@
+[package]
+name = "ogma"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "og"
+path = "src/main.rs"
+
+[lib]
+name = "ogma"
+path = "src/lib.rs"
+
+[dependencies]
+crossterm = "0.29.0"
+git2 = "0.21.0"
+notify = "8.2.0"
+ratatui = "0.30.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
