@@ -306,12 +306,38 @@ fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         Span::raw("  "),
         Span::raw(position),
     ];
+    if let Some((ahead, behind)) = app.head_tracking() {
+        spans.push(Span::styled(
+            format!("  ↑{ahead} ↓{behind}"),
+            Style::default().fg(theme.meta),
+        ));
+    }
+    if let Some((verb, spinner)) = app.remote_status() {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let frame = FRAMES[(spinner / 4) % FRAMES.len()];
+        spans.push(Span::styled(
+            format!("  {frame} {verb}…"),
+            Style::default()
+                .fg(theme.branch_badge)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if let Some(notice) = app.notice() {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("⚠ {notice}"),
-            Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
-        ));
+        let styled = if app.notice_is_error() {
+            Span::styled(
+                format!("⚠ {notice}"),
+                Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                notice.to_string(),
+                Style::default()
+                    .fg(theme.added)
+                    .add_modifier(Modifier::BOLD),
+            )
+        };
+        spans.push(styled);
     } else {
         spans.push(Span::raw("  ? help  q quit"));
     }
@@ -738,6 +764,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("space", "checkout commit / stage file or hunk"),
         ("b", "branches: checkout · n new · d delete"),
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
+        ("f / P", "fetch / push (background)"),
         ("drag", "drop a branch onto another to join"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),

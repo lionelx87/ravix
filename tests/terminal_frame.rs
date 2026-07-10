@@ -1726,6 +1726,159 @@ fn a_drop_whose_checkout_git_refuses_cancels_the_drop() {
     );
 }
 
+fn git_clone(remote: &Path, dest: &Path) {
+    let out = Command::new("git")
+        .args([
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git clone: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn unpushed_repo(work: &Path, remote: &Path) {
+    git_run(remote, &["init", "-q", "--bare", "-b", "main"]);
+    init_with_base(work, "a.txt", "a\n");
+    git_run(work, &["remote", "add", "origin", remote.to_str().unwrap()]);
+}
+
+fn diverged_repo(work: &Path, remote: &Path, other: &Path) {
+    unpushed_repo(work, remote);
+    git_run(work, &["push", "-q", "-u", "origin", "main"]);
+
+    git_clone(remote, other);
+    git_run(other, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(other, &["config", "user.name", "Demo"]);
+    commit_file(other, "b.txt", "b\n", "remote work");
+    git_run(other, &["push", "-q"]);
+
+    commit_file(work, "c.txt", "c\n", "local work");
+    git_run(work, &["fetch", "-q"]);
+}
+
+fn drive_remote(app: &mut App) {
+    let mut guard = 0;
+    while app.remote_pending() {
+        app.poll_remote();
+        std::thread::yield_now();
+        guard += 1;
+        assert!(guard < 1_000_000, "the remote op never completed");
+    }
+}
+
+#[test]
+fn fetch_runs_in_the_background_with_a_spinner() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    upstream_repo(work.path(), remote.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('f'));
+    assert!(app.remote_pending(), "fetch should start a background job");
+    let screen = dump(&draw(&mut app, 100, 24));
+    assert!(
+        screen.contains("fetching"),
+        "the spinner should show the running op:\n{screen}"
+    );
+
+    drive_remote(&mut app);
+    assert!(!app.remote_pending(), "the job should complete");
+    assert_eq!(app.notice(), Some("Fetched"));
+}
+
+#[test]
+fn the_status_bar_reports_ahead_behind() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    upstream_repo(work.path(), remote.path());
+    let mut app = App::open(work.path()).unwrap();
+
+    let screen = dump(&draw(&mut app, 100, 24));
+    assert!(
+        screen.contains("↑1 ↓0"),
+        "the status bar should report ahead/behind vs upstream:\n{screen}"
+    );
+}
+
+#[test]
+fn push_publishes_the_branch_and_syncs_the_upstream() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    upstream_repo(work.path(), remote.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+    assert_eq!(
+        app.head_tracking(),
+        Some((1, 0)),
+        "the fixture is one ahead"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('P'));
+    assert!(app.remote_pending(), "push should start a background job");
+    drive_remote(&mut app);
+
+    assert_eq!(app.notice(), Some("Pushed"));
+    assert_eq!(
+        app.head_tracking(),
+        Some((0, 0)),
+        "after pushing, the branch is in sync with its upstream"
+    );
+}
+
+#[test]
+fn a_first_push_sets_the_upstream() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    unpushed_repo(work.path(), remote.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+    assert_eq!(app.head_tracking(), None, "no upstream yet");
+
+    press(&mut app, &mut input, KeyCode::Char('P'));
+    drive_remote(&mut app);
+
+    assert_eq!(app.notice(), Some("Pushed"));
+    assert!(
+        app.head_tracking().is_some(),
+        "the first push should set the upstream"
+    );
+}
+
+#[test]
+fn a_diverged_push_asks_to_force_first() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    diverged_repo(work.path(), remote.path(), other.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('P'));
+
+    assert!(
+        !app.remote_pending(),
+        "a diverged push must not push blindly"
+    );
+    let confirm = app.confirm().expect("a diverged push should ask to force");
+    assert!(
+        confirm.message.contains("force"),
+        "the confirmation should offer force-with-lease: {}",
+        confirm.message
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('y'));
+    drive_remote(&mut app);
+    assert_eq!(app.notice(), Some("Pushed"));
+}
+
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .current_dir(dir)

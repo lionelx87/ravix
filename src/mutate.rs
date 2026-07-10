@@ -130,6 +130,22 @@ impl GitCli {
         self.run(&["merge", "--abort"], None)
     }
 
+    pub fn fetch(&self) -> Result<(), MutationError> {
+        self.run(&["fetch"], None)
+    }
+
+    pub fn push(&self) -> Result<(), MutationError> {
+        self.run(&["push"], None)
+    }
+
+    pub fn push_set_upstream(&self, remote: &str, branch: &str) -> Result<(), MutationError> {
+        self.run(&["push", "-u", remote, branch], None)
+    }
+
+    pub fn push_force_with_lease(&self) -> Result<(), MutationError> {
+        self.run(&["push", "--force-with-lease"], None)
+    }
+
     pub fn rebase(&self, target: &str) -> Result<(), MutationError> {
         self.run(&["-c", "core.editor=true", "rebase", target], None)
     }
@@ -189,6 +205,7 @@ impl GitCli {
         let mut command = Command::new("git");
         command
             .current_dir(&self.workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
             .args(args)
             .stdin(if stdin.is_some() {
                 Stdio::piped()

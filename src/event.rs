@@ -52,6 +52,8 @@ impl InputMap {
             KeyCode::Esc => Some(Action::Dismiss),
             KeyCode::Char(' ') => Some(Action::Checkout),
             KeyCode::Char('M') => Some(Action::OpenJoin),
+            KeyCode::Char('f') => Some(Action::Fetch),
+            KeyCode::Char('P') => Some(Action::Push),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
             KeyCode::Char('u') => Some(Action::Undo),
             KeyCode::Char('?') => Some(Action::ToggleHelp),

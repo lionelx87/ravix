@@ -83,6 +83,8 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
             app.update(Action::Tick(elapsed));
         }
 
+        app.poll_remote();
+
         if watcher.as_ref().is_some_and(RepoWatcher::changed) {
             app.update(Action::Reload);
         }

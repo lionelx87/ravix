@@ -165,6 +165,14 @@ impl Repo {
         head.target().map(|oid| oid.to_string())
     }
 
+    pub fn head_tracking(&self) -> Option<(usize, usize)> {
+        let name = self.head_branch()?;
+        let branch = self.inner.find_branch(&name, BranchType::Local).ok()?;
+        let upstream = branch.upstream().ok()?;
+        let (local, up) = (branch.get().target()?, upstream.get().target()?);
+        self.inner.graph_ahead_behind(local, up).ok()
+    }
+
     pub fn branch_tip(&self, name: &str) -> Option<String> {
         let branch = self.inner.find_branch(name, BranchType::Local).ok()?;
         branch.get().target().map(|oid| oid.to_string())

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use git2::Oid;
@@ -12,6 +13,7 @@ use crate::git::{
 use crate::graph::{GraphCommit, GraphRow, lay_out};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
+use crate::remote::{PushState, push_state};
 use crate::staging::build_patch;
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::working::{Focus, WorkingView};
@@ -52,6 +54,8 @@ pub enum Action {
     ConfirmNo,
     ToggleBranches,
     Checkout,
+    Fetch,
+    Push,
     OpenJoin,
     ExecuteJoin,
     TakeOurs,
@@ -109,16 +113,29 @@ pub struct DragState {
     hover: usize,
 }
 
+struct RemoteJob {
+    verb: &'static str,
+    done: &'static str,
+    spinner: usize,
+    rx: mpsc::Receiver<Result<(), MutationError>>,
+}
+
 enum ConfirmKind {
     Discard { path: String, untracked: bool },
     DiscardHunk { path: String, patch: String },
     DeleteBranch { name: String, oid: Option<String> },
     ForceDeleteBranch { name: String, oid: Option<String> },
+    ForcePush,
 }
 
 pub struct Confirm {
     pub message: String,
     kind: ConfirmKind,
+}
+
+struct Notice {
+    text: String,
+    error: bool,
 }
 
 pub struct App {
@@ -140,13 +157,14 @@ pub struct App {
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
     drag: Option<DragState>,
+    remote: Option<RemoteJob>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
     alert: Option<String>,
     checkout_flash: f32,
     last_action: Option<UndoableAction>,
-    notice: Option<String>,
+    notice: Option<Notice>,
     panel: Option<Panel>,
     help_visible: bool,
     should_quit: bool,
@@ -192,6 +210,7 @@ impl App {
             conflict: None,
             edit_request: None,
             drag: None,
+            remote: None,
             branch_create: None,
             commit: None,
             confirm: None,
@@ -298,7 +317,37 @@ impl App {
     }
 
     pub fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+        self.notice.as_ref().map(|notice| notice.text.as_str())
+    }
+
+    pub fn notice_is_error(&self) -> bool {
+        self.notice.as_ref().is_some_and(|notice| notice.error)
+    }
+
+    fn info(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            error: false,
+        });
+    }
+
+    fn fail(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            error: true,
+        });
+    }
+
+    pub fn remote_status(&self) -> Option<(&'static str, usize)> {
+        self.remote.as_ref().map(|job| (job.verb, job.spinner))
+    }
+
+    pub fn remote_pending(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    pub fn head_tracking(&self) -> Option<(usize, usize)> {
+        self.repo.head_tracking()
     }
 
     pub fn working_files(&self) -> Vec<WorkingFile> {
@@ -359,6 +408,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|menu| menu.slide != menu.target)
             || self.checkout_flash > 0.0
+            || self.remote.is_some()
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -397,6 +447,8 @@ impl App {
             Action::ConfirmNo => self.confirm = None,
             Action::ToggleBranches => self.toggle_branches(),
             Action::Checkout => self.checkout(),
+            Action::Fetch => self.fetch(),
+            Action::Push => self.push(),
             Action::OpenJoin => self.open_join(),
             Action::ExecuteJoin => self.execute_join(),
             Action::TakeOurs => self.resolve_block(Side::Ours),
@@ -625,10 +677,103 @@ impl App {
     fn open_join_for(&mut self, name: Option<String>, oid: String) {
         let head = self.repo.head_oid().unwrap_or_default();
         if oid == head {
-            self.notice = Some("Source is already at HEAD".to_string());
+            self.info("Source is already at HEAD".to_string());
             return;
         }
         self.join = Some(self.build_join_menu(name, oid, &head));
+    }
+
+    fn remote_busy(&mut self) -> bool {
+        if self.remote.is_some() {
+            self.info("A remote operation is already running".to_string());
+            return true;
+        }
+        false
+    }
+
+    fn fetch(&mut self) {
+        if self.remote_busy() {
+            return;
+        }
+        self.spawn_remote("fetching", "Fetched", |cli| cli.fetch());
+    }
+
+    fn push(&mut self) {
+        if self.remote_busy() {
+            return;
+        }
+        let Some(branch) = self.meta.head_branch.clone() else {
+            self.info("Detached HEAD — nothing to push".to_string());
+            return;
+        };
+        match push_state(self.repo.head_tracking()) {
+            PushState::UpToDate => self.info("Nothing to push".to_string()),
+            PushState::Diverged { .. } => {
+                self.confirm = Some(Confirm {
+                    message: "Upstream has diverged — force-with-lease push? (y/n)".to_string(),
+                    kind: ConfirmKind::ForcePush,
+                });
+            }
+            PushState::NoUpstream => {
+                self.spawn_push(move |cli| cli.push_set_upstream("origin", &branch));
+            }
+            PushState::Ahead(_) => self.spawn_push(|cli| cli.push()),
+        }
+    }
+
+    fn spawn_push(
+        &mut self,
+        op: impl FnOnce(&GitCli) -> Result<(), MutationError> + Send + 'static,
+    ) {
+        self.spawn_remote("pushing", "Pushed", op);
+    }
+
+    fn spawn_remote(
+        &mut self,
+        verb: &'static str,
+        done: &'static str,
+        op: impl FnOnce(&GitCli) -> Result<(), MutationError> + Send + 'static,
+    ) {
+        let workdir = self
+            .repo
+            .workdir()
+            .unwrap_or_else(|| self.repo.git_dir())
+            .to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let cli = GitCli::new(workdir);
+            let _ = tx.send(op(&cli));
+        });
+        self.remote = Some(RemoteJob {
+            verb,
+            done,
+            spinner: 0,
+            rx,
+        });
+    }
+
+    pub fn poll_remote(&mut self) {
+        let Some(job) = &self.remote else {
+            return;
+        };
+        match job.rx.try_recv() {
+            Ok(result) => {
+                let done = job.done;
+                self.remote = None;
+                match result {
+                    Ok(()) => {
+                        self.reload();
+                        self.info(done.to_string());
+                    }
+                    Err(error) => self.fail(error.to_string()),
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.remote = None;
+                self.fail("Remote operation failed".to_string());
+            }
+        }
     }
 
     fn open_or_expand(&mut self) {
@@ -821,8 +966,11 @@ impl App {
             ConfirmKind::ForceDeleteBranch { name, oid } => {
                 match self.cli.force_delete_branch(&name) {
                     Ok(()) => self.finish_branch_delete(name, oid),
-                    Err(error) => self.notice = Some(error.to_string()),
+                    Err(error) => self.fail(error.to_string()),
                 }
+            }
+            ConfirmKind::ForcePush => {
+                self.spawn_push(|cli| cli.push_force_with_lease());
             }
         }
     }
@@ -850,7 +998,7 @@ impl App {
             return;
         }
         if self.status.staged.is_empty() {
-            self.notice = Some("Nothing staged to commit".to_string());
+            self.info("Nothing staged to commit".to_string());
             return;
         }
         self.commit = Some(CommitEditor::default());
@@ -873,7 +1021,7 @@ impl App {
             return;
         };
         if editor.message.trim().is_empty() {
-            self.notice = Some("Empty commit message".to_string());
+            self.info("Empty commit message".to_string());
             self.commit = Some(editor);
             return;
         }
@@ -931,10 +1079,10 @@ impl App {
     }
 
     fn after_mutation(&mut self, result: Result<(), MutationError>) {
-        self.notice = match result {
-            Ok(()) => None,
-            Err(error) => Some(error.to_string()),
-        };
+        match result {
+            Ok(()) => self.notice = None,
+            Err(error) => self.fail(error.to_string()),
+        }
         self.refresh_status();
     }
 
@@ -951,7 +1099,7 @@ impl App {
 
     fn perform_undo(&mut self) {
         let Some(action) = self.last_action.take() else {
-            self.notice = Some("Nothing to undo".to_string());
+            self.info("Nothing to undo".to_string());
             return;
         };
         let (ok, description) = match invert(&action) {
@@ -1006,9 +1154,9 @@ impl App {
             ),
         };
         if ok {
-            self.notice = Some(description);
+            self.info(description);
         } else {
-            self.notice = Some("Undo failed".to_string());
+            self.fail("Undo failed".to_string());
             self.last_action = Some(action);
         }
         self.reload();
@@ -1095,9 +1243,10 @@ impl App {
                 self.close_branch_panel();
                 self.reload();
                 self.checkout_flash = 1.0;
-                self.notice = Some(self.landing_notice());
+                let landing = self.landing_notice();
+                self.info(landing);
             }
-            Err(error) => self.notice = Some(error.to_string()),
+            Err(error) => self.fail(error.to_string()),
         }
     }
 
@@ -1246,7 +1395,7 @@ impl App {
             return;
         };
         if !option.enabled {
-            self.notice = Some(format!("Not available: {}", option.note));
+            self.info(format!("Not available: {}", option.note));
             return;
         }
         let strategy = option.strategy;
@@ -1279,11 +1428,11 @@ impl App {
                 }
                 self.close_join_menu();
                 self.reload();
-                self.notice = Some(label.to_string());
+                self.info(label.to_string());
             }
             Err(error) => match self.repo.state_op() {
                 Some(op) => self.enter_conflict_browser(op),
-                None => self.notice = Some(error.to_string()),
+                None => self.fail(error.to_string()),
             },
         }
     }
@@ -1293,7 +1442,7 @@ impl App {
             Ok(()) => self.finish_rebase(),
             Err(error) => match self.repo.state_op() {
                 Some(op) => self.enter_conflict_browser(op),
-                None => self.notice = Some(error.to_string()),
+                None => self.fail(error.to_string()),
             },
         }
     }
@@ -1303,7 +1452,7 @@ impl App {
         self.close_join_menu();
         self.conflict = None;
         self.reload();
-        self.notice = Some("Rebased".to_string());
+        self.info("Rebased".to_string());
     }
 
     fn record_rebase_undo(&mut self) {
@@ -1413,7 +1562,7 @@ impl App {
             return;
         };
         if !browser.files.is_empty() {
-            self.notice = Some("Resolve every conflict first".to_string());
+            self.info("Resolve every conflict first".to_string());
             return;
         }
         let op = browser.op;
@@ -1441,9 +1590,9 @@ impl App {
                 }
                 self.conflict = None;
                 self.reload();
-                self.notice = Some(format!("Resolved {}", op.label()));
+                self.info(format!("Resolved {}", op.label()));
             }
-            Err(error) => self.notice = Some(error.to_string()),
+            Err(error) => self.fail(error.to_string()),
         }
     }
 
@@ -1491,10 +1640,10 @@ impl App {
             OpKind::Rebase => self.cli.rebase_abort(),
         };
         self.conflict = None;
-        self.notice = Some(match result {
-            Ok(()) => format!("Aborted {}", op.label()),
-            Err(error) => error.to_string(),
-        });
+        match result {
+            Ok(()) => self.info(format!("Aborted {}", op.label())),
+            Err(error) => self.fail(error.to_string()),
+        }
         self.reload();
     }
 
@@ -1569,7 +1718,7 @@ impl App {
         };
         let name = editor.name.trim().to_string();
         if name.is_empty() {
-            self.notice = Some("Empty branch name".to_string());
+            self.info("Empty branch name".to_string());
             self.branch_create = Some(editor);
             return;
         }
@@ -1584,7 +1733,7 @@ impl App {
                 self.reload();
             }
             Err(error) => {
-                self.notice = Some(error.to_string());
+                self.fail(error.to_string());
                 self.branch_create = Some(editor);
             }
         }
@@ -1709,6 +1858,9 @@ impl App {
         }
         if self.checkout_flash > 0.0 {
             self.checkout_flash = (self.checkout_flash - step).max(0.0);
+        }
+        if let Some(job) = &mut self.remote {
+            job.spinner = job.spinner.wrapping_add(1);
         }
     }
 
