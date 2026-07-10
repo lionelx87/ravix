@@ -1879,6 +1879,154 @@ fn a_diverged_push_asks_to_force_first() {
     assert_eq!(app.notice(), Some("Pushed"));
 }
 
+fn behind_repo(work: &Path, remote: &Path, other: &Path) {
+    unpushed_repo(work, remote);
+    git_run(work, &["push", "-q", "-u", "origin", "main"]);
+    git_clone(remote, other);
+    git_run(other, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(other, &["config", "user.name", "Demo"]);
+    commit_file(other, "b.txt", "b\n", "remote work");
+    git_run(other, &["push", "-q"]);
+}
+
+fn diverged_conflict_repo(work: &Path, remote: &Path, other: &Path) {
+    git_run(remote, &["init", "-q", "--bare", "-b", "main"]);
+    init_with_base(work, "shared.txt", "base\n");
+    git_run(work, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git_run(work, &["push", "-q", "-u", "origin", "main"]);
+    git_clone(remote, other);
+    git_run(other, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(other, &["config", "user.name", "Demo"]);
+    commit_file(other, "shared.txt", "remote\n", "remote edit");
+    git_run(other, &["push", "-q"]);
+    commit_file(work, "shared.txt", "local\n", "local edit");
+    git_run(work, &["fetch", "-q"]);
+}
+
+#[test]
+fn pull_fast_forwards_when_the_upstream_advanced() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    behind_repo(work.path(), remote.path(), other.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('p'));
+    assert!(app.remote_pending(), "pull should start a background fetch");
+    drive_remote(&mut app);
+
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").summary,
+        "remote work",
+        "a fast-forward pull should advance onto the upstream"
+    );
+    assert!(
+        app.notice().is_some_and(|n| n.contains("fast-forward")),
+        "the notice should report the fast-forward: {:?}",
+        app.notice()
+    );
+}
+
+#[test]
+fn pull_reports_up_to_date_when_nothing_is_upstream() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    upstream_repo(work.path(), remote.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('p'));
+    drive_remote(&mut app);
+
+    assert_eq!(app.notice(), Some("Already up to date"));
+    assert!(app.join_menu().is_none());
+}
+
+#[test]
+fn a_diverged_pull_opens_the_join_menu_with_the_upstream() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    diverged_repo(work.path(), remote.path(), other.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('p'));
+    drive_remote(&mut app);
+
+    assert_eq!(
+        app.join_menu().map(|menu| menu.title.as_str()),
+        Some("Join origin/main into HEAD"),
+        "a diverged pull should open the join menu with the upstream as source"
+    );
+}
+
+#[test]
+fn a_conflicting_pull_lands_in_the_conflict_browser() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    diverged_conflict_repo(work.path(), remote.path(), other.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('p'));
+    drive_remote(&mut app);
+    assert!(
+        app.join_menu().is_some(),
+        "a diverged pull opens the join menu"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(
+        app.conflict_browser().is_some(),
+        "a conflicting merge pull should drop into the conflict browser"
+    );
+}
+
+#[test]
+fn pull_without_an_upstream_is_refused() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    unpushed_repo(work.path(), remote.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('p'));
+
+    assert!(!app.remote_pending(), "no upstream — nothing to fetch");
+    assert!(app.notice().is_some_and(|n| n.contains("upstream")));
+    assert!(app.join_menu().is_none());
+}
+
+#[test]
+fn undo_reverts_a_fast_forward_pull() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    behind_repo(work.path(), remote.path(), other.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('p'));
+    drive_remote(&mut app);
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").summary,
+        "remote work"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").summary,
+        "base",
+        "undo should take the pull back off the upstream"
+    );
+}
+
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .current_dir(dir)

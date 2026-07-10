@@ -764,7 +764,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("space", "checkout commit / stage file or hunk"),
         ("b", "branches: checkout · n new · d delete"),
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
-        ("f / P", "fetch / push (background)"),
+        ("f / p / P", "fetch / pull / push (background)"),
         ("drag", "drop a branch onto another to join"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),

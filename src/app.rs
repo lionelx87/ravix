@@ -13,7 +13,7 @@ use crate::git::{
 use crate::graph::{GraphCommit, GraphRow, lay_out};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
-use crate::remote::{PushState, push_state};
+use crate::remote::{PullAction, PushState, pull_action, push_state};
 use crate::staging::build_patch;
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::working::{Focus, WorkingView};
@@ -55,6 +55,7 @@ pub enum Action {
     ToggleBranches,
     Checkout,
     Fetch,
+    Pull,
     Push,
     OpenJoin,
     ExecuteJoin,
@@ -113,9 +114,15 @@ pub struct DragState {
     hover: usize,
 }
 
+#[derive(Clone, Copy)]
+enum OnComplete {
+    Notice(&'static str),
+    Pull,
+}
+
 struct RemoteJob {
     verb: &'static str,
-    done: &'static str,
+    on_complete: OnComplete,
     spinner: usize,
     rx: mpsc::Receiver<Result<(), MutationError>>,
 }
@@ -448,6 +455,7 @@ impl App {
             Action::ToggleBranches => self.toggle_branches(),
             Action::Checkout => self.checkout(),
             Action::Fetch => self.fetch(),
+            Action::Pull => self.pull(),
             Action::Push => self.push(),
             Action::OpenJoin => self.open_join(),
             Action::ExecuteJoin => self.execute_join(),
@@ -695,7 +703,44 @@ impl App {
         if self.remote_busy() {
             return;
         }
-        self.spawn_remote("fetching", "Fetched", |cli| cli.fetch());
+        self.spawn_remote("fetching", OnComplete::Notice("Fetched"), |cli| cli.fetch());
+    }
+
+    fn pull(&mut self) {
+        if self.remote_busy() {
+            return;
+        }
+        if self.repo.head_upstream().is_none() {
+            self.info("No upstream to pull".to_string());
+            return;
+        }
+        self.spawn_remote("pulling", OnComplete::Pull, |cli| cli.fetch());
+    }
+
+    fn pull_integrate(&mut self) {
+        let Some((up_name, up_oid)) = self.repo.head_upstream() else {
+            self.info("No upstream to pull".to_string());
+            return;
+        };
+        let head = self.repo.head_oid().unwrap_or_default();
+        let prediction = self.predict_merge(&head, &up_oid);
+        match pull_action(&prediction) {
+            PullAction::UpToDate => self.info("Already up to date".to_string()),
+            PullAction::FastForward => {
+                let previous = self.repo.head_oid();
+                match self.cli.merge_ff(&up_name) {
+                    Ok(()) => {
+                        if let Some(previous) = previous {
+                            self.last_action = Some(UndoableAction::Merged { previous });
+                        }
+                        self.reload();
+                        self.info(format!("Pulled — fast-forwarded to {up_name}"));
+                    }
+                    Err(error) => self.fail(error.to_string()),
+                }
+            }
+            PullAction::Choose => self.open_join_for(Some(up_name), up_oid),
+        }
     }
 
     fn push(&mut self) {
@@ -725,13 +770,13 @@ impl App {
         &mut self,
         op: impl FnOnce(&GitCli) -> Result<(), MutationError> + Send + 'static,
     ) {
-        self.spawn_remote("pushing", "Pushed", op);
+        self.spawn_remote("pushing", OnComplete::Notice("Pushed"), op);
     }
 
     fn spawn_remote(
         &mut self,
         verb: &'static str,
-        done: &'static str,
+        on_complete: OnComplete,
         op: impl FnOnce(&GitCli) -> Result<(), MutationError> + Send + 'static,
     ) {
         let workdir = self
@@ -746,7 +791,7 @@ impl App {
         });
         self.remote = Some(RemoteJob {
             verb,
-            done,
+            on_complete,
             spinner: 0,
             rx,
         });
@@ -758,12 +803,15 @@ impl App {
         };
         match job.rx.try_recv() {
             Ok(result) => {
-                let done = job.done;
+                let on_complete = job.on_complete;
                 self.remote = None;
                 match result {
                     Ok(()) => {
                         self.reload();
-                        self.info(done.to_string());
+                        match on_complete {
+                            OnComplete::Notice(message) => self.info(message.to_string()),
+                            OnComplete::Pull => self.pull_integrate(),
+                        }
                     }
                     Err(error) => self.fail(error.to_string()),
                 }

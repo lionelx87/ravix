@@ -1,3 +1,20 @@
+use crate::join::MergePrediction;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullAction {
+    UpToDate,
+    FastForward,
+    Choose,
+}
+
+pub fn pull_action(prediction: &MergePrediction) -> PullAction {
+    match prediction {
+        MergePrediction::UpToDate => PullAction::UpToDate,
+        MergePrediction::FastForward => PullAction::FastForward,
+        MergePrediction::Clean | MergePrediction::Conflicts { .. } => PullAction::Choose,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushState {
     NoUpstream,

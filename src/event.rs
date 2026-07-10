@@ -53,6 +53,7 @@ impl InputMap {
             KeyCode::Char(' ') => Some(Action::Checkout),
             KeyCode::Char('M') => Some(Action::OpenJoin),
             KeyCode::Char('f') => Some(Action::Fetch),
+            KeyCode::Char('p') => Some(Action::Pull),
             KeyCode::Char('P') => Some(Action::Push),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
             KeyCode::Char('u') => Some(Action::Undo),
