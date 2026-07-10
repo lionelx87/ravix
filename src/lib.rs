@@ -2,5 +2,8 @@ pub mod app;
 pub mod event;
 pub mod git;
 pub mod graph;
+pub mod mutate;
+pub mod staging;
 pub mod ui;
 pub mod watcher;
+pub mod working;

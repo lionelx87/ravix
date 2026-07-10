@@ -54,7 +54,7 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => {
-                    if let Some(action) = input.on_key(key) {
+                    if let Some(action) = input.on_key(key, app.input_context()) {
                         app.update(action);
                     }
                 }

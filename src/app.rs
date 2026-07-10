@@ -3,8 +3,11 @@ use std::time::Duration;
 
 use git2::Oid;
 
-use crate::git::{CommitInfo, FileChange, Repo, RepoMeta};
+use crate::git::{CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus};
 use crate::graph::{GraphCommit, GraphRow, lay_out};
+use crate::mutate::{GitCli, MutationError};
+use crate::staging::build_patch;
+use crate::working::{Focus, WorkingView};
 
 const LOAD_PAGE: usize = 500;
 const LOAD_MARGIN: usize = 64;
@@ -26,9 +29,27 @@ pub enum Action {
     OpenPanel,
     Dismiss,
     ToggleHelp,
+    ToggleStage,
+    StageAll,
+    Discard,
+    OpenCommit,
+    ToggleFocus,
+    CommitInput(char),
+    CommitBackspace,
+    CommitSubmit,
+    ConfirmYes,
+    ConfirmNo,
     Reload,
     Tick(Duration),
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputContext {
+    Graph,
+    Working,
+    Commit,
+    Confirm,
 }
 
 pub struct Panel {
@@ -38,8 +59,24 @@ pub struct Panel {
     pub target: f32,
 }
 
+#[derive(Default)]
+pub struct CommitEditor {
+    pub message: String,
+}
+
+enum ConfirmKind {
+    Discard { path: String, untracked: bool },
+    DiscardHunk { patch: String },
+}
+
+pub struct Confirm {
+    pub message: String,
+    kind: ConfirmKind,
+}
+
 pub struct App {
     repo: Repo,
+    cli: GitCli,
     meta: RepoMeta,
     commits: Vec<CommitInfo>,
     rows: Vec<GraphRow>,
@@ -48,6 +85,12 @@ pub struct App {
     selected: usize,
     offset: usize,
     page: usize,
+    status: WorkingStatus,
+    on_wip: bool,
+    working: Option<WorkingView>,
+    commit: Option<CommitEditor>,
+    confirm: Option<Confirm>,
+    notice: Option<String>,
     panel: Option<Panel>,
     help_visible: bool,
     should_quit: bool,
@@ -63,13 +106,20 @@ impl App {
         load_page: usize,
     ) -> Result<Self, git2::Error> {
         let repo = Repo::discover(path)?;
+        let workdir = repo
+            .workdir()
+            .unwrap_or_else(|| repo.git_dir())
+            .to_path_buf();
+        let cli = GitCli::new(workdir);
         let meta = repo.meta()?;
         let load_page = load_page.max(1);
         let commits = repo.commits(0, load_page)?;
         let exhausted = commits.len() < load_page;
         let rows = layout_rows(&commits);
+        let status = repo.working_status().unwrap_or_default();
         Ok(Self {
             repo,
+            cli,
             meta,
             commits,
             rows,
@@ -78,6 +128,12 @@ impl App {
             selected: 0,
             offset: 0,
             page: DEFAULT_PAGE,
+            status,
+            on_wip: false,
+            working: None,
+            commit: None,
+            confirm: None,
+            notice: None,
             panel: None,
             help_visible: false,
             should_quit: false,
@@ -120,14 +176,66 @@ impl App {
         self.should_quit
     }
 
+    pub fn status(&self) -> &WorkingStatus {
+        &self.status
+    }
+
+    pub fn has_wip(&self) -> bool {
+        !self.status.is_empty()
+    }
+
+    pub fn on_wip(&self) -> bool {
+        self.on_wip
+    }
+
+    pub fn working(&self) -> Option<&WorkingView> {
+        self.working.as_ref()
+    }
+
+    pub fn commit_editor(&self) -> Option<&CommitEditor> {
+        self.commit.as_ref()
+    }
+
+    pub fn confirm(&self) -> Option<&Confirm> {
+        self.confirm.as_ref()
+    }
+
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    pub fn working_files(&self) -> Vec<WorkingFile> {
+        let mut files = Vec::with_capacity(self.status.total());
+        files.extend(self.status.unstaged.iter().cloned());
+        files.extend(self.status.staged.iter().cloned());
+        files.extend(self.status.untracked.iter().cloned());
+        files
+    }
+
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
         self.commits.get(self.selected)
+    }
+
+    pub fn input_context(&self) -> InputContext {
+        if self.commit.is_some() {
+            InputContext::Commit
+        } else if self.confirm.is_some() {
+            InputContext::Confirm
+        } else if self.working.is_some() {
+            InputContext::Working
+        } else {
+            InputContext::Graph
+        }
     }
 
     pub fn is_animating(&self) -> bool {
         self.panel
             .as_ref()
             .is_some_and(|panel| panel.progress != panel.target)
+            || self
+                .working
+                .as_ref()
+                .is_some_and(|view| view.slide != view.target)
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -138,21 +246,28 @@ impl App {
 
     pub fn update(&mut self, action: Action) {
         match action {
-            Action::SelectNext => self.move_selection(1),
-            Action::SelectPrev => self.move_selection(-1),
-            Action::SelectFirst => self.select(0),
-            Action::SelectLast => {
-                self.load_all();
-                self.select(self.last_index());
-            }
-            Action::PageDown => self.move_selection(self.page as isize),
-            Action::PageUp => self.move_selection(-(self.page as isize)),
+            Action::SelectNext => self.move_down(1),
+            Action::SelectPrev => self.move_up(1),
+            Action::SelectFirst => self.select_first(),
+            Action::SelectLast => self.select_last(),
+            Action::PageDown => self.move_down(self.page as isize),
+            Action::PageUp => self.move_up(self.page as isize),
             Action::ScrollDown => self.scroll_view(SCROLL_STEP),
             Action::ScrollUp => self.scroll_view(-SCROLL_STEP),
             Action::ClickRow(visible) => self.click_row(visible),
-            Action::OpenPanel => self.open_panel(),
+            Action::OpenPanel => self.open_or_expand(),
             Action::Dismiss => self.dismiss(),
             Action::ToggleHelp => self.help_visible = !self.help_visible,
+            Action::ToggleStage => self.toggle_stage(),
+            Action::StageAll => self.stage_all(),
+            Action::Discard => self.request_discard(),
+            Action::OpenCommit => self.open_commit(),
+            Action::ToggleFocus => self.toggle_focus(),
+            Action::CommitInput(character) => self.commit_input(character),
+            Action::CommitBackspace => self.commit_backspace(),
+            Action::CommitSubmit => self.commit_submit(),
+            Action::ConfirmYes => self.confirm_yes(),
+            Action::ConfirmNo => self.confirm = None,
             Action::Reload => self.reload(),
             Action::Tick(dt) => self.tick(dt),
             Action::Quit => self.should_quit = true,
@@ -161,6 +276,66 @@ impl App {
 
     fn last_index(&self) -> usize {
         self.commits.len().saturating_sub(1)
+    }
+
+    fn move_down(&mut self, delta: isize) {
+        if self.working.is_some() {
+            self.working_move(delta);
+            return;
+        }
+        if self.on_wip {
+            self.on_wip = false;
+            self.select(0);
+            return;
+        }
+        self.move_selection(delta);
+    }
+
+    fn move_up(&mut self, delta: isize) {
+        if self.working.is_some() {
+            self.working_move(-delta);
+            return;
+        }
+        if self.on_wip {
+            return;
+        }
+        if self.selected == 0 && self.has_wip() {
+            self.on_wip = true;
+            return;
+        }
+        self.move_selection(-delta);
+    }
+
+    fn working_move(&mut self, delta: isize) {
+        match self.working.as_ref().map(|view| view.focus) {
+            Some(Focus::Files) => {
+                let len = self.status.total();
+                if let Some(view) = &mut self.working {
+                    view.move_file(delta, len);
+                }
+                self.sync_focus_diff();
+            }
+            Some(Focus::Hunks) => {
+                if let Some(view) = &mut self.working {
+                    view.move_hunk(delta);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn select_first(&mut self) {
+        if self.has_wip() {
+            self.on_wip = true;
+        } else {
+            self.select(0);
+        }
+    }
+
+    fn select_last(&mut self) {
+        self.on_wip = false;
+        self.load_all();
+        self.select(self.last_index());
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -195,7 +370,21 @@ impl App {
         if target == self.selected && self.panel.is_none() {
             self.open_panel();
         } else {
+            self.on_wip = false;
             self.select(target);
+        }
+    }
+
+    fn open_or_expand(&mut self) {
+        if let Some(view) = &mut self.working {
+            view.fullscreen = !view.fullscreen;
+        } else if self.on_wip {
+            if self.has_wip() {
+                self.working = Some(WorkingView::opening());
+                self.sync_focus_diff();
+            }
+        } else {
+            self.open_panel();
         }
     }
 
@@ -222,42 +411,253 @@ impl App {
     }
 
     fn dismiss(&mut self) {
-        if self.help_visible {
+        if self.commit.is_some() {
+            self.commit = None;
+        } else if self.confirm.is_some() {
+            self.confirm = None;
+        } else if self.help_visible {
             self.help_visible = false;
+        } else if let Some(view) = &mut self.working {
+            if view.focus == Focus::Hunks {
+                view.focus = Focus::Files;
+            } else if view.fullscreen {
+                view.fullscreen = false;
+            } else {
+                view.target = 0.0;
+            }
         } else if let Some(panel) = &mut self.panel {
             panel.target = 0.0;
         }
     }
 
-    fn reload(&mut self) {
-        let selected_id = self.commits.get(self.selected).map(|commit| commit.id);
-        let Ok(meta) = self.repo.meta() else {
-            return;
-        };
-        let Ok(commits) = self.repo.commits(0, self.load_page) else {
-            return;
-        };
-        self.meta = meta;
-        self.exhausted = commits.len() < self.load_page;
-        self.commits = commits;
-        self.rebuild_rows();
+    fn focused_working_file(&self) -> Option<WorkingFile> {
+        let index = self.working.as_ref()?.selected;
+        self.working_files().into_iter().nth(index)
+    }
 
-        self.selected = 0;
-        if let Some(id) = selected_id {
-            self.selected = self.find_loading(id).unwrap_or(0);
+    fn toggle_stage(&mut self) {
+        let Some(view) = self.working.as_ref() else {
+            return;
+        };
+        match view.focus {
+            Focus::Files => {
+                let Some(file) = self.focused_working_file() else {
+                    return;
+                };
+                let result = if file.state == StageState::Staged {
+                    self.cli.unstage_file(&file.path)
+                } else {
+                    self.cli.stage_file(&file.path)
+                };
+                self.after_mutation(result);
+            }
+            Focus::Hunks => {
+                let Some((patch, staged_side)) = view
+                    .diff
+                    .as_ref()
+                    .map(|diff| (build_patch(diff, &[view.hunk]), view.staged_side))
+                else {
+                    return;
+                };
+                let result = if staged_side {
+                    self.cli.unstage_hunk(&patch)
+                } else {
+                    self.cli.stage_hunk(&patch)
+                };
+                self.after_mutation(result);
+            }
         }
-        self.selected = self.selected.min(self.last_index());
+    }
 
-        match self.commits.get(self.selected) {
-            Some(_) => {
-                if let Some(panel) = &mut self.panel {
-                    panel.commit_index = self.selected;
+    fn stage_all(&mut self) {
+        let has_unstaged = !self.status.unstaged.is_empty() || !self.status.untracked.is_empty();
+        let result = if has_unstaged {
+            self.cli.stage_all()
+        } else {
+            self.cli.unstage_all()
+        };
+        self.after_mutation(result);
+    }
+
+    fn request_discard(&mut self) {
+        let Some(view) = self.working.as_ref() else {
+            return;
+        };
+        if view.focus == Focus::Hunks && !view.staged_side {
+            if let Some(patch) = view
+                .diff
+                .as_ref()
+                .map(|diff| build_patch(diff, &[view.hunk]))
+            {
+                self.confirm = Some(Confirm {
+                    message: "Discard this hunk? (y/n)".to_string(),
+                    kind: ConfirmKind::DiscardHunk { patch },
+                });
+            }
+            return;
+        }
+        let Some(file) = self.focused_working_file() else {
+            return;
+        };
+        let untracked = file.state == StageState::Untracked;
+        self.confirm = Some(Confirm {
+            message: format!("Discard changes to {}? (y/n)", file.path),
+            kind: ConfirmKind::Discard {
+                path: file.path,
+                untracked,
+            },
+        });
+    }
+
+    fn confirm_yes(&mut self) {
+        let Some(confirm) = self.confirm.take() else {
+            return;
+        };
+        let result = match confirm.kind {
+            ConfirmKind::Discard { path, untracked } => {
+                if untracked {
+                    self.cli.remove_untracked(&path)
+                } else {
+                    self.cli.discard_file(&path)
                 }
             }
-            None => self.panel = None,
+            ConfirmKind::DiscardHunk { patch } => self.cli.discard_hunk(&patch),
+        };
+        self.after_mutation(result);
+    }
+
+    fn open_commit(&mut self) {
+        if self.working.is_none() {
+            return;
+        }
+        if self.status.staged.is_empty() {
+            self.notice = Some("Nothing staged to commit".to_string());
+            return;
+        }
+        self.commit = Some(CommitEditor::default());
+    }
+
+    fn commit_input(&mut self, character: char) {
+        if let Some(editor) = &mut self.commit {
+            editor.message.push(character);
+        }
+    }
+
+    fn commit_backspace(&mut self) {
+        if let Some(editor) = &mut self.commit {
+            editor.message.pop();
+        }
+    }
+
+    fn commit_submit(&mut self) {
+        let Some(editor) = self.commit.take() else {
+            return;
+        };
+        if editor.message.trim().is_empty() {
+            self.notice = Some("Empty commit message".to_string());
+            self.commit = Some(editor);
+            return;
+        }
+        let result = self.cli.commit(&editor.message);
+        self.after_mutation(result);
+        self.reload();
+    }
+
+    fn toggle_focus(&mut self) {
+        if let Some(view) = &mut self.working {
+            match view.focus {
+                Focus::Files => {
+                    if view
+                        .diff
+                        .as_ref()
+                        .is_some_and(|diff| !diff.hunks.is_empty())
+                    {
+                        view.focus = Focus::Hunks;
+                        view.hunk = 0;
+                    }
+                }
+                Focus::Hunks => view.focus = Focus::Files,
+            }
+        }
+    }
+
+    fn sync_focus_diff(&mut self) {
+        let Some(file) = self.focused_working_file() else {
+            if let Some(view) = &mut self.working {
+                view.diff = None;
+                view.focus = Focus::Files;
+            }
+            return;
+        };
+        let staged = file.state == StageState::Staged;
+        let diff = self.repo.file_diff(&file.path, staged).ok().flatten();
+        if let Some(view) = &mut self.working {
+            view.staged_side = staged;
+            match diff.filter(|diff| !diff.hunks.is_empty()) {
+                Some(diff) => {
+                    view.hunk = view.hunk.min(diff.hunks.len() - 1);
+                    view.diff = Some(diff);
+                }
+                None => {
+                    view.diff = None;
+                    view.hunk = 0;
+                    view.focus = Focus::Files;
+                }
+            }
+        }
+    }
+
+    fn after_mutation(&mut self, result: Result<(), MutationError>) {
+        self.notice = match result {
+            Ok(()) => None,
+            Err(error) => Some(error.to_string()),
+        };
+        self.refresh_status();
+    }
+
+    fn refresh_status(&mut self) {
+        if let Ok(status) = self.repo.working_status() {
+            self.status = status;
+        }
+        if self.status.is_empty() {
+            self.on_wip = false;
+            self.working = None;
+            self.commit = None;
+            return;
+        }
+        let len = self.status.total();
+        if let Some(view) = &mut self.working {
+            view.reconcile(len);
+        }
+        if self.working.is_some() {
+            self.sync_focus_diff();
+        }
+    }
+
+    fn reload(&mut self) {
+        let selected_id = self.commits.get(self.selected).map(|commit| commit.id);
+        if let Ok(meta) = self.repo.meta() {
+            self.meta = meta;
+        }
+        if let Ok(commits) = self.repo.commits(0, self.load_page) {
+            self.exhausted = commits.len() < self.load_page;
+            self.commits = commits;
+            self.rebuild_rows();
+        }
+
+        self.selected = selected_id
+            .and_then(|id| self.find_loading(id))
+            .unwrap_or(0)
+            .min(self.last_index());
+
+        if self.commits.get(self.selected).is_none() {
+            self.panel = None;
+        } else if let Some(panel) = &mut self.panel {
+            panel.commit_index = self.selected;
         }
         self.clamp_offset();
         self.scroll_into_view();
+        self.refresh_status();
     }
 
     fn find_loading(&mut self, id: Oid) -> Option<usize> {
@@ -305,17 +705,18 @@ impl App {
     }
 
     fn tick(&mut self, dt: Duration) {
-        let Some(panel) = &mut self.panel else {
-            return;
-        };
         let step = dt.as_secs_f32() / PANEL_ANIMATION.as_secs_f32();
-        if panel.progress < panel.target {
-            panel.progress = (panel.progress + step).min(panel.target);
-        } else if panel.progress > panel.target {
-            panel.progress = (panel.progress - step).max(panel.target);
+        if let Some(panel) = &mut self.panel {
+            advance(&mut panel.progress, panel.target, step);
+            if panel.target == 0.0 && panel.progress <= 0.0 {
+                self.panel = None;
+            }
         }
-        if panel.target == 0.0 && panel.progress <= 0.0 {
-            self.panel = None;
+        if let Some(view) = &mut self.working {
+            advance(&mut view.slide, view.target, step);
+            if view.target == 0.0 && view.slide <= 0.0 {
+                self.working = None;
+            }
         }
     }
 
@@ -329,6 +730,14 @@ impl App {
 
     fn clamp_offset(&mut self) {
         self.offset = self.offset.min(self.last_index());
+    }
+}
+
+fn advance(value: &mut f32, target: f32, step: f32) {
+    if *value < target {
+        *value = (*value + step).min(target);
+    } else if *value > target {
+        *value = (*value - step).max(target);
     }
 }
 

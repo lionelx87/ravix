@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -62,6 +63,8 @@ fn fixture_repo(dir: &Path) {
     );
     repo.branch("feature", &repo.find_commit(feature).unwrap(), true)
         .unwrap();
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .unwrap();
 }
 
 fn linear_repo(dir: &Path, count: usize) {
@@ -89,6 +92,8 @@ fn linear_repo(dir: &Path, count: usize) {
             true,
         ));
     }
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -140,7 +145,7 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 fn press(app: &mut App, input: &mut InputMap, code: KeyCode) {
-    if let Some(action) = input.on_key(key(code)) {
+    if let Some(action) = input.on_key(key(code), app.input_context()) {
         app.update(action);
     }
 }
@@ -336,4 +341,223 @@ fn question_mark_toggles_the_help_overlay() {
 
     assert!(screen.contains("Help"), "help title missing:\n{screen}");
     assert!(screen.contains("quit"), "help binding missing:\n{screen}");
+}
+
+fn dirty_repo(dir: &Path) {
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.name", "Demo"]);
+
+    let base: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(dir.join("app.txt"), &base).unwrap();
+    std::fs::write(dir.join("readme.md"), "alpha\nbeta\ngamma\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "initial commit"]);
+
+    let edited = base
+        .replace("line 1\n", "LINE ONE\n")
+        .replace("line 12\n", "LINE TWELVE\n");
+    std::fs::write(dir.join("app.txt"), &edited).unwrap();
+    std::fs::write(dir.join("readme.md"), "alpha\nBETA\ngamma\ndelta\n").unwrap();
+    run(&["add", "readme.md"]);
+    std::fs::write(dir.join("notes.txt"), "todo\n").unwrap();
+}
+
+fn settle(app: &mut App) {
+    for _ in 0..24 {
+        app.update(Action::Tick(Duration::from_millis(16)));
+    }
+}
+
+fn open_working(app: &mut App, input: &mut InputMap) {
+    press(app, input, KeyCode::Char('k'));
+    press(app, input, KeyCode::Enter);
+    settle(app);
+}
+
+#[test]
+fn wip_node_appears_when_the_tree_is_dirty() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+
+    let screen = dump(&draw(&mut app, 100, 24));
+
+    assert!(
+        screen.contains("Uncommitted changes"),
+        "WIP node missing:\n{screen}"
+    );
+    assert!(screen.contains("staged"), "WIP counts missing:\n{screen}");
+}
+
+#[test]
+fn opening_the_wip_panel_lists_the_changed_files() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    let screen = dump(&draw(&mut app, 100, 28));
+
+    assert!(screen.contains("Unstaged"), "section missing:\n{screen}");
+    assert!(screen.contains("Staged"), "section missing:\n{screen}");
+    assert!(screen.contains("Untracked"), "section missing:\n{screen}");
+    assert!(screen.contains("app.txt"), "file missing:\n{screen}");
+    assert!(screen.contains("readme.md"), "file missing:\n{screen}");
+    assert!(screen.contains("notes.txt"), "file missing:\n{screen}");
+}
+
+#[test]
+fn enter_expands_the_panel_to_a_fullscreen_two_pane() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Enter);
+    let screen = dump(&draw(&mut app, 100, 28));
+
+    assert!(
+        screen.contains("Working directory"),
+        "fullscreen pane missing:\n{screen}"
+    );
+}
+
+#[test]
+fn space_stages_the_focused_file() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    let before = dump(&draw(&mut app, 100, 28));
+    assert!(
+        before.contains("Unstaged"),
+        "expected unstaged section:\n{before}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    let after = dump(&draw(&mut app, 100, 28));
+
+    assert!(
+        !after.contains("Unstaged"),
+        "unstaged section should be gone after staging the only unstaged file:\n{after}"
+    );
+    assert!(after.contains("Staged"), "staged section missing:\n{after}");
+    assert!(after.contains("app.txt"), "app.txt missing:\n{after}");
+}
+
+#[test]
+fn space_on_a_hunk_leaves_the_file_partially_staged() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Tab);
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    let after = dump(&draw(&mut app, 100, 28));
+
+    assert!(
+        after.contains("Unstaged") && after.contains("Staged"),
+        "both sections should remain for a partially staged file:\n{after}"
+    );
+    assert!(
+        after.matches("app.txt").count() >= 2,
+        "app.txt should appear in both the unstaged and staged sections:\n{after}"
+    );
+}
+
+#[test]
+fn esc_closes_the_commit_editor_but_keeps_the_working_view() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    assert!(app.commit_editor().is_some(), "commit editor did not open");
+
+    press(&mut app, &mut input, KeyCode::Esc);
+
+    assert!(
+        app.commit_editor().is_none(),
+        "Esc should close the commit editor"
+    );
+    assert!(
+        app.working().is_some(),
+        "Esc should not close the working view underneath"
+    );
+}
+
+#[test]
+fn committing_from_the_editor_creates_a_commit() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    for character in "stage readme".chars() {
+        press(&mut app, &mut input, KeyCode::Char(character));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    let after = dump(&draw(&mut app, 100, 28));
+
+    assert!(
+        after.contains("stage readme"),
+        "the new commit should show in the graph:\n{after}"
+    );
+    assert_eq!(app.commits()[0].summary, "stage readme");
+    assert!(
+        !app.status().staged.iter().any(|f| f.path == "readme.md"),
+        "readme.md should have been committed: {:?}",
+        app.status()
+    );
+}
+
+#[test]
+fn discarding_a_hunk_reverts_only_that_hunk_in_the_working_tree() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Tab);
+    press(&mut app, &mut input, KeyCode::Char('d'));
+    assert!(
+        app.confirm().is_some(),
+        "discard should ask for confirmation"
+    );
+    press(&mut app, &mut input, KeyCode::Char('y'));
+
+    let content = std::fs::read_to_string(dir.path().join("app.txt")).unwrap();
+    assert!(
+        content.contains("line 1\n"),
+        "the discarded hunk (line 1) should be restored:\n{content}"
+    );
+    assert!(
+        content.contains("LINE TWELVE"),
+        "the untouched hunk (line 12) should remain:\n{content}"
+    );
 }
