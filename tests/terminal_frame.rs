@@ -1044,6 +1044,244 @@ fn checkout_that_git_refuses_shows_the_error_and_stays_put() {
     );
 }
 
+#[test]
+fn m_opens_the_join_menu_with_a_merge_prediction() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('M'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 100, 28));
+
+    assert!(
+        screen.contains("Join feature into HEAD"),
+        "join menu title missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("Merge commit"),
+        "merge strategy missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("clean"),
+        "the merge-tree prediction should annotate the strategy:\n{screen}"
+    );
+}
+
+fn git_run(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_with_base(dir: &Path, file: &str, content: &str) {
+    git_run(dir, &["init", "-q", "-b", "main"]);
+    git_run(dir, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(dir, &["config", "user.name", "Demo"]);
+    std::fs::write(dir.join(file), content).unwrap();
+    git_run(dir, &["add", "-A"]);
+    git_run(dir, &["commit", "-q", "-m", "base"]);
+}
+
+fn commit_file(dir: &Path, file: &str, content: &str, message: &str) {
+    std::fs::write(dir.join(file), content).unwrap();
+    git_run(dir, &["add", "-A"]);
+    git_run(dir, &["commit", "-q", "-m", message]);
+}
+
+fn merge_repo(dir: &Path) {
+    init_with_base(dir, "a.txt", "a\n");
+    git_run(dir, &["switch", "-qc", "feature"]);
+    commit_file(dir, "feature.txt", "f\n", "feature work");
+    git_run(dir, &["switch", "-q", "main"]);
+    commit_file(dir, "main.txt", "m\n", "main work");
+}
+
+fn ff_repo(dir: &Path) {
+    init_with_base(dir, "a.txt", "a\n");
+    git_run(dir, &["switch", "-qc", "feature"]);
+    commit_file(dir, "a.txt", "a\nmore\n", "ahead");
+    git_run(dir, &["switch", "-q", "main"]);
+}
+
+fn conflict_repo(dir: &Path) {
+    init_with_base(dir, "app.txt", "base\n");
+    git_run(dir, &["switch", "-qc", "feature"]);
+    commit_file(dir, "app.txt", "feature\n", "feature edit");
+    git_run(dir, &["switch", "-q", "main"]);
+    commit_file(dir, "app.txt", "main\n", "main edit");
+}
+
+fn open_join_on_feature(app: &mut App, input: &mut InputMap) {
+    press(app, input, KeyCode::Char('b'));
+    settle(app);
+    press(app, input, KeyCode::Char('j'));
+    press(app, input, KeyCode::Char('M'));
+    settle(app);
+}
+
+#[test]
+fn fast_forward_advances_the_current_branch_linearly() {
+    let dir = TempDir::new().unwrap();
+    ff_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    let head = app.head_commit().expect("HEAD commit");
+    assert_eq!(app.meta().head_branch.as_deref(), Some("main"));
+    assert_eq!(
+        head.summary, "ahead",
+        "the current branch should have fast-forwarded to the source tip"
+    );
+    assert_eq!(head.parents.len(), 1, "a fast-forward stays linear");
+}
+
+#[test]
+fn a_clean_merge_creates_a_merge_commit() {
+    let dir = TempDir::new().unwrap();
+    merge_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    let head = app.head_commit().expect("HEAD commit");
+    assert_eq!(
+        head.parents.len(),
+        2,
+        "a --no-ff merge should produce a two-parent commit:\n{head:?}"
+    );
+}
+
+#[test]
+fn cherry_pick_lands_the_source_change_on_head() {
+    let dir = TempDir::new().unwrap();
+    merge_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    let head = app.head_commit().expect("HEAD commit");
+    assert_eq!(
+        head.summary, "feature work",
+        "cherry-pick should replay the source commit onto HEAD"
+    );
+    assert_eq!(
+        head.parents.len(),
+        1,
+        "a cherry-pick is a single-parent commit"
+    );
+}
+
+#[test]
+fn a_conflict_prediction_lists_files_and_blocks_execution() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("Conflicts") && screen.contains("app.txt"),
+        "the conflict prediction should list the files:\n{screen}"
+    );
+    assert!(
+        screen.contains("Phase 3.3"),
+        "a note should defer resolution:\n{screen}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(
+        app.notice().is_some_and(|n| n.contains("Not available")),
+        "executing a blocked strategy should be refused: {:?}",
+        app.notice()
+    );
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").summary,
+        "main edit",
+        "no integration should have happened"
+    );
+}
+
+#[test]
+fn a_clean_strategy_shows_a_ghost_topology_preview() {
+    let dir = TempDir::new().unwrap();
+    merge_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    let screen = dump(&draw(&mut app, 140, 28));
+
+    assert!(
+        screen.contains("preview"),
+        "a ghost preview should appear for a clean strategy:\n{screen}"
+    );
+    assert!(
+        screen.contains("◈") && screen.contains("╱ ╲"),
+        "the ghost should draw a phantom merge node and its edges:\n{screen}"
+    );
+    assert!(
+        screen.contains("+1 commits · merge commit · 2 parents · clean"),
+        "the summary should describe the resulting topology with the incoming count:\n{screen}"
+    );
+}
+
+#[test]
+fn undo_reverts_a_merge() {
+    let dir = TempDir::new().unwrap();
+    merge_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").parents.len(),
+        2,
+        "merge should have landed"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+    settle(&mut app);
+
+    let head = app.head_commit().expect("HEAD commit");
+    assert_eq!(
+        head.summary, "main work",
+        "undo should reset HEAD back to the pre-merge tip"
+    );
+    assert_eq!(head.parents.len(), 1, "the merge commit should be gone");
+}
+
 fn code_repo(dir: &Path) {
     let run = |args: &[&str]| {
         let output = Command::new("git")

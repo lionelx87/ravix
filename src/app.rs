@@ -8,6 +8,7 @@ use crate::git::{
     BadgeKind, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus,
 };
 use crate::graph::{GraphCommit, GraphRow, lay_out};
+use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
 use crate::staging::build_patch;
 use crate::undo::{InversePlan, UndoableAction, invert};
@@ -45,6 +46,8 @@ pub enum Action {
     ConfirmNo,
     ToggleBranches,
     Checkout,
+    OpenJoin,
+    ExecuteJoin,
     NewBranch,
     DeleteBranch,
     BranchNameInput(char),
@@ -65,6 +68,7 @@ pub enum InputContext {
     Branch,
     BranchName,
     Alert,
+    Join,
 }
 
 pub struct Panel {
@@ -111,6 +115,7 @@ pub struct App {
     on_wip: bool,
     working: Option<WorkingView>,
     branch: Option<BranchPanel>,
+    join: Option<JoinMenu>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
@@ -159,6 +164,7 @@ impl App {
             on_wip: false,
             working: None,
             branch: None,
+            join: None,
             branch_create: None,
             commit: None,
             confirm: None,
@@ -228,6 +234,10 @@ impl App {
         self.branch.as_ref()
     }
 
+    pub fn join_menu(&self) -> Option<&JoinMenu> {
+        self.join.as_ref()
+    }
+
     pub fn branch_create(&self) -> Option<&BranchCreate> {
         self.branch_create.as_ref()
     }
@@ -264,6 +274,13 @@ impl App {
         self.commits.get(self.selected)
     }
 
+    pub fn head_commit(&self) -> Option<&CommitInfo> {
+        let head = self.repo.head_oid()?;
+        self.commits
+            .iter()
+            .find(|commit| commit.id.to_string() == head)
+    }
+
     pub fn input_context(&self) -> InputContext {
         if self.alert.is_some() {
             InputContext::Alert
@@ -273,6 +290,8 @@ impl App {
             InputContext::BranchName
         } else if self.confirm.is_some() {
             InputContext::Confirm
+        } else if self.join.is_some() {
+            InputContext::Join
         } else if self.branch.is_some() {
             InputContext::Branch
         } else if self.working.is_some() {
@@ -294,6 +313,10 @@ impl App {
                 .branch
                 .as_ref()
                 .is_some_and(|panel| panel.slide != panel.target)
+            || self
+                .join
+                .as_ref()
+                .is_some_and(|menu| menu.slide != menu.target)
             || self.checkout_flash > 0.0
     }
 
@@ -329,6 +352,8 @@ impl App {
             Action::ConfirmNo => self.confirm = None,
             Action::ToggleBranches => self.toggle_branches(),
             Action::Checkout => self.checkout(),
+            Action::OpenJoin => self.open_join(),
+            Action::ExecuteJoin => self.execute_join(),
             Action::NewBranch => self.open_branch_create(),
             Action::DeleteBranch => self.request_delete_branch(),
             Action::BranchNameInput(character) => self.branch_name_input(character),
@@ -346,6 +371,10 @@ impl App {
     }
 
     fn move_down(&mut self, delta: isize) {
+        if let Some(menu) = &mut self.join {
+            menu.move_selection(delta);
+            return;
+        }
         if let Some(panel) = &mut self.branch {
             panel.move_selection(delta);
             return;
@@ -363,6 +392,10 @@ impl App {
     }
 
     fn move_up(&mut self, delta: isize) {
+        if let Some(menu) = &mut self.join {
+            menu.move_selection(-delta);
+            return;
+        }
         if let Some(panel) = &mut self.branch {
             panel.move_selection(-delta);
             return;
@@ -496,6 +529,8 @@ impl App {
             self.confirm = None;
         } else if self.help_visible {
             self.help_visible = false;
+        } else if let Some(menu) = &mut self.join {
+            menu.target = 0.0;
         } else if let Some(panel) = &mut self.branch {
             panel.target = 0.0;
         } else if let Some(view) = &mut self.working {
@@ -813,6 +848,10 @@ impl App {
                 self.cli.create_branch_at(&name, &oid).is_ok(),
                 format!("Undid delete of {name}"),
             ),
+            InversePlan::ResetKeep(oid) => (
+                self.cli.reset_keep(&oid).is_ok(),
+                "Undid integration".to_string(),
+            ),
         };
         if ok {
             self.notice = Some(description);
@@ -915,6 +954,171 @@ impl App {
                     .map(|head| head.chars().take(7).collect())
                     .unwrap_or_default();
                 format!("Detached HEAD at {short}")
+            }
+        }
+    }
+
+    fn close_join_menu(&mut self) {
+        if let Some(menu) = &mut self.join {
+            menu.target = 0.0;
+        }
+    }
+
+    fn open_join(&mut self) {
+        let source = if let Some(entry) = self.branch.as_ref().and_then(BranchPanel::focused) {
+            self.repo
+                .branch_tip(&entry.name)
+                .map(|oid| (Some(entry.name.clone()), oid))
+        } else if !self.on_wip {
+            self.selected_commit().map(|commit| {
+                let name = self.local_branch_at(commit.id);
+                (name, commit.id.to_string())
+            })
+        } else {
+            None
+        };
+        let Some((source_name, source_oid)) = source else {
+            return;
+        };
+        let head = self.repo.head_oid().unwrap_or_default();
+        if source_oid == head {
+            self.notice = Some("Source is already at HEAD".to_string());
+            return;
+        }
+        self.join = Some(self.build_join_menu(source_name, source_oid, &head));
+    }
+
+    fn build_join_menu(
+        &self,
+        source_name: Option<String>,
+        source_oid: String,
+        head: &str,
+    ) -> JoinMenu {
+        let merge = self.predict_merge(head, &source_oid);
+        let cherry = self.predict_cherry_pick(head, &source_oid);
+        let mut options = Vec::new();
+        let mut conflict_files = Vec::new();
+
+        if source_name.is_some() {
+            options.push(JoinOption {
+                strategy: JoinStrategy::FastForward,
+                label: "Fast-forward".to_string(),
+                note: fast_forward_note(&merge),
+                enabled: matches!(merge, MergePrediction::FastForward),
+            });
+            options.push(JoinOption {
+                strategy: JoinStrategy::MergeCommit,
+                label: "Merge commit".to_string(),
+                note: merge_note(&merge),
+                enabled: matches!(merge, MergePrediction::FastForward | MergePrediction::Clean),
+            });
+            options.push(JoinOption {
+                strategy: JoinStrategy::CherryPick,
+                label: "Cherry-pick tip".to_string(),
+                note: cherry_pick_note(&cherry),
+                enabled: matches!(cherry, MergePrediction::Clean),
+            });
+            if let MergePrediction::Conflicts { files } = &merge {
+                conflict_files = files.clone();
+            }
+        } else {
+            options.push(JoinOption {
+                strategy: JoinStrategy::CherryPick,
+                label: "Cherry-pick".to_string(),
+                note: cherry_pick_note(&cherry),
+                enabled: matches!(cherry, MergePrediction::Clean),
+            });
+            if let MergePrediction::Conflicts { files } = &cherry {
+                conflict_files = files.clone();
+            }
+        }
+
+        let title = match &source_name {
+            Some(name) => format!("Join {name} into HEAD"),
+            None => format!("Cherry-pick {} onto HEAD", short_oid(&source_oid)),
+        };
+        let incoming = self.repo.incoming_count(head, &source_oid);
+        let summary = join_summary(&merge, source_name.is_some(), incoming);
+
+        JoinMenu {
+            title,
+            source_name,
+            source_oid,
+            options,
+            conflict_files,
+            summary,
+            selected: 0,
+            slide: 0.0,
+            target: 1.0,
+        }
+    }
+
+    fn predict_merge(&self, head: &str, source: &str) -> MergePrediction {
+        let ancestry = Ancestry {
+            source_in_head: self.repo.is_ancestor(source, head),
+            head_in_source: self.repo.is_ancestor(head, source),
+        };
+        let merge_tree = self.cli.merge_tree(head, source, None);
+        classify(ancestry, &merge_tree)
+    }
+
+    fn predict_cherry_pick(&self, head: &str, commit: &str) -> MergePrediction {
+        let base = self.repo.commit_parent(commit);
+        let merge_tree = self.cli.merge_tree(head, commit, base.as_deref());
+        let ancestry = Ancestry {
+            source_in_head: self.repo.is_ancestor(commit, head),
+            head_in_source: false,
+        };
+        classify(ancestry, &merge_tree)
+    }
+
+    fn execute_join(&mut self) {
+        let Some(menu) = self.join.as_ref() else {
+            return;
+        };
+        let Some(option) = menu.focused() else {
+            return;
+        };
+        if !option.enabled {
+            let reason = if !menu.conflict_files.is_empty() {
+                "conflicts resolve in Phase 3.3".to_string()
+            } else {
+                option.note.clone()
+            };
+            self.notice = Some(format!("Not available: {reason}"));
+            return;
+        }
+        let strategy = option.strategy;
+        let source_ref = menu
+            .source_name
+            .clone()
+            .unwrap_or_else(|| menu.source_oid.clone());
+        let source_oid = menu.source_oid.clone();
+        let previous = self.repo.head_oid();
+
+        let (result, label) = match strategy {
+            JoinStrategy::FastForward => (self.cli.merge_ff(&source_ref), "Fast-forwarded"),
+            JoinStrategy::MergeCommit => (self.cli.merge_no_ff(&source_ref), "Merged"),
+            JoinStrategy::CherryPick => (self.cli.cherry_pick(&source_oid), "Cherry-picked"),
+        };
+
+        match result {
+            Ok(()) => {
+                if let Some(previous) = previous {
+                    self.last_action = Some(match strategy {
+                        JoinStrategy::CherryPick => UndoableAction::CherryPicked { previous },
+                        _ => UndoableAction::Merged { previous },
+                    });
+                }
+                self.close_join_menu();
+                self.reload();
+                self.notice = Some(label.to_string());
+            }
+            Err(error) => {
+                if strategy == JoinStrategy::CherryPick {
+                    let _ = self.cli.cherry_pick_abort();
+                }
+                self.notice = Some(error.to_string());
             }
         }
     }
@@ -1121,6 +1325,12 @@ impl App {
                 self.branch = None;
             }
         }
+        if let Some(menu) = &mut self.join {
+            advance(&mut menu.slide, menu.target, step);
+            if menu.target == 0.0 && menu.slide <= 0.0 {
+                self.join = None;
+            }
+        }
         if self.checkout_flash > 0.0 {
             self.checkout_flash = (self.checkout_flash - step).max(0.0);
         }
@@ -1136,6 +1346,49 @@ impl App {
 
     fn clamp_offset(&mut self) {
         self.offset = self.offset.min(self.last_index());
+    }
+}
+
+fn short_oid(oid: &str) -> String {
+    oid.chars().take(7).collect()
+}
+
+fn merge_note(prediction: &MergePrediction) -> String {
+    match prediction {
+        MergePrediction::UpToDate => "up to date".to_string(),
+        MergePrediction::FastForward => "fast-forward".to_string(),
+        MergePrediction::Clean => "clean".to_string(),
+        MergePrediction::Conflicts { files } => format!("{} conflicts", files.len()),
+    }
+}
+
+fn fast_forward_note(prediction: &MergePrediction) -> String {
+    match prediction {
+        MergePrediction::FastForward => "fast-forward".to_string(),
+        MergePrediction::UpToDate => "up to date".to_string(),
+        _ => "not possible (diverged)".to_string(),
+    }
+}
+
+fn cherry_pick_note(prediction: &MergePrediction) -> String {
+    match prediction {
+        MergePrediction::Clean | MergePrediction::FastForward => "clean".to_string(),
+        MergePrediction::UpToDate => "already applied".to_string(),
+        MergePrediction::Conflicts { files } => format!("{} conflicts", files.len()),
+    }
+}
+
+fn join_summary(prediction: &MergePrediction, is_branch: bool, incoming: usize) -> String {
+    match prediction {
+        MergePrediction::UpToDate => "already up to date".to_string(),
+        MergePrediction::FastForward => format!("+{incoming} commits · fast-forward · linear"),
+        MergePrediction::Clean if is_branch => {
+            format!("+{incoming} commits · merge commit · 2 parents · clean")
+        }
+        MergePrediction::Clean => "cherry-pick · clean".to_string(),
+        MergePrediction::Conflicts { files } => {
+            format!("{} conflicting file(s) · resolve in 3.3", files.len())
+        }
     }
 }
 

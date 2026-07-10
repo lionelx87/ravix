@@ -11,6 +11,8 @@ pub enum UndoableAction {
     CheckedOut { previous: String },
     CreatedBranch { name: String, previous: String },
     DeletedBranch { name: String, oid: String },
+    Merged { previous: String },
+    CherryPicked { previous: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,7 @@ pub enum InversePlan {
     Checkout(String),
     DropBranch { name: String, back_to: String },
     RestoreBranch { name: String, oid: String },
+    ResetKeep(String),
 }
 
 pub fn invert(action: &UndoableAction) -> InversePlan {
@@ -50,5 +53,7 @@ pub fn invert(action: &UndoableAction) -> InversePlan {
             name: name.clone(),
             oid: oid.clone(),
         },
+        UndoableAction::Merged { previous } => InversePlan::ResetKeep(previous.clone()),
+        UndoableAction::CherryPicked { previous } => InversePlan::ResetKeep(previous.clone()),
     }
 }

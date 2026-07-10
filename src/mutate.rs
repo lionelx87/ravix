@@ -3,6 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::join::MergeTreeResult;
+
 #[derive(Debug)]
 pub enum MutationError {
     Spawn(std::io::Error),
@@ -76,6 +78,10 @@ impl GitCli {
         self.run(&["reset", "--soft", "HEAD@{1}"], None)
     }
 
+    pub fn reset_keep(&self, oid: &str) -> Result<(), MutationError> {
+        self.run(&["reset", "--keep", oid], None)
+    }
+
     pub fn switch_branch(&self, name: &str) -> Result<(), MutationError> {
         self.run(&["switch", name], None)
     }
@@ -102,6 +108,61 @@ impl GitCli {
 
     pub fn create_branch_at(&self, name: &str, oid: &str) -> Result<(), MutationError> {
         self.run(&["branch", name, oid], None)
+    }
+
+    pub fn merge_ff(&self, source: &str) -> Result<(), MutationError> {
+        self.run(&["merge", "--ff-only", source], None)
+    }
+
+    pub fn merge_no_ff(&self, source: &str) -> Result<(), MutationError> {
+        self.run(&["merge", "--no-ff", "--no-edit", source], None)
+    }
+
+    pub fn cherry_pick(&self, oid: &str) -> Result<(), MutationError> {
+        self.run(&["cherry-pick", oid], None)
+    }
+
+    pub fn cherry_pick_abort(&self) -> Result<(), MutationError> {
+        self.run(&["cherry-pick", "--abort"], None)
+    }
+
+    pub fn merge_tree(&self, ours: &str, theirs: &str, base: Option<&str>) -> MergeTreeResult {
+        let mut args: Vec<String> = vec![
+            "merge-tree".into(),
+            "--write-tree".into(),
+            "--name-only".into(),
+            "--no-messages".into(),
+        ];
+        if let Some(base) = base {
+            args.push(format!("--merge-base={base}"));
+        }
+        args.push(ours.into());
+        args.push(theirs.into());
+
+        match Command::new("git")
+            .current_dir(&self.workdir)
+            .args(&args)
+            .output()
+        {
+            Ok(output) => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let files = text
+                    .lines()
+                    .skip(1)
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                MergeTreeResult {
+                    conflicted: !output.status.success(),
+                    files,
+                }
+            }
+            Err(_) => MergeTreeResult {
+                conflicted: true,
+                files: Vec::new(),
+            },
+        }
     }
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<(), MutationError> {

@@ -4,6 +4,7 @@ pub mod enrich;
 pub mod event;
 pub mod git;
 pub mod graph;
+pub mod join;
 pub mod mutate;
 pub mod staging;
 pub mod ui;

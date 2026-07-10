@@ -26,6 +26,7 @@ impl InputMap {
             InputContext::Branch => on_branch_key(key),
             InputContext::BranchName => on_branch_name_key(key),
             InputContext::Alert => Some(Action::Dismiss),
+            InputContext::Join => on_join_key(key),
         }
     }
 
@@ -49,6 +50,7 @@ impl InputMap {
             KeyCode::Enter => Some(Action::OpenPanel),
             KeyCode::Esc => Some(Action::Dismiss),
             KeyCode::Char(' ') => Some(Action::Checkout),
+            KeyCode::Char('M') => Some(Action::OpenJoin),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
             KeyCode::Char('u') => Some(Action::Undo),
             KeyCode::Char('?') => Some(Action::ToggleHelp),
@@ -110,9 +112,23 @@ fn on_branch_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
         KeyCode::Enter | KeyCode::Char(' ') => Some(Action::Checkout),
+        KeyCode::Char('M') => Some(Action::OpenJoin),
         KeyCode::Char('n') => Some(Action::NewBranch),
         KeyCode::Char('d') => Some(Action::DeleteBranch),
         KeyCode::Char('b') | KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('u') => Some(Action::Undo),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_join_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Enter => Some(Action::ExecuteJoin),
+        KeyCode::Char('M') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),

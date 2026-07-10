@@ -169,6 +169,38 @@ impl Repo {
         branch.get().target().map(|oid| oid.to_string())
     }
 
+    pub fn head_oid(&self) -> Option<String> {
+        self.inner.head().ok()?.target().map(|oid| oid.to_string())
+    }
+
+    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
+        let (Ok(ancestor), Ok(descendant)) = (Oid::from_str(ancestor), Oid::from_str(descendant))
+        else {
+            return false;
+        };
+        ancestor == descendant
+            || self
+                .inner
+                .graph_descendant_of(descendant, ancestor)
+                .unwrap_or(false)
+    }
+
+    pub fn commit_parent(&self, oid: &str) -> Option<String> {
+        let oid = Oid::from_str(oid).ok()?;
+        let commit = self.inner.find_commit(oid).ok()?;
+        commit.parent_ids().next().map(|oid| oid.to_string())
+    }
+
+    pub fn incoming_count(&self, head: &str, source: &str) -> usize {
+        let (Ok(head), Ok(source)) = (Oid::from_str(head), Oid::from_str(source)) else {
+            return 0;
+        };
+        self.inner
+            .graph_ahead_behind(head, source)
+            .map(|(_, behind)| behind)
+            .unwrap_or(0)
+    }
+
     pub fn branches(&self) -> Result<Vec<BranchInput>, git2::Error> {
         let mut out = Vec::new();
         for branch in self.inner.branches(Some(BranchType::Local))? {

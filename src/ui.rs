@@ -10,6 +10,7 @@ use crate::app::{App, BranchCreate, CommitEditor, Confirm, Panel};
 use crate::branches::BranchPanel;
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::BadgeKind;
+use crate::join::JoinMenu;
 use crate::working::{Focus, WorkingView};
 
 const SELECTION_MARKER: &str = "❯ ";
@@ -117,6 +118,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     app.set_viewport(commit_area.height as usize);
 
     render_graph(frame, app, &theme, commit_area, now);
+    if let Some(menu) = app.join_menu() {
+        render_ghost_preview(frame, menu, &theme, commit_area);
+    }
     if app.has_wip() {
         let wip_area = Rect {
             x: graph_area.x,
@@ -140,6 +144,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     if let Some(panel) = app.branch_panel() {
         render_branch_panel(frame, panel, &theme, graph_area);
+    }
+    if let Some(menu) = app.join_menu() {
+        render_join_menu(frame, menu, &theme, graph_area);
     }
     if let Some(editor) = app.commit_editor() {
         render_commit_editor(frame, editor, &theme, area);
@@ -367,7 +374,7 @@ fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, ar
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(" Branches   [Enter] checkout · [n] new · [d] delete ");
+        .title(" Branches   [Enter] checkout · [n] new · [d] delete · [M] join ");
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -408,6 +415,123 @@ fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, ar
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_ghost_preview(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rect) {
+    if area.height < 2 || !menu.focused().is_some_and(|option| option.enabled) {
+        return;
+    }
+    let ghost = Style::default().fg(theme.meta).add_modifier(Modifier::DIM);
+    let node_line = Line::from(vec![
+        Span::styled("  ◈", ghost.add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("   preview · {}", menu.summary),
+            ghost.add_modifier(Modifier::ITALIC),
+        ),
+    ]);
+    let source = menu.source_name.as_deref().unwrap_or("source");
+    let edge_line = Line::from(vec![
+        Span::styled(" ╱ ╲", ghost),
+        Span::styled(
+            format!("  HEAD   {source}"),
+            ghost.add_modifier(Modifier::ITALIC),
+        ),
+    ]);
+    let buffer = frame.buffer_mut();
+    buffer.set_line(area.x, area.y, &node_line, area.width);
+    buffer.set_line(area.x, area.y + 1, &edge_line, area.width);
+}
+
+fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rect) {
+    let eased = ease_out_cubic(menu.slide);
+    let full_width = ((area.width as f32) * 0.45)
+        .max(40.0)
+        .min(area.width as f32) as u16;
+    let visible = ((full_width as f32) * eased).round() as u16;
+    if visible < 6 {
+        return;
+    }
+
+    let rect = Rect {
+        x: area.right() - visible,
+        y: area.y,
+        width: visible,
+        height: area.height,
+    };
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(format!(" {} ", menu.title));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let mut lines = Vec::new();
+    for (index, option) in menu.options.iter().enumerate() {
+        let selected = index == menu.selected;
+        let label_color = if !option.enabled {
+            theme.meta
+        } else if selected {
+            theme.node
+        } else {
+            theme.summary
+        };
+        let mut spans = vec![
+            Span::styled(
+                if selected { "❯ " } else { "  " },
+                Style::default().fg(theme.marker),
+            ),
+            Span::styled(
+                option.label.clone(),
+                Style::default()
+                    .fg(label_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  [{}]", option.note),
+                Style::default().fg(theme.meta),
+            ),
+        ];
+        if !option.enabled {
+            spans.push(Span::styled("  blocked", Style::default().fg(theme.warn)));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("⟿ {}", menu.summary),
+        Style::default()
+            .fg(theme.branch_badge)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    if !menu.conflict_files.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Conflicts",
+            Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
+        )));
+        for file in &menu.conflict_files {
+            lines.push(Line::from(Span::styled(
+                format!("  {file}"),
+                Style::default().fg(theme.removed),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "resolving conflicts arrives in Phase 3.3",
+            Style::default().fg(theme.meta),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "[Enter] run · [Esc] cancel",
+        Style::default().fg(theme.meta),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     let bindings = [
         ("j / ↓", "select next commit"),
@@ -417,6 +541,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("Enter", "open commit detail panel"),
         ("space", "checkout commit / stage file or hunk"),
         ("b", "branches: checkout · n new · d delete"),
+        ("M", "join: merge / cherry-pick (predicted)"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),
         ("u", "undo last action"),

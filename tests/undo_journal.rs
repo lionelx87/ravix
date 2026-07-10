@@ -85,3 +85,23 @@ fn deleting_a_branch_inverts_to_recreating_it_at_its_tip() {
         }
     );
 }
+
+#[test]
+fn a_merge_inverts_to_resetting_head_back_to_the_previous_tip() {
+    assert_eq!(
+        invert(&UndoableAction::Merged {
+            previous: "abc123".into(),
+        }),
+        InversePlan::ResetKeep("abc123".into())
+    );
+}
+
+#[test]
+fn a_cherry_pick_inverts_to_resetting_head_back_to_the_previous_tip() {
+    assert_eq!(
+        invert(&UndoableAction::CherryPicked {
+            previous: "def456".into(),
+        }),
+        InversePlan::ResetKeep("def456".into())
+    );
+}
