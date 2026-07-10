@@ -14,6 +14,7 @@ pub enum UndoableAction {
     Merged { previous: String },
     CherryPicked { previous: String },
     Rebased { previous: String },
+    Stashed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub enum InversePlan {
     DropBranch { name: String, back_to: String },
     RestoreBranch { name: String, oid: String },
     ResetKeep(String),
+    StashPop,
 }
 
 pub fn invert(action: &UndoableAction) -> InversePlan {
@@ -57,5 +59,6 @@ pub fn invert(action: &UndoableAction) -> InversePlan {
         UndoableAction::Merged { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::CherryPicked { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::Rebased { previous } => InversePlan::ResetKeep(previous.clone()),
+        UndoableAction::Stashed => InversePlan::StashPop,
     }
 }

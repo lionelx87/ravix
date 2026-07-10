@@ -15,6 +15,7 @@ use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction,
 use crate::mutate::{GitCli, MutationError};
 use crate::remote::{PullAction, PushState, pull_action, push_state};
 use crate::staging::build_patch;
+use crate::stash::StashPanel;
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::working::{Focus, WorkingView};
 
@@ -57,6 +58,11 @@ pub enum Action {
     Fetch,
     Pull,
     Push,
+    StashSave,
+    ToggleStashes,
+    StashPop,
+    StashApply,
+    StashDrop,
     OpenJoin,
     ExecuteJoin,
     TakeOurs,
@@ -88,6 +94,7 @@ pub enum InputContext {
     Alert,
     Join,
     Conflict,
+    Stash,
 }
 
 pub struct Panel {
@@ -133,6 +140,7 @@ enum ConfirmKind {
     DeleteBranch { name: String, oid: Option<String> },
     ForceDeleteBranch { name: String, oid: Option<String> },
     ForcePush,
+    DropStash { index: usize },
 }
 
 pub struct Confirm {
@@ -164,6 +172,7 @@ pub struct App {
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
     drag: Option<DragState>,
+    stash: Option<StashPanel>,
     remote: Option<RemoteJob>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
@@ -217,6 +226,7 @@ impl App {
             conflict: None,
             edit_request: None,
             drag: None,
+            stash: None,
             remote: None,
             branch_create: None,
             commit: None,
@@ -295,6 +305,10 @@ impl App {
 
     pub fn conflict_browser(&self) -> Option<&ConflictBrowser> {
         self.conflict.as_ref()
+    }
+
+    pub fn stash_panel(&self) -> Option<&StashPanel> {
+        self.stash.as_ref()
     }
 
     pub fn drag(&self) -> Option<(&str, usize, usize)> {
@@ -387,6 +401,8 @@ impl App {
             InputContext::Confirm
         } else if self.conflict.is_some() {
             InputContext::Conflict
+        } else if self.stash.is_some() {
+            InputContext::Stash
         } else if self.join.is_some() {
             InputContext::Join
         } else if self.branch.is_some() {
@@ -414,6 +430,10 @@ impl App {
                 .join
                 .as_ref()
                 .is_some_and(|menu| menu.slide != menu.target)
+            || self
+                .stash
+                .as_ref()
+                .is_some_and(|panel| panel.slide != panel.target)
             || self.checkout_flash > 0.0
             || self.remote.is_some()
     }
@@ -457,6 +477,11 @@ impl App {
             Action::Fetch => self.fetch(),
             Action::Pull => self.pull(),
             Action::Push => self.push(),
+            Action::StashSave => self.stash_save(),
+            Action::ToggleStashes => self.toggle_stashes(),
+            Action::StashPop => self.stash_pop(),
+            Action::StashApply => self.stash_apply(),
+            Action::StashDrop => self.request_drop_stash(),
             Action::OpenJoin => self.open_join(),
             Action::ExecuteJoin => self.execute_join(),
             Action::TakeOurs => self.resolve_block(Side::Ours),
@@ -491,6 +516,10 @@ impl App {
             browser.move_block(delta);
             return;
         }
+        if let Some(panel) = &mut self.stash {
+            panel.move_selection(delta);
+            return;
+        }
         if let Some(menu) = &mut self.join {
             menu.move_selection(delta);
             return;
@@ -514,6 +543,10 @@ impl App {
     fn move_up(&mut self, delta: isize) {
         if let Some(browser) = &mut self.conflict {
             browser.move_block(-delta);
+            return;
+        }
+        if let Some(panel) = &mut self.stash {
+            panel.move_selection(-delta);
             return;
         }
         if let Some(menu) = &mut self.join {
@@ -743,6 +776,86 @@ impl App {
         }
     }
 
+    fn stash_save(&mut self) {
+        if self.status.is_empty() {
+            self.info("Nothing to stash".to_string());
+            return;
+        }
+        match self.cli.stash_save() {
+            Ok(()) => {
+                self.last_action = Some(UndoableAction::Stashed);
+                self.reload();
+                self.info("Stashed working changes".to_string());
+            }
+            Err(error) => self.fail(error.to_string()),
+        }
+    }
+
+    fn toggle_stashes(&mut self) {
+        if self.stash.is_some() {
+            self.close_stash();
+            return;
+        }
+        let entries = self.cli.stash_list();
+        self.stash = Some(StashPanel::opening(entries));
+    }
+
+    fn close_stash(&mut self) {
+        if let Some(panel) = &mut self.stash {
+            panel.target = 0.0;
+        }
+    }
+
+    fn refresh_stash(&mut self) {
+        let entries = self.cli.stash_list();
+        if let Some(panel) = &mut self.stash {
+            panel.selected = panel.selected.min(entries.len().saturating_sub(1));
+            panel.entries = entries;
+        }
+    }
+
+    fn focused_stash(&self) -> Option<usize> {
+        self.stash
+            .as_ref()
+            .and_then(StashPanel::focused)
+            .map(|entry| entry.index)
+    }
+
+    fn stash_pop(&mut self) {
+        let Some(index) = self.focused_stash() else {
+            return;
+        };
+        let result = self.cli.stash_pop(index);
+        self.after_stash_mutation(result, "Popped stash");
+    }
+
+    fn stash_apply(&mut self) {
+        let Some(index) = self.focused_stash() else {
+            return;
+        };
+        let result = self.cli.stash_apply(index);
+        self.after_stash_mutation(result, "Applied stash");
+    }
+
+    fn request_drop_stash(&mut self) {
+        let Some(index) = self.focused_stash() else {
+            return;
+        };
+        self.confirm = Some(Confirm {
+            message: format!("Drop stash@{{{index}}}? (y/n)"),
+            kind: ConfirmKind::DropStash { index },
+        });
+    }
+
+    fn after_stash_mutation(&mut self, result: Result<(), MutationError>, ok_notice: &str) {
+        self.reload();
+        self.refresh_stash();
+        match result {
+            Ok(()) => self.info(ok_notice.to_string()),
+            Err(error) => self.fail(error.to_string()),
+        }
+    }
+
     fn push(&mut self) {
         if self.remote_busy() {
             return;
@@ -870,6 +983,8 @@ impl App {
             self.confirm = None;
         } else if self.help_visible {
             self.help_visible = false;
+        } else if let Some(panel) = &mut self.stash {
+            panel.target = 0.0;
         } else if let Some(menu) = &mut self.join {
             menu.target = 0.0;
         } else if let Some(panel) = &mut self.branch {
@@ -1019,6 +1134,10 @@ impl App {
             }
             ConfirmKind::ForcePush => {
                 self.spawn_push(|cli| cli.push_force_with_lease());
+            }
+            ConfirmKind::DropStash { index } => {
+                let result = self.cli.stash_drop(index);
+                self.after_stash_mutation(result, "Dropped stash");
             }
         }
     }
@@ -1200,6 +1319,7 @@ impl App {
                 self.cli.reset_keep(&oid).is_ok(),
                 "Undid integration".to_string(),
             ),
+            InversePlan::StashPop => (self.cli.stash_pop(0).is_ok(), "Undid stash".to_string()),
         };
         if ok {
             self.info(description);
@@ -1902,6 +2022,12 @@ impl App {
             advance(&mut menu.slide, menu.target, step);
             if menu.target == 0.0 && menu.slide <= 0.0 {
                 self.join = None;
+            }
+        }
+        if let Some(panel) = &mut self.stash {
+            advance(&mut panel.slide, panel.target, step);
+            if panel.target == 0.0 && panel.slide <= 0.0 {
+                self.stash = None;
             }
         }
         if self.checkout_flash > 0.0 {

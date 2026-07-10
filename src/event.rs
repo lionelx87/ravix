@@ -28,6 +28,7 @@ impl InputMap {
             InputContext::Alert => Some(Action::Dismiss),
             InputContext::Join => on_join_key(key),
             InputContext::Conflict => on_conflict_key(key),
+            InputContext::Stash => on_stash_key(key),
         }
     }
 
@@ -55,6 +56,8 @@ impl InputMap {
             KeyCode::Char('f') => Some(Action::Fetch),
             KeyCode::Char('p') => Some(Action::Pull),
             KeyCode::Char('P') => Some(Action::Push),
+            KeyCode::Char('s') => Some(Action::StashSave),
+            KeyCode::Char('S') => Some(Action::ToggleStashes),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
             KeyCode::Char('u') => Some(Action::Undo),
             KeyCode::Char('?') => Some(Action::ToggleHelp),
@@ -88,6 +91,7 @@ fn on_working_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('a') => Some(Action::StageAll),
         KeyCode::Char('d') => Some(Action::Discard),
         KeyCode::Char('c') => Some(Action::OpenCommit),
+        KeyCode::Char('s') => Some(Action::StashSave),
         KeyCode::Char('b') => Some(Action::ToggleBranches),
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Tab => Some(Action::ToggleFocus),
@@ -132,6 +136,21 @@ fn on_join_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
         KeyCode::Enter => Some(Action::ExecuteJoin),
         KeyCode::Char('M') | KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('u') => Some(Action::Undo),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_stash_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Char('p') => Some(Action::StashPop),
+        KeyCode::Char('a') => Some(Action::StashApply),
+        KeyCode::Char('d') => Some(Action::StashDrop),
+        KeyCode::Char('S') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),

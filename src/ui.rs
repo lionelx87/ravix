@@ -12,6 +12,7 @@ use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::BadgeKind;
 use crate::join::JoinMenu;
+use crate::stash::StashPanel;
 use crate::working::{Focus, WorkingView};
 
 const SELECTION_MARKER: &str = "❯ ";
@@ -148,6 +149,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     if let Some(menu) = app.join_menu() {
         render_join_menu(frame, menu, &theme, graph_area);
+    }
+    if let Some(panel) = app.stash_panel() {
+        render_stash_panel(frame, panel, &theme, graph_area);
     }
     if let Some(browser) = app.conflict_browser() {
         render_conflict_browser(frame, browser, &theme, graph_area);
@@ -585,6 +589,59 @@ fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rec
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_stash_panel(frame: &mut Frame, panel: &StashPanel, theme: &Theme, area: Rect) {
+    let eased = ease_out_cubic(panel.slide);
+    let full_width = ((area.width as f32) * 0.45)
+        .max(38.0)
+        .min(area.width as f32) as u16;
+    let visible = ((full_width as f32) * eased).round() as u16;
+    if visible < 6 {
+        return;
+    }
+
+    let rect = Rect {
+        x: area.right() - visible,
+        y: area.y,
+        width: visible,
+        height: area.height,
+    };
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Stashes   [p] pop · [a] apply · [d] drop ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let mut lines = Vec::new();
+    for (index, entry) in panel.entries.iter().enumerate() {
+        let selected = index == panel.selected;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "❯ " } else { "  " },
+                Style::default().fg(theme.marker),
+            ),
+            Span::styled(
+                format!("stash@{{{}}} ", entry.index),
+                Style::default().fg(theme.short_id),
+            ),
+            Span::styled(
+                entry.message.clone(),
+                Style::default().fg(if selected { theme.node } else { theme.summary }),
+            ),
+        ]));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no stashes",
+            Style::default().fg(theme.meta),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_conflict_browser(
     frame: &mut Frame,
     browser: &ConflictBrowser,
@@ -765,6 +822,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("b", "branches: checkout · n new · d delete"),
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
         ("f / p / P", "fetch / pull / push (background)"),
+        ("s / S", "stash changes / stash list"),
         ("drag", "drop a branch onto another to join"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),

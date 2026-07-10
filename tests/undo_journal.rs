@@ -115,3 +115,8 @@ fn a_rebase_inverts_to_resetting_the_branch_back_to_its_pre_rebase_tip() {
         InversePlan::ResetKeep("0ff5e7".into())
     );
 }
+
+#[test]
+fn a_stash_save_inverts_to_popping_it_back() {
+    assert_eq!(invert(&UndoableAction::Stashed), InversePlan::StashPop);
+}

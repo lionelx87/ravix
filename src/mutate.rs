@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::join::MergeTreeResult;
+use crate::stash::{StashEntry, parse_stash_list};
 
 #[derive(Debug)]
 pub enum MutationError {
@@ -160,6 +161,34 @@ impl GitCli {
 
     pub fn rebase_abort(&self) -> Result<(), MutationError> {
         self.run(&["rebase", "--abort"], None)
+    }
+
+    pub fn stash_save(&self) -> Result<(), MutationError> {
+        self.run(&["stash", "push", "--include-untracked"], None)
+    }
+
+    pub fn stash_pop(&self, index: usize) -> Result<(), MutationError> {
+        self.run(&["stash", "pop", &format!("stash@{{{index}}}")], None)
+    }
+
+    pub fn stash_apply(&self, index: usize) -> Result<(), MutationError> {
+        self.run(&["stash", "apply", &format!("stash@{{{index}}}")], None)
+    }
+
+    pub fn stash_drop(&self, index: usize) -> Result<(), MutationError> {
+        self.run(&["stash", "drop", &format!("stash@{{{index}}}")], None)
+    }
+
+    pub fn stash_list(&self) -> Vec<StashEntry> {
+        let output = Command::new("git")
+            .current_dir(&self.workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["stash", "list"])
+            .output();
+        match output {
+            Ok(output) => parse_stash_list(&String::from_utf8_lossy(&output.stdout)),
+            Err(_) => Vec::new(),
+        }
     }
 
     pub fn merge_tree(&self, ours: &str, theirs: &str, base: Option<&str>) -> MergeTreeResult {

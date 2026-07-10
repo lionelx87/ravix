@@ -2027,6 +2027,161 @@ fn undo_reverts_a_fast_forward_pull() {
     );
 }
 
+#[test]
+fn s_stashes_the_working_changes() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    assert!(app.has_wip(), "the fixture starts dirty");
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+
+    assert!(!app.has_wip(), "stashing should clear the working tree");
+    assert_eq!(app.notice(), Some("Stashed working changes"));
+}
+
+#[test]
+fn opening_the_stash_list_shows_the_saved_stash() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 100, 24));
+
+    assert!(
+        screen.contains("Stashes"),
+        "stash panel title missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("stash@{0}"),
+        "the saved stash should list:\n{screen}"
+    );
+}
+
+#[test]
+fn popping_a_stash_restores_the_changes_and_removes_it() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    assert!(!app.has_wip());
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    press(&mut app, &mut input, KeyCode::Char('p'));
+
+    assert!(app.has_wip(), "popping should restore the working changes");
+    assert!(
+        app.stash_panel()
+            .is_some_and(|panel| panel.entries.is_empty()),
+        "a popped stash should be gone from the list"
+    );
+}
+
+#[test]
+fn applying_a_stash_restores_the_changes_but_keeps_it() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    press(&mut app, &mut input, KeyCode::Char('a'));
+
+    assert!(app.has_wip(), "applying should restore the working changes");
+    assert!(
+        app.stash_panel()
+            .is_some_and(|panel| panel.entries.len() == 1),
+        "an applied stash should remain in the list"
+    );
+}
+
+#[test]
+fn dropping_a_stash_removes_it_after_confirmation() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    press(&mut app, &mut input, KeyCode::Char('d'));
+    assert!(app.confirm().is_some(), "drop should ask for confirmation");
+    press(&mut app, &mut input, KeyCode::Char('y'));
+
+    assert!(
+        app.stash_panel()
+            .is_some_and(|panel| panel.entries.is_empty()),
+        "the dropped stash should be gone"
+    );
+    assert!(!app.has_wip(), "dropping does not restore the changes");
+}
+
+#[test]
+fn a_conflicting_pop_surfaces_the_error_and_refreshes_the_working_view() {
+    let dir = TempDir::new().unwrap();
+    git_run(dir.path(), &["init", "-q", "-b", "main"]);
+    git_run(dir.path(), &["config", "user.email", "demo@ogma.dev"]);
+    git_run(dir.path(), &["config", "user.name", "Demo"]);
+    std::fs::write(dir.path().join("f.txt"), "base\n").unwrap();
+    git_run(dir.path(), &["add", "-A"]);
+    git_run(dir.path(), &["commit", "-q", "-m", "base"]);
+    std::fs::write(dir.path().join("f.txt"), "stashed\n").unwrap();
+
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    assert!(!app.has_wip());
+    std::fs::write(dir.path().join("f.txt"), "conflicting\n").unwrap();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    press(&mut app, &mut input, KeyCode::Char('p'));
+
+    assert!(
+        app.notice_is_error(),
+        "a conflicting pop should surface an error notice"
+    );
+    assert!(
+        app.has_wip(),
+        "the working view should refresh to show the conflicted file"
+    );
+}
+
+#[test]
+fn stashing_a_clean_tree_reports_nothing_to_stash() {
+    let dir = TempDir::new().unwrap();
+    merge_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    assert!(!app.has_wip(), "the fixture tree is clean");
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+
+    assert_eq!(app.notice(), Some("Nothing to stash"));
+}
+
+#[test]
+fn undo_pops_a_stash_save_back() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    assert!(!app.has_wip());
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    assert!(app.has_wip(), "undo should pop the saved stash back");
+}
+
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .current_dir(dir)

@@ -11,6 +11,7 @@ pub mod mutate;
 pub mod rebase;
 pub mod remote;
 pub mod staging;
+pub mod stash;
 pub mod ui;
 pub mod undo;
 pub mod watcher;
