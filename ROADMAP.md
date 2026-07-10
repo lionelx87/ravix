@@ -19,13 +19,13 @@ as branches sprouting from a trunk line — exactly what this tool draws.
 
 ## v1 phases
 
-| Phase | Deliverable | Plan |
-|---|---|---|
-| 1 | Walking skeleton: open repo, render animated navigable graph, detail panel, help, auto-refresh | `docs/superpowers/plans/2026-07-09-ogma-phase1-walking-skeleton.md` |
-| 2 | Working directory: status row, staging/unstage/discard per file and hunk, enriched diffs (syntect, intra-line), commit flow, snapshots + undo foundation | (next) |
-| 3 | Branch operations: checkout, branch create/delete, join menu with merge-tree prediction, merge/rebase/cherry-pick, conflict browser, drag & drop | |
-| 4 | Remotes & flow: fetch/pull/push, upstream tracking in graph, stash, command palette, celebrations | |
-| 5 | Submodules (lazygit-style enter/exit with breadcrumb), focus mode, branch panel polish, side-by-side fullscreen diff | |
+| Phase | Deliverable | Spec | Status |
+|---|---|---|---|
+| 1 | Walking skeleton: open repo, render animated navigable graph, detail panel, help, auto-refresh | #1 | ✅ Done |
+| 2 | Working directory: status row, staging/unstage/discard per file and hunk, enriched diffs (syntect, intra-line), commit flow, snapshots + undo foundation | #3, #5, #7 | ✅ Done |
+| 3 | Branch operations: checkout, branch create/delete, join menu with merge-tree prediction, merge/rebase/cherry-pick, conflict browser, drag & drop | | Next |
+| 4 | Remotes & flow: fetch/pull/push, upstream tracking in graph, stash, command palette, celebrations | | |
+| 5 | Submodules (lazygit-style enter/exit with breadcrumb), focus mode, branch panel polish, side-by-side fullscreen diff | | |
 
 ## v2 wishlist (do not lose)
 
