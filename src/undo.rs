@@ -13,6 +13,7 @@ pub enum UndoableAction {
     DeletedBranch { name: String, oid: String },
     Merged { previous: String },
     CherryPicked { previous: String },
+    Rebased { previous: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,5 +56,6 @@ pub fn invert(action: &UndoableAction) -> InversePlan {
         },
         UndoableAction::Merged { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::CherryPicked { previous } => InversePlan::ResetKeep(previous.clone()),
+        UndoableAction::Rebased { previous } => InversePlan::ResetKeep(previous.clone()),
     }
 }

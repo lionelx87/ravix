@@ -7,6 +7,7 @@ pub mod git;
 pub mod graph;
 pub mod join;
 pub mod mutate;
+pub mod rebase;
 pub mod staging;
 pub mod ui;
 pub mod undo;

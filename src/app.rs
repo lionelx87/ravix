@@ -54,6 +54,7 @@ pub enum Action {
     ContinueConflict,
     AbortConflict,
     EditConflict,
+    SkipRebase,
     ConflictNextFile,
     NewBranch,
     DeleteBranch,
@@ -380,6 +381,7 @@ impl App {
             Action::ContinueConflict => self.continue_conflict(),
             Action::AbortConflict => self.abort_conflict(),
             Action::EditConflict => self.request_edit(),
+            Action::SkipRebase => self.skip_rebase(),
             Action::ConflictNextFile => {
                 if let Some(browser) = &mut self.conflict {
                     browser.move_file(1);
@@ -1064,6 +1066,14 @@ impl App {
                     MergePrediction::Clean | MergePrediction::Conflicts { .. }
                 ),
             });
+            let attached = self.repo.head_branch().is_some();
+            let ahead = self.repo.outgoing_count(head, &source_oid);
+            options.push(JoinOption {
+                strategy: JoinStrategy::Rebase,
+                label: "Rebase onto".to_string(),
+                note: rebase_note(&merge, ahead, attached),
+                enabled: attached && !matches!(merge, MergePrediction::UpToDate),
+            });
             if let MergePrediction::Conflicts { files } = &merge {
                 conflict_files = files.clone();
             }
@@ -1138,12 +1148,18 @@ impl App {
             .clone()
             .unwrap_or_else(|| menu.source_oid.clone());
         let source_oid = menu.source_oid.clone();
-        let previous = self.repo.head_oid();
 
+        if strategy == JoinStrategy::Rebase {
+            self.execute_rebase(&source_ref);
+            return;
+        }
+
+        let previous = self.repo.head_oid();
         let (result, label) = match strategy {
             JoinStrategy::FastForward => (self.cli.merge_ff(&source_ref), "Fast-forwarded"),
             JoinStrategy::MergeCommit => (self.cli.merge_no_ff(&source_ref), "Merged"),
             JoinStrategy::CherryPick => (self.cli.cherry_pick(&source_oid), "Cherry-picked"),
+            JoinStrategy::Rebase => unreachable!(),
         };
 
         match result {
@@ -1162,6 +1178,51 @@ impl App {
                 Some(op) => self.enter_conflict_browser(op),
                 None => self.notice = Some(error.to_string()),
             },
+        }
+    }
+
+    fn execute_rebase(&mut self, target: &str) {
+        match self.cli.rebase(target) {
+            Ok(()) => self.finish_rebase(),
+            Err(error) => match self.repo.state_op() {
+                Some(op) => self.enter_conflict_browser(op),
+                None => self.notice = Some(error.to_string()),
+            },
+        }
+    }
+
+    fn finish_rebase(&mut self) {
+        self.record_rebase_undo();
+        self.close_join_menu();
+        self.conflict = None;
+        self.reload();
+        self.notice = Some("Rebased".to_string());
+    }
+
+    fn record_rebase_undo(&mut self) {
+        if let Some(previous) = self.repo.orig_head() {
+            self.last_action = Some(UndoableAction::Rebased { previous });
+        }
+    }
+
+    fn continue_rebase(&mut self) {
+        let _ = self.cli.rebase_continue();
+        self.resume_or_finish_rebase();
+    }
+
+    fn skip_rebase(&mut self) {
+        if self.conflict.as_ref().map(|browser| browser.op) != Some(OpKind::Rebase) {
+            return;
+        }
+        let _ = self.cli.rebase_skip();
+        self.resume_or_finish_rebase();
+    }
+
+    fn resume_or_finish_rebase(&mut self) {
+        if self.repo.state_op() == Some(OpKind::Rebase) {
+            self.refresh_conflict_files();
+        } else {
+            self.finish_rebase();
         }
     }
 
@@ -1184,23 +1245,27 @@ impl App {
         if let Some(op) = self.repo.state_op() {
             let files = self.load_conflict_files();
             if !files.is_empty() {
-                self.conflict = Some(ConflictBrowser::new(op, files));
+                let progress = self.repo.rebase_progress();
+                self.conflict = Some(ConflictBrowser::new(op, files, progress));
             }
         }
     }
 
     fn enter_conflict_browser(&mut self, op: OpKind) {
         let files = self.load_conflict_files();
+        let progress = self.repo.rebase_progress();
         self.join = None;
-        self.conflict = Some(ConflictBrowser::new(op, files));
+        self.conflict = Some(ConflictBrowser::new(op, files, progress));
     }
 
     fn refresh_conflict_files(&mut self) {
         let files = self.load_conflict_files();
+        let progress = self.repo.rebase_progress();
         if let Some(browser) = &mut self.conflict {
             browser.file = browser.file.min(files.len().saturating_sub(1));
             browser.block = 0;
             browser.files = files;
+            browser.progress = progress;
         }
     }
 
@@ -1245,6 +1310,10 @@ impl App {
             return;
         }
         let op = browser.op;
+        if op == OpKind::Rebase {
+            self.continue_rebase();
+            return;
+        }
         let message = self.repo.pending_message().unwrap_or_default();
         self.commit = Some(CommitEditor {
             message,
@@ -1260,6 +1329,7 @@ impl App {
                     self.last_action = Some(match op {
                         OpKind::Merge => UndoableAction::Merged { previous },
                         OpKind::CherryPick => UndoableAction::CherryPicked { previous },
+                        OpKind::Rebase => UndoableAction::Rebased { previous },
                     });
                 }
                 self.conflict = None;
@@ -1311,6 +1381,7 @@ impl App {
         let result = match op {
             OpKind::Merge => self.cli.merge_abort(),
             OpKind::CherryPick => self.cli.cherry_pick_abort(),
+            OpKind::Rebase => self.cli.rebase_abort(),
         };
         self.conflict = None;
         self.notice = Some(match result {
@@ -1566,6 +1637,17 @@ fn fast_forward_note(prediction: &MergePrediction) -> String {
         MergePrediction::UpToDate => "up to date".to_string(),
         _ => "not possible (diverged)".to_string(),
     }
+}
+
+fn rebase_note(prediction: &MergePrediction, ahead: usize, attached: bool) -> String {
+    if !attached {
+        return "detached HEAD".to_string();
+    }
+    if matches!(prediction, MergePrediction::UpToDate) {
+        return "up to date".to_string();
+    }
+    let plural = if ahead == 1 { "" } else { "s" };
+    format!("replays {ahead} commit{plural}")
 }
 
 fn cherry_pick_note(prediction: &MergePrediction) -> String {

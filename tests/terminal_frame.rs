@@ -1482,6 +1482,260 @@ fn undo_reverts_a_merge() {
     assert_eq!(head.parents.len(), 1, "the merge commit should be gone");
 }
 
+fn git_ok(dir: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+fn rebase_conflict_repo(dir: &Path) {
+    let base = "L1\nx1\nx2\nx3\nx4\nx5\nL2\n";
+    init_with_base(dir, "f.txt", base);
+    git_run(dir, &["switch", "-qc", "target"]);
+    commit_file(dir, "f.txt", "T1\nx1\nx2\nx3\nx4\nx5\nT2\n", "target edit");
+    git_run(dir, &["switch", "-q", "main"]);
+    commit_file(dir, "f.txt", "M1\nx1\nx2\nx3\nx4\nx5\nL2\n", "main c1");
+    commit_file(dir, "f.txt", "M1\nx1\nx2\nx3\nx4\nx5\nM2\n", "main c2");
+}
+
+fn clean_rebase_repo(dir: &Path) {
+    init_with_base(dir, "a.txt", "a\n");
+    git_run(dir, &["switch", "-qc", "target"]);
+    commit_file(dir, "t.txt", "t\n", "target work");
+    git_run(dir, &["switch", "-q", "main"]);
+    commit_file(dir, "m.txt", "m\n", "main work");
+}
+
+fn open_rebase_onto_target(app: &mut App, input: &mut InputMap) {
+    open_join_on_feature(app, input);
+    press(app, input, KeyCode::Char('j'));
+    press(app, input, KeyCode::Char('j'));
+    press(app, input, KeyCode::Char('j'));
+    press(app, input, KeyCode::Enter);
+}
+
+#[test]
+fn a_multi_step_rebase_resolves_through_the_browser() {
+    let dir = TempDir::new().unwrap();
+    rebase_conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_rebase_onto_target(&mut app, &mut input);
+
+    assert!(
+        app.conflict_browser()
+            .is_some_and(|b| b.op == ogma::conflict::OpKind::Rebase),
+        "a conflicting rebase should open the browser as a rebase"
+    );
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("rebase in progress") && screen.contains("step 1/2"),
+        "the banner should show rebase progress:\n{screen}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('t'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+
+    assert!(
+        app.conflict_browser().is_some(),
+        "the next conflicting commit should re-open the browser"
+    );
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("step 2/2"),
+        "the banner should advance to the next step:\n{screen}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('t'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+
+    assert!(
+        app.conflict_browser().is_none(),
+        "the rebase should be complete"
+    );
+    assert_eq!(app.meta().head_branch.as_deref(), Some("main"));
+    assert!(
+        git_ok(
+            dir.path(),
+            &["merge-base", "--is-ancestor", "target", "main"]
+        ),
+        "main should now sit on top of target"
+    );
+}
+
+#[test]
+fn a_clean_rebase_replays_without_the_browser() {
+    let dir = TempDir::new().unwrap();
+    clean_rebase_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_rebase_onto_target(&mut app, &mut input);
+
+    assert!(
+        app.conflict_browser().is_none(),
+        "a clean rebase should not open the browser"
+    );
+    assert!(
+        git_ok(
+            dir.path(),
+            &["merge-base", "--is-ancestor", "target", "main"]
+        ),
+        "main should have been replayed onto target"
+    );
+}
+
+#[test]
+fn undo_reverts_a_clean_rebase() {
+    let dir = TempDir::new().unwrap();
+    clean_rebase_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_rebase_onto_target(&mut app, &mut input);
+    assert!(
+        app.conflict_browser().is_none(),
+        "the rebase should be clean"
+    );
+    assert!(git_ok(
+        dir.path(),
+        &["merge-base", "--is-ancestor", "target", "main"]
+    ));
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    assert!(
+        !git_ok(
+            dir.path(),
+            &["merge-base", "--is-ancestor", "target", "main"]
+        ),
+        "undo should take a clean rebase back off target"
+    );
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").summary,
+        "main work",
+        "undo should restore the pre-rebase tip"
+    );
+}
+
+#[test]
+fn aborting_a_rebase_returns_to_the_pre_rebase_tip() {
+    let dir = TempDir::new().unwrap();
+    rebase_conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_rebase_onto_target(&mut app, &mut input);
+    assert!(app.conflict_browser().is_some());
+
+    press(&mut app, &mut input, KeyCode::Esc);
+
+    assert!(app.conflict_browser().is_none());
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").summary,
+        "main c2",
+        "abort should restore the pre-rebase tip"
+    );
+    assert!(
+        !git_ok(
+            dir.path(),
+            &["merge-base", "--is-ancestor", "target", "main"]
+        ),
+        "the rebase should have been undone"
+    );
+}
+
+#[test]
+fn undo_reverts_a_completed_rebase() {
+    let dir = TempDir::new().unwrap();
+    rebase_conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_rebase_onto_target(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('t'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    press(&mut app, &mut input, KeyCode::Char('t'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    assert!(app.conflict_browser().is_none());
+    assert!(git_ok(
+        dir.path(),
+        &["merge-base", "--is-ancestor", "target", "main"]
+    ));
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").summary,
+        "main c2",
+        "undo should restore the pre-rebase tip"
+    );
+    assert!(
+        !git_ok(
+            dir.path(),
+            &["merge-base", "--is-ancestor", "target", "main"]
+        ),
+        "undo should take main back off target"
+    );
+}
+
+#[test]
+fn skipping_a_commit_drops_it_from_the_rebase() {
+    let dir = TempDir::new().unwrap();
+    rebase_conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_rebase_onto_target(&mut app, &mut input);
+    assert!(app.conflict_browser().is_some());
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    assert!(
+        app.conflict_browser().is_some(),
+        "skipping the first commit should advance to the next conflicting one"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('t'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+
+    assert!(app.conflict_browser().is_none());
+    let content = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
+    assert!(
+        content.contains("T1") && !content.contains("M1"),
+        "the skipped commit's change should be absent:\n{content}"
+    );
+}
+
+#[test]
+fn an_in_progress_rebase_is_detected_when_ogma_opens() {
+    let dir = TempDir::new().unwrap();
+    rebase_conflict_repo(dir.path());
+    let out = Command::new("git")
+        .current_dir(dir.path())
+        .args(["-c", "core.editor=true", "rebase", "target"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "the rebase should have conflicted");
+
+    let mut app = App::open(dir.path()).unwrap();
+
+    assert!(
+        app.conflict_browser()
+            .is_some_and(|b| b.op == ogma::conflict::OpKind::Rebase),
+        "an already-conflicted rebase should open the browser on startup"
+    );
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("rebase in progress"),
+        "the banner should show the rebase:\n{screen}"
+    );
+}
+
 fn code_repo(dir: &Path) {
     let run = |args: &[&str]| {
         let output = Command::new("git")

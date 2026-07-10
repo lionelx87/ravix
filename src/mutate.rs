@@ -130,6 +130,22 @@ impl GitCli {
         self.run(&["merge", "--abort"], None)
     }
 
+    pub fn rebase(&self, target: &str) -> Result<(), MutationError> {
+        self.run(&["-c", "core.editor=true", "rebase", target], None)
+    }
+
+    pub fn rebase_continue(&self) -> Result<(), MutationError> {
+        self.run(&["-c", "core.editor=true", "rebase", "--continue"], None)
+    }
+
+    pub fn rebase_skip(&self) -> Result<(), MutationError> {
+        self.run(&["rebase", "--skip"], None)
+    }
+
+    pub fn rebase_abort(&self) -> Result<(), MutationError> {
+        self.run(&["rebase", "--abort"], None)
+    }
+
     pub fn merge_tree(&self, ours: &str, theirs: &str, base: Option<&str>) -> MergeTreeResult {
         let mut args: Vec<String> = vec![
             "merge-tree".into(),

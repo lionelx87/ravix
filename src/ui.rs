@@ -8,7 +8,7 @@ use syntect::parsing::SyntaxReference;
 
 use crate::app::{App, BranchCreate, CommitEditor, Confirm, Panel};
 use crate::branches::BranchPanel;
-use crate::conflict::{ConflictBrowser, Segment, Side};
+use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::BadgeKind;
 use crate::join::JoinMenu;
@@ -548,7 +548,7 @@ fn render_conflict_browser(
     let files_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.warn))
-        .title(format!(" Conflicts · {} in progress ", browser.op.label()));
+        .title(" Conflicts ");
     let mut file_lines = Vec::new();
     for (index, file) in browser.files.iter().enumerate() {
         let selected = index == browser.file;
@@ -597,7 +597,17 @@ fn render_conflict_browser(
     let inner = block.inner(columns[1]);
     frame.render_widget(block, columns[1]);
 
-    let mut lines = Vec::new();
+    let progress = match browser.progress {
+        Some((current, total)) => format!(" · step {current}/{total}"),
+        None => String::new(),
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("{} in progress{progress}", browser.op.label()),
+            Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
     if let Some(file) = browser.focused_file() {
         let syntax = enrich::highlighter().language(&file.path);
         let mut conflict_index = 0;
@@ -654,9 +664,14 @@ fn render_conflict_browser(
             }
         }
     }
+    let skip = if browser.op == OpKind::Rebase {
+        " · [s] skip"
+    } else {
+        ""
+    };
     lines.push(Line::from(Span::styled(
         format!(
-            "[o] ours · [t] theirs · [e] edit · [c] continue · [A]/[Esc] abort — {} left",
+            "[o] ours · [t] theirs · [e] edit · [c] continue{skip} · [A]/[Esc] abort — {} left",
             browser.remaining()
         ),
         Style::default().fg(theme.meta),
@@ -699,7 +714,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("Enter", "open commit detail panel"),
         ("space", "checkout commit / stage file or hunk"),
         ("b", "branches: checkout · n new · d delete"),
-        ("M", "join: merge / cherry-pick (predicted)"),
+        ("M", "join: merge / cherry-pick / rebase (predicted)"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),
         ("u", "undo last action"),

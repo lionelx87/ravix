@@ -145,6 +145,7 @@ fn on_conflict_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('o') => Some(Action::TakeOurs),
         KeyCode::Char('t') => Some(Action::TakeTheirs),
         KeyCode::Char('e') => Some(Action::EditConflict),
+        KeyCode::Char('s') => Some(Action::SkipRebase),
         KeyCode::Char('c') => Some(Action::ContinueConflict),
         KeyCode::Char('A') | KeyCode::Esc => Some(Action::AbortConflict),
         KeyCode::Char('?') => Some(Action::ToggleHelp),

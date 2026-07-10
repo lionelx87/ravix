@@ -105,3 +105,13 @@ fn a_cherry_pick_inverts_to_resetting_head_back_to_the_previous_tip() {
         InversePlan::ResetKeep("def456".into())
     );
 }
+
+#[test]
+fn a_rebase_inverts_to_resetting_the_branch_back_to_its_pre_rebase_tip() {
+    assert_eq!(
+        invert(&UndoableAction::Rebased {
+            previous: "0ff5e7".into(),
+        }),
+        InversePlan::ResetKeep("0ff5e7".into())
+    );
+}

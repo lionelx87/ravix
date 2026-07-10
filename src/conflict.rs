@@ -92,6 +92,7 @@ pub fn conflict_count(segments: &[Segment]) -> usize {
 pub enum OpKind {
     Merge,
     CherryPick,
+    Rebase,
 }
 
 impl OpKind {
@@ -99,6 +100,7 @@ impl OpKind {
         match self {
             OpKind::Merge => "merge",
             OpKind::CherryPick => "cherry-pick",
+            OpKind::Rebase => "rebase",
         }
     }
 }
@@ -142,15 +144,17 @@ pub struct ConflictBrowser {
     pub files: Vec<ConflictFile>,
     pub file: usize,
     pub block: usize,
+    pub progress: Option<(usize, usize)>,
 }
 
 impl ConflictBrowser {
-    pub fn new(op: OpKind, files: Vec<ConflictFile>) -> Self {
+    pub fn new(op: OpKind, files: Vec<ConflictFile>, progress: Option<(usize, usize)>) -> Self {
         Self {
             op,
             files,
             file: 0,
             block: 0,
+            progress,
         }
     }
 

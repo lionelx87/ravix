@@ -316,8 +316,44 @@ impl Repo {
             git2::RepositoryState::CherryPick | git2::RepositoryState::CherryPickSequence => {
                 Some(OpKind::CherryPick)
             }
+            git2::RepositoryState::Rebase
+            | git2::RepositoryState::RebaseInteractive
+            | git2::RepositoryState::RebaseMerge => Some(OpKind::Rebase),
             _ => None,
         }
+    }
+
+    pub fn orig_head(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.inner.path().join("ORIG_HEAD")).ok()?;
+        let oid = text.trim().to_string();
+        (!oid.is_empty()).then_some(oid)
+    }
+
+    pub fn rebase_progress(&self) -> Option<(usize, usize)> {
+        let git_dir = self.inner.path();
+        for (dir, current, total) in [
+            ("rebase-merge", "msgnum", "end"),
+            ("rebase-apply", "next", "last"),
+        ] {
+            let base = git_dir.join(dir);
+            if let (Ok(current), Ok(total)) = (
+                std::fs::read_to_string(base.join(current)),
+                std::fs::read_to_string(base.join(total)),
+            ) {
+                return crate::rebase::parse_progress(&current, &total);
+            }
+        }
+        None
+    }
+
+    pub fn outgoing_count(&self, head: &str, target: &str) -> usize {
+        let (Ok(head), Ok(target)) = (Oid::from_str(head), Oid::from_str(target)) else {
+            return 0;
+        };
+        self.inner
+            .graph_ahead_behind(head, target)
+            .map(|(ahead, _)| ahead)
+            .unwrap_or(0)
     }
 
     pub fn conflicted_files(&self) -> Vec<String> {

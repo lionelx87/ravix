@@ -23,6 +23,7 @@ pub enum JoinStrategy {
     FastForward,
     MergeCommit,
     CherryPick,
+    Rebase,
 }
 
 pub struct JoinOption {
