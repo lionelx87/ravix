@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -7,6 +8,7 @@ use git2::{Oid, Repository, RepositoryInitOptions, Signature, Time};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::style::Color;
 use tempfile::TempDir;
 
 use ogma::app::{Action, App};
@@ -532,6 +534,83 @@ fn committing_from_the_editor_creates_a_commit() {
         !app.status().staged.iter().any(|f| f.path == "readme.md"),
         "readme.md should have been committed: {:?}",
         app.status()
+    );
+}
+
+fn code_repo(dir: &Path) {
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.name", "Demo"]);
+
+    std::fs::write(
+        dir.join("main.rs"),
+        "fn main() {\n    let value = 1;\n    println!(\"{}\", value);\n}\n",
+    )
+    .unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "initial commit"]);
+
+    std::fs::write(
+        dir.join("main.rs"),
+        "fn main() {\n    let result = 2;\n    println!(\"{}\", value);\n}\n",
+    )
+    .unwrap();
+}
+
+fn find_row(buffer: &Buffer, needle: &str) -> Option<u16> {
+    let area = buffer.area();
+    (0..area.height).find(|&y| {
+        let row: String = (0..area.width)
+            .map(|x| buffer.cell((x, y)).unwrap().symbol())
+            .collect();
+        row.contains(needle)
+    })
+}
+
+fn row_colors(buffer: &Buffer, y: u16, background: bool) -> HashSet<Color> {
+    let area = buffer.area();
+    (0..area.width)
+        .map(|x| {
+            let cell = buffer.cell((x, y)).unwrap();
+            if background { cell.bg } else { cell.fg }
+        })
+        .filter(|color| *color != Color::Reset)
+        .collect()
+}
+
+#[test]
+fn diff_view_syntax_highlights_and_marks_intraline_changes() {
+    let dir = TempDir::new().unwrap();
+    code_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    let buffer = draw(&mut app, 120, 30);
+
+    let context_row = find_row(&buffer, "fn main").expect("context line should render");
+    assert!(
+        row_colors(&buffer, context_row, false).len() >= 2,
+        "the context line should carry more than one syntax color"
+    );
+
+    let added_row = find_row(&buffer, "result").expect("added line should render");
+    assert!(
+        row_colors(&buffer, added_row, true).len() >= 2,
+        "the changed word should carry an intra-line emphasis background"
     );
 }
 

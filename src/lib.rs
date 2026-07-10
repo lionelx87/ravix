@@ -1,4 +1,5 @@
 pub mod app;
+pub mod enrich;
 pub mod event;
 pub mod git;
 pub mod graph;

@@ -4,7 +4,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use syntect::parsing::SyntaxReference;
+
 use crate::app::{App, CommitEditor, Confirm, Panel};
+use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::BadgeKind;
 use crate::working::{Focus, WorkingView};
 
@@ -30,6 +33,10 @@ pub struct Theme {
     untracked: Color,
     wip: Color,
     warn: Color,
+    add_bg: Color,
+    remove_bg: Color,
+    add_emph_bg: Color,
+    remove_emph_bg: Color,
 }
 
 impl Default for Theme {
@@ -63,6 +70,10 @@ impl Default for Theme {
             untracked: Color::Rgb(229, 192, 123),
             wip: Color::Rgb(229, 192, 123),
             warn: Color::Rgb(224, 108, 117),
+            add_bg: Color::Rgb(24, 42, 30),
+            remove_bg: Color::Rgb(48, 28, 30),
+            add_emph_bg: Color::Rgb(44, 82, 52),
+            remove_emph_bg: Color::Rgb(96, 42, 46),
         }
     }
 }
@@ -463,6 +474,7 @@ fn diff_lines(view: &WorkingView, theme: &Theme) -> Vec<Line<'static>> {
         ))];
     };
 
+    let syntax = enrich::highlighter().language(&diff.new_path);
     let mut lines = Vec::new();
     for (index, hunk) in diff.hunks.iter().enumerate() {
         let focused = view.focus == Focus::Hunks && index == view.hunk;
@@ -478,20 +490,115 @@ fn diff_lines(view: &WorkingView, theme: &Theme) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
-        for line in &hunk.lines {
-            let color = match line.chars().next() {
-                Some('+') => theme.added,
-                Some('-') => theme.removed,
-                _ => theme.meta,
-            };
-            lines.push(Line::from(Span::styled(
-                format!("  {line}"),
-                Style::default().fg(color),
-            )));
+        let emphasis = intraline_emphasis(&hunk.lines);
+        for (line, flags) in hunk.lines.iter().zip(&emphasis) {
+            lines.push(diff_body_line(line, flags, syntax, theme));
         }
         lines.push(Line::from(""));
     }
     lines
+}
+
+fn intraline_emphasis(lines: &[String]) -> Vec<Vec<bool>> {
+    let mut emphasis: Vec<Vec<bool>> = lines.iter().map(|_| Vec::new()).collect();
+    let mut index = 0;
+    while index < lines.len() {
+        if marker_of(&lines[index]) != '-' {
+            index += 1;
+            continue;
+        }
+        let removed_start = index;
+        while index < lines.len() && marker_of(&lines[index]) == '-' {
+            index += 1;
+        }
+        let added_start = index;
+        while index < lines.len() && marker_of(&lines[index]) == '+' {
+            index += 1;
+        }
+        let pairs = (added_start - removed_start).min(index - added_start);
+        for offset in 0..pairs {
+            let removed = removed_start + offset;
+            let added = added_start + offset;
+            let spans = word_diff(content_of(&lines[removed]), content_of(&lines[added]));
+            emphasis[removed] = emphasis_removed(&spans);
+            emphasis[added] = emphasis_added(&spans);
+        }
+    }
+    emphasis
+}
+
+fn diff_body_line(
+    line: &str,
+    emphasis: &[bool],
+    syntax: Option<&SyntaxReference>,
+    theme: &Theme,
+) -> Line<'static> {
+    let marker = marker_of(line);
+    let content = content_of(line);
+    let (gutter, base_bg, emph_bg) = match marker {
+        '+' => (theme.added, Some(theme.add_bg), Some(theme.add_emph_bg)),
+        '-' => (
+            theme.removed,
+            Some(theme.remove_bg),
+            Some(theme.remove_emph_bg),
+        ),
+        _ => (theme.meta, None, None),
+    };
+
+    let highlighted: Vec<(Color, String)> = match syntax {
+        Some(syntax) => enrich::highlighter()
+            .highlight(syntax, content)
+            .into_iter()
+            .map(|span| {
+                (
+                    Color::Rgb(span.color.0, span.color.1, span.color.2),
+                    span.text,
+                )
+            })
+            .collect(),
+        None => vec![(theme.summary, content.to_string())],
+    };
+
+    let mut spans = vec![Span::styled(
+        format!("{marker} "),
+        Style::default().fg(gutter).add_modifier(Modifier::BOLD),
+    )];
+
+    let mut char_index = 0;
+    for (fg, text) in highlighted {
+        let chars: Vec<char> = text.chars().collect();
+        let mut start = 0;
+        while start < chars.len() {
+            let emphasized = emphasis.get(char_index + start).copied().unwrap_or(false);
+            let mut end = start;
+            while end < chars.len()
+                && emphasis.get(char_index + end).copied().unwrap_or(false) == emphasized
+            {
+                end += 1;
+            }
+            let mut style = Style::default().fg(fg);
+            if let Some(bg) = if emphasized { emph_bg } else { base_bg } {
+                style = style.bg(bg);
+            }
+            spans.push(Span::styled(
+                chars[start..end].iter().collect::<String>(),
+                style,
+            ));
+            start = end;
+        }
+        char_index += chars.len();
+    }
+
+    Line::from(spans)
+}
+
+fn marker_of(line: &str) -> char {
+    line.chars().next().unwrap_or(' ')
+}
+
+fn content_of(line: &str) -> &str {
+    let marker = marker_of(line);
+    &line[marker.len_utf8().min(line.len())..]
 }
 
 fn section_title(title: &str, count: usize, theme: &Theme) -> Line<'static> {
