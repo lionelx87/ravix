@@ -126,6 +126,10 @@ impl GitCli {
         self.run(&["cherry-pick", "--abort"], None)
     }
 
+    pub fn merge_abort(&self) -> Result<(), MutationError> {
+        self.run(&["merge", "--abort"], None)
+    }
+
     pub fn merge_tree(&self, ours: &str, theirs: &str, base: Option<&str>) -> MergeTreeResult {
         let mut args: Vec<String> = vec![
             "merge-tree".into(),

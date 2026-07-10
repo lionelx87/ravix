@@ -4,6 +4,7 @@ use std::time::Duration;
 use git2::Oid;
 
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
+use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
 use crate::git::{
     BadgeKind, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus,
 };
@@ -48,6 +49,12 @@ pub enum Action {
     Checkout,
     OpenJoin,
     ExecuteJoin,
+    TakeOurs,
+    TakeTheirs,
+    ContinueConflict,
+    AbortConflict,
+    EditConflict,
+    ConflictNextFile,
     NewBranch,
     DeleteBranch,
     BranchNameInput(char),
@@ -69,6 +76,7 @@ pub enum InputContext {
     BranchName,
     Alert,
     Join,
+    Conflict,
 }
 
 pub struct Panel {
@@ -81,6 +89,7 @@ pub struct Panel {
 #[derive(Default)]
 pub struct CommitEditor {
     pub message: String,
+    finish: Option<OpKind>,
 }
 
 pub struct BranchCreate {
@@ -116,6 +125,8 @@ pub struct App {
     working: Option<WorkingView>,
     branch: Option<BranchPanel>,
     join: Option<JoinMenu>,
+    conflict: Option<ConflictBrowser>,
+    edit_request: Option<String>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
@@ -149,7 +160,7 @@ impl App {
         let exhausted = commits.len() < load_page;
         let rows = layout_rows(&commits);
         let status = repo.working_status().unwrap_or_default();
-        Ok(Self {
+        let mut app = Self {
             repo,
             cli,
             meta,
@@ -165,6 +176,8 @@ impl App {
             working: None,
             branch: None,
             join: None,
+            conflict: None,
+            edit_request: None,
             branch_create: None,
             commit: None,
             confirm: None,
@@ -175,7 +188,9 @@ impl App {
             panel: None,
             help_visible: false,
             should_quit: false,
-        })
+        };
+        app.detect_conflict();
+        Ok(app)
     }
 
     pub fn git_dir(&self) -> std::path::PathBuf {
@@ -238,6 +253,10 @@ impl App {
         self.join.as_ref()
     }
 
+    pub fn conflict_browser(&self) -> Option<&ConflictBrowser> {
+        self.conflict.as_ref()
+    }
+
     pub fn branch_create(&self) -> Option<&BranchCreate> {
         self.branch_create.as_ref()
     }
@@ -290,6 +309,8 @@ impl App {
             InputContext::BranchName
         } else if self.confirm.is_some() {
             InputContext::Confirm
+        } else if self.conflict.is_some() {
+            InputContext::Conflict
         } else if self.join.is_some() {
             InputContext::Join
         } else if self.branch.is_some() {
@@ -354,6 +375,16 @@ impl App {
             Action::Checkout => self.checkout(),
             Action::OpenJoin => self.open_join(),
             Action::ExecuteJoin => self.execute_join(),
+            Action::TakeOurs => self.resolve_block(Side::Ours),
+            Action::TakeTheirs => self.resolve_block(Side::Theirs),
+            Action::ContinueConflict => self.continue_conflict(),
+            Action::AbortConflict => self.abort_conflict(),
+            Action::EditConflict => self.request_edit(),
+            Action::ConflictNextFile => {
+                if let Some(browser) = &mut self.conflict {
+                    browser.move_file(1);
+                }
+            }
             Action::NewBranch => self.open_branch_create(),
             Action::DeleteBranch => self.request_delete_branch(),
             Action::BranchNameInput(character) => self.branch_name_input(character),
@@ -371,6 +402,10 @@ impl App {
     }
 
     fn move_down(&mut self, delta: isize) {
+        if let Some(browser) = &mut self.conflict {
+            browser.move_block(delta);
+            return;
+        }
         if let Some(menu) = &mut self.join {
             menu.move_selection(delta);
             return;
@@ -392,6 +427,10 @@ impl App {
     }
 
     fn move_up(&mut self, delta: isize) {
+        if let Some(browser) = &mut self.conflict {
+            browser.move_block(-delta);
+            return;
+        }
         if let Some(menu) = &mut self.join {
             menu.move_selection(-delta);
             return;
@@ -729,6 +768,10 @@ impl App {
             self.commit = Some(editor);
             return;
         }
+        if let Some(op) = editor.finish {
+            self.finish_conflict_commit(op, &editor.message);
+            return;
+        }
         let result = self.cli.commit(&editor.message);
         self.after_mutation_recording(result, UndoableAction::Committed);
         self.reload();
@@ -1010,13 +1053,16 @@ impl App {
                 strategy: JoinStrategy::MergeCommit,
                 label: "Merge commit".to_string(),
                 note: merge_note(&merge),
-                enabled: matches!(merge, MergePrediction::FastForward | MergePrediction::Clean),
+                enabled: !matches!(merge, MergePrediction::UpToDate),
             });
             options.push(JoinOption {
                 strategy: JoinStrategy::CherryPick,
                 label: "Cherry-pick tip".to_string(),
                 note: cherry_pick_note(&cherry),
-                enabled: matches!(cherry, MergePrediction::Clean),
+                enabled: matches!(
+                    cherry,
+                    MergePrediction::Clean | MergePrediction::Conflicts { .. }
+                ),
             });
             if let MergePrediction::Conflicts { files } = &merge {
                 conflict_files = files.clone();
@@ -1026,7 +1072,10 @@ impl App {
                 strategy: JoinStrategy::CherryPick,
                 label: "Cherry-pick".to_string(),
                 note: cherry_pick_note(&cherry),
-                enabled: matches!(cherry, MergePrediction::Clean),
+                enabled: matches!(
+                    cherry,
+                    MergePrediction::Clean | MergePrediction::Conflicts { .. }
+                ),
             });
             if let MergePrediction::Conflicts { files } = &cherry {
                 conflict_files = files.clone();
@@ -1080,12 +1129,7 @@ impl App {
             return;
         };
         if !option.enabled {
-            let reason = if !menu.conflict_files.is_empty() {
-                "conflicts resolve in Phase 3.3".to_string()
-            } else {
-                option.note.clone()
-            };
-            self.notice = Some(format!("Not available: {reason}"));
+            self.notice = Some(format!("Not available: {}", option.note));
             return;
         }
         let strategy = option.strategy;
@@ -1114,13 +1158,166 @@ impl App {
                 self.reload();
                 self.notice = Some(label.to_string());
             }
-            Err(error) => {
-                if strategy == JoinStrategy::CherryPick {
-                    let _ = self.cli.cherry_pick_abort();
-                }
-                self.notice = Some(error.to_string());
+            Err(error) => match self.repo.state_op() {
+                Some(op) => self.enter_conflict_browser(op),
+                None => self.notice = Some(error.to_string()),
+            },
+        }
+    }
+
+    fn load_conflict_files(&self) -> Vec<ConflictFile> {
+        self.repo
+            .conflicted_files()
+            .into_iter()
+            .filter_map(|path| {
+                self.repo
+                    .read_workdir_file(&path)
+                    .map(|content| ConflictFile::new(path, &content))
+            })
+            .collect()
+    }
+
+    fn detect_conflict(&mut self) {
+        if self.conflict.is_some() {
+            return;
+        }
+        if let Some(op) = self.repo.state_op() {
+            let files = self.load_conflict_files();
+            if !files.is_empty() {
+                self.conflict = Some(ConflictBrowser::new(op, files));
             }
         }
+    }
+
+    fn enter_conflict_browser(&mut self, op: OpKind) {
+        let files = self.load_conflict_files();
+        self.join = None;
+        self.conflict = Some(ConflictBrowser::new(op, files));
+    }
+
+    fn refresh_conflict_files(&mut self) {
+        let files = self.load_conflict_files();
+        if let Some(browser) = &mut self.conflict {
+            browser.file = browser.file.min(files.len().saturating_sub(1));
+            browser.block = 0;
+            browser.files = files;
+        }
+    }
+
+    fn resolve_block(&mut self, side: Side) {
+        let finalize = {
+            let Some(browser) = &mut self.conflict else {
+                return;
+            };
+            let Some(file) = browser.files.get_mut(browser.file) else {
+                return;
+            };
+            if file.choices.is_empty() {
+                return;
+            }
+            let block = browser.block.min(file.choices.len() - 1);
+            file.choices[block] = Some(side);
+            if file.is_resolved() {
+                file.resolved_text().map(|text| (file.path.clone(), text))
+            } else {
+                browser.block = file
+                    .choices
+                    .iter()
+                    .position(Option::is_none)
+                    .unwrap_or(block);
+                None
+            }
+        };
+        if let Some((path, text)) = finalize {
+            if self.repo.write_workdir_file(&path, &text) {
+                let _ = self.cli.stage_file(&path);
+            }
+            self.refresh_conflict_files();
+        }
+    }
+
+    fn continue_conflict(&mut self) {
+        let Some(browser) = self.conflict.as_ref() else {
+            return;
+        };
+        if !browser.files.is_empty() {
+            self.notice = Some("Resolve every conflict first".to_string());
+            return;
+        }
+        let op = browser.op;
+        let message = self.repo.pending_message().unwrap_or_default();
+        self.commit = Some(CommitEditor {
+            message,
+            finish: Some(op),
+        });
+    }
+
+    fn finish_conflict_commit(&mut self, op: OpKind, message: &str) {
+        let previous = self.repo.head_oid();
+        match self.cli.commit(message) {
+            Ok(()) => {
+                if let Some(previous) = previous {
+                    self.last_action = Some(match op {
+                        OpKind::Merge => UndoableAction::Merged { previous },
+                        OpKind::CherryPick => UndoableAction::CherryPicked { previous },
+                    });
+                }
+                self.conflict = None;
+                self.reload();
+                self.notice = Some(format!("Resolved {}", op.label()));
+            }
+            Err(error) => self.notice = Some(error.to_string()),
+        }
+    }
+
+    fn request_edit(&mut self) {
+        if let Some(path) = self
+            .conflict
+            .as_ref()
+            .and_then(ConflictBrowser::focused_file)
+            .map(|file| file.path.clone())
+        {
+            self.edit_request = Some(path);
+        }
+    }
+
+    pub fn pending_edit_path(&self) -> Option<std::path::PathBuf> {
+        let path = self.edit_request.as_ref()?;
+        Some(
+            self.repo
+                .workdir()
+                .unwrap_or_else(|| self.repo.git_dir())
+                .join(path),
+        )
+    }
+
+    pub fn finish_edit(&mut self) {
+        let Some(path) = self.edit_request.take() else {
+            return;
+        };
+        if let Some(content) = self.repo.read_workdir_file(&path)
+            && conflict_count(&parse(&content)) == 0
+        {
+            let _ = self.cli.stage_file(&path);
+        }
+        self.refresh_conflict_files();
+    }
+
+    fn abort_conflict(&mut self) {
+        let Some(browser) = self.conflict.as_ref() else {
+            return;
+        };
+        let op = browser.op;
+        let result = match op {
+            OpKind::Merge => self.cli.merge_abort(),
+            OpKind::CherryPick => self.cli.cherry_pick_abort(),
+        };
+        self.conflict = None;
+        self.notice = Some(match result {
+            Ok(()) => format!("Aborted {}", op.label()),
+            Err(error) => error.to_string(),
+        });
+        self.reload();
     }
 
     fn request_delete_branch(&mut self) {
@@ -1259,6 +1456,7 @@ impl App {
         self.scroll_into_view();
         self.refresh_status();
         self.refresh_branch_entries();
+        self.detect_conflict();
     }
 
     fn find_loading(&mut self, id: Oid) -> Option<usize> {

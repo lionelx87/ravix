@@ -8,6 +8,7 @@ use syntect::parsing::SyntaxReference;
 
 use crate::app::{App, BranchCreate, CommitEditor, Confirm, Panel};
 use crate::branches::BranchPanel;
+use crate::conflict::{ConflictBrowser, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::BadgeKind;
 use crate::join::JoinMenu;
@@ -147,6 +148,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     if let Some(menu) = app.join_menu() {
         render_join_menu(frame, menu, &theme, graph_area);
+    }
+    if let Some(browser) = app.conflict_browser() {
+        render_conflict_browser(frame, browser, &theme, graph_area);
     }
     if let Some(editor) = app.commit_editor() {
         render_commit_editor(frame, editor, &theme, area);
@@ -518,7 +522,7 @@ fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rec
             )));
         }
         lines.push(Line::from(Span::styled(
-            "resolving conflicts arrives in Phase 3.3",
+            "[Enter] proceeds into the conflict browser",
             Style::default().fg(theme.meta),
         )));
     }
@@ -530,6 +534,160 @@ fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rec
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_conflict_browser(
+    frame: &mut Frame,
+    browser: &ConflictBrowser,
+    theme: &Theme,
+    area: Rect,
+) {
+    frame.render_widget(Clear, area);
+    let columns = Layout::horizontal([Constraint::Length(38), Constraint::Min(0)]).split(area);
+
+    let files_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.warn))
+        .title(format!(" Conflicts · {} in progress ", browser.op.label()));
+    let mut file_lines = Vec::new();
+    for (index, file) in browser.files.iter().enumerate() {
+        let selected = index == browser.file;
+        let (mark, mark_color) = if file.is_resolved() {
+            ("✓", theme.added)
+        } else {
+            ("◆", theme.warn)
+        };
+        file_lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "❯ " } else { "  " },
+                Style::default().fg(theme.marker),
+            ),
+            Span::styled(
+                format!("{mark} "),
+                Style::default().fg(mark_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                file.path.clone(),
+                Style::default().fg(if selected { theme.node } else { theme.summary }),
+            ),
+            Span::styled(
+                format!("  ({} blocks)", file.count()),
+                Style::default().fg(theme.meta),
+            ),
+        ]));
+    }
+    if file_lines.is_empty() {
+        file_lines.push(Line::from(Span::styled(
+            "all resolved — press [c] to continue",
+            Style::default()
+                .fg(theme.added)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    frame.render_widget(Paragraph::new(file_lines).block(files_block), columns[0]);
+
+    let title = browser
+        .focused_file()
+        .map(|file| format!(" {} ", file.path))
+        .unwrap_or_else(|| " Conflict ".to_string());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.label))
+        .title(title);
+    let inner = block.inner(columns[1]);
+    frame.render_widget(block, columns[1]);
+
+    let mut lines = Vec::new();
+    if let Some(file) = browser.focused_file() {
+        let syntax = enrich::highlighter().language(&file.path);
+        let mut conflict_index = 0;
+        for segment in &file.segments {
+            match segment {
+                Segment::Context(context) => {
+                    for line in context {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {line}"),
+                            Style::default().fg(theme.meta),
+                        )));
+                    }
+                }
+                Segment::Conflict { ours, theirs } => {
+                    let focused = conflict_index == browser.block;
+                    let choice = file.choices.get(conflict_index).copied().flatten();
+                    let taken = match choice {
+                        Some(Side::Ours) => "  · took OURS",
+                        Some(Side::Theirs) => "  · took THEIRS",
+                        None => "",
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "{} conflict {}/{}{taken}",
+                            if focused { "❯" } else { " " },
+                            conflict_index + 1,
+                            file.count(),
+                        ),
+                        Style::default()
+                            .fg(theme.branch_badge)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "  ── OURS ──",
+                        Style::default()
+                            .fg(theme.added)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for line in ours {
+                        lines.push(conflict_code_line(line, syntax, theme.add_bg, theme));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        "  ── THEIRS ──",
+                        Style::default()
+                            .fg(theme.removed)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for line in theirs {
+                        lines.push(conflict_code_line(line, syntax, theme.remove_bg, theme));
+                    }
+                    lines.push(Line::from(""));
+                    conflict_index += 1;
+                }
+            }
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        format!(
+            "[o] ours · [t] theirs · [e] edit · [c] continue · [A]/[Esc] abort — {} left",
+            browser.remaining()
+        ),
+        Style::default().fg(theme.meta),
+    )));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn conflict_code_line(
+    text: &str,
+    syntax: Option<&SyntaxReference>,
+    bg: Color,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled("  ", Style::default().bg(bg))];
+    let highlighted: Vec<(Color, String)> = match syntax {
+        Some(syntax) => enrich::highlighter()
+            .highlight(syntax, text)
+            .into_iter()
+            .map(|span| {
+                (
+                    Color::Rgb(span.color.0, span.color.1, span.color.2),
+                    span.text,
+                )
+            })
+            .collect(),
+        None => vec![(theme.summary, text.to_string())],
+    };
+    for (fg, chunk) in highlighted {
+        spans.push(Span::styled(chunk, Style::default().fg(fg).bg(bg)));
+    }
+    Line::from(spans)
 }
 
 fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {

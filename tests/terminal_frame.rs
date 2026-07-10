@@ -1197,7 +1197,7 @@ fn cherry_pick_lands_the_source_change_on_head() {
 }
 
 #[test]
-fn a_conflict_prediction_lists_files_and_blocks_execution() {
+fn a_conflict_prediction_still_lists_the_files_in_the_menu() {
     let dir = TempDir::new().unwrap();
     conflict_repo(dir.path());
     let mut app = App::open(dir.path()).unwrap();
@@ -1209,23 +1209,223 @@ fn a_conflict_prediction_lists_files_and_blocks_execution() {
         screen.contains("Conflicts") && screen.contains("app.txt"),
         "the conflict prediction should list the files:\n{screen}"
     );
-    assert!(
-        screen.contains("Phase 3.3"),
-        "a note should defer resolution:\n{screen}"
-    );
+}
 
+#[test]
+fn a_conflict_merge_proceeds_into_the_conflict_browser() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
     press(&mut app, &mut input, KeyCode::Char('j'));
     press(&mut app, &mut input, KeyCode::Enter);
 
     assert!(
-        app.notice().is_some_and(|n| n.contains("Not available")),
-        "executing a blocked strategy should be refused: {:?}",
-        app.notice()
+        app.conflict_browser().is_some(),
+        "a conflict merge should open the conflict browser instead of blocking"
+    );
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("merge in progress"),
+        "the browser should show the in-progress operation:\n{screen}"
+    );
+    assert!(
+        screen.contains("app.txt") && screen.contains("OURS") && screen.contains("THEIRS"),
+        "the browser should render the conflicted file 3-way:\n{screen}"
+    );
+}
+
+#[test]
+fn resolving_every_block_and_continuing_completes_the_merge() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    assert!(app.conflict_browser().is_some());
+
+    press(&mut app, &mut input, KeyCode::Char('o'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(
+        app.conflict_browser().is_none(),
+        "continuing should leave the browser"
+    );
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").parents.len(),
+        2,
+        "the resolved merge should produce a two-parent commit"
+    );
+    let content = std::fs::read_to_string(dir.path().join("app.txt")).unwrap();
+    assert!(
+        content.contains("main"),
+        "taking ours should have kept HEAD's side:\n{content}"
+    );
+}
+
+#[test]
+fn continue_opens_an_editable_commit_message() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Char('o'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+
+    let editor = app
+        .commit_editor()
+        .expect("continue should open a commit editor");
+    assert!(
+        !editor.message.trim().is_empty(),
+        "the editor should be prefilled with the default message"
+    );
+
+    for character in " EDITED".chars() {
+        press(&mut app, &mut input, KeyCode::Char(character));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    let head = app.head_commit().expect("HEAD commit");
+    assert_eq!(head.parents.len(), 2, "the merge should have completed");
+    assert!(
+        head.summary.contains("EDITED"),
+        "the custom commit message should be used: {}",
+        head.summary
+    );
+}
+
+#[test]
+fn editing_externally_resolves_a_conflict_when_markers_are_removed() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    assert!(app.conflict_browser().is_some());
+
+    press(&mut app, &mut input, KeyCode::Char('e'));
+    let path = app
+        .pending_edit_path()
+        .expect("[e] should request an external edit");
+    assert!(path.ends_with("app.txt"));
+
+    std::fs::write(&path, "combined by hand\n").unwrap();
+    app.finish_edit();
+
+    assert!(
+        app.conflict_browser().is_some_and(|b| b.files.is_empty()),
+        "a manually resolved file should drop out of the browser"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert_eq!(app.head_commit().expect("HEAD commit").parents.len(), 2);
+    let content = std::fs::read_to_string(dir.path().join("app.txt")).unwrap();
+    assert!(
+        content.contains("combined by hand"),
+        "the manual resolution should be committed:\n{content}"
+    );
+}
+
+#[test]
+fn aborting_a_conflict_returns_to_the_pre_op_commit() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    assert!(app.conflict_browser().is_some());
+
+    press(&mut app, &mut input, KeyCode::Esc);
+
+    assert!(
+        app.conflict_browser().is_none(),
+        "Esc should abort and leave the browser"
     );
     assert_eq!(
         app.head_commit().expect("HEAD commit").summary,
         "main edit",
-        "no integration should have happened"
+        "abort should return to the pre-merge commit"
+    );
+    assert!(
+        !app.has_wip(),
+        "the working tree should be clean after an abort"
+    );
+}
+
+#[test]
+fn a_conflict_cherry_pick_resolves_through_the_browser() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_join_on_feature(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(
+        app.conflict_browser().is_some(),
+        "a conflicting cherry-pick should open the browser"
+    );
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("cherry-pick in progress"),
+        "the browser should show a cherry-pick in progress:\n{screen}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('t'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(app.conflict_browser().is_none());
+    let head = app.head_commit().expect("HEAD commit");
+    assert_eq!(
+        head.summary, "feature edit",
+        "the cherry-picked commit should land on HEAD with its default message"
+    );
+    assert_eq!(head.parents.len(), 1, "a cherry-pick is single-parent");
+}
+
+#[test]
+fn an_in_progress_merge_is_detected_when_ogma_opens() {
+    let dir = TempDir::new().unwrap();
+    conflict_repo(dir.path());
+    let out = Command::new("git")
+        .current_dir(dir.path())
+        .args(["merge", "--no-ff", "feature"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "the merge should have conflicted");
+
+    let mut app = App::open(dir.path()).unwrap();
+
+    assert!(
+        app.conflict_browser().is_some(),
+        "an already-conflicted merge should open the browser on startup"
+    );
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("app.txt"),
+        "the conflicted file should be shown:\n{screen}"
     );
 }
 

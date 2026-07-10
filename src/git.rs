@@ -5,6 +5,7 @@ use std::path::Path;
 use git2::{BranchType, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions};
 
 use crate::branches::BranchInput;
+use crate::conflict::OpKind;
 use crate::staging::{FileDiff, Hunk};
 
 #[derive(Debug, Clone)]
@@ -307,6 +308,54 @@ impl Repo {
             });
         }
         Ok(changes)
+    }
+
+    pub fn state_op(&self) -> Option<OpKind> {
+        match self.inner.state() {
+            git2::RepositoryState::Merge => Some(OpKind::Merge),
+            git2::RepositoryState::CherryPick | git2::RepositoryState::CherryPickSequence => {
+                Some(OpKind::CherryPick)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn conflicted_files(&self) -> Vec<String> {
+        let mut options = StatusOptions::new();
+        options.include_untracked(false);
+        let Ok(statuses) = self.inner.statuses(Some(&mut options)) else {
+            return Vec::new();
+        };
+        statuses
+            .iter()
+            .filter(|entry| entry.status().is_conflicted())
+            .map(|entry| entry.path().unwrap_or("").to_string())
+            .filter(|path| !path.is_empty())
+            .collect()
+    }
+
+    pub fn pending_message(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.inner.path().join("MERGE_MSG")).ok()?;
+        let message = text
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+        (!message.is_empty()).then_some(message)
+    }
+
+    pub fn read_workdir_file(&self, path: &str) -> Option<String> {
+        let workdir = self.inner.workdir()?;
+        std::fs::read_to_string(workdir.join(path)).ok()
+    }
+
+    pub fn write_workdir_file(&self, path: &str, content: &str) -> bool {
+        let Some(workdir) = self.inner.workdir() else {
+            return false;
+        };
+        std::fs::write(workdir.join(path), content).is_ok()
     }
 
     pub fn working_status(&self) -> Result<WorkingStatus, git2::Error> {

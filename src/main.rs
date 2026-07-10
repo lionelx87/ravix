@@ -67,6 +67,13 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
             }
         }
 
+        if let Some(path) = app.pending_edit_path() {
+            edit_in_editor(terminal, &path)?;
+            app.finish_edit();
+            last_tick = Instant::now();
+            continue;
+        }
+
         let elapsed = last_tick.elapsed();
         last_tick = Instant::now();
         if app.is_animating() {
@@ -77,6 +84,17 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
             app.update(Action::Reload);
         }
     }
+}
+
+fn edit_in_editor(terminal: &mut DefaultTerminal, path: &std::path::Path) -> io::Result<()> {
+    ratatui::restore();
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let status = std::process::Command::new(editor).arg(path).status();
+    *terminal = ratatui::init();
+    terminal.clear()?;
+    status.map(|_| ())
 }
 
 fn now_seconds() -> i64 {
