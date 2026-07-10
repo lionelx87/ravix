@@ -4,6 +4,7 @@ use std::path::Path;
 
 use git2::{BranchType, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions};
 
+use crate::branches::BranchInput;
 use crate::staging::{FileDiff, Hunk};
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub struct CommitInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeKind {
     Head,
+    CurrentBranch,
     LocalBranch,
     Upstream,
 }
@@ -152,6 +154,50 @@ impl Repo {
         } else {
             None
         }
+    }
+
+    pub fn head_ref(&self) -> Option<String> {
+        if let Some(branch) = self.head_branch() {
+            return Some(branch);
+        }
+        let head = self.inner.head().ok()?;
+        head.target().map(|oid| oid.to_string())
+    }
+
+    pub fn branch_tip(&self, name: &str) -> Option<String> {
+        let branch = self.inner.find_branch(name, BranchType::Local).ok()?;
+        branch.get().target().map(|oid| oid.to_string())
+    }
+
+    pub fn branches(&self) -> Result<Vec<BranchInput>, git2::Error> {
+        let mut out = Vec::new();
+        for branch in self.inner.branches(Some(BranchType::Local))? {
+            let (branch, _) = branch?;
+            let Some(name) = branch.name()?.map(str::to_string) else {
+                continue;
+            };
+            let local_oid = branch.get().target();
+            let (upstream, ahead, behind) = match branch.upstream() {
+                Ok(upstream) => {
+                    let up_name = upstream.name().ok().flatten().map(str::to_string);
+                    let ahead_behind = match (local_oid, upstream.get().target()) {
+                        (Some(local), Some(up)) => {
+                            self.inner.graph_ahead_behind(local, up).unwrap_or((0, 0))
+                        }
+                        _ => (0, 0),
+                    };
+                    (up_name, ahead_behind.0, ahead_behind.1)
+                }
+                Err(_) => (None, 0, 0),
+            };
+            out.push(BranchInput {
+                name,
+                upstream,
+                ahead,
+                behind,
+            });
+        }
+        Ok(out)
     }
 
     pub fn meta(&self) -> Result<RepoMeta, git2::Error> {
@@ -365,8 +411,10 @@ impl Repo {
 
     fn collect_badges(&self) -> Result<HashMap<Oid, Vec<RefBadge>>, git2::Error> {
         let mut badges: HashMap<Oid, Vec<RefBadge>> = HashMap::new();
+        let head_branch = self.head_branch();
 
-        if let Ok(head) = self.inner.head()
+        if head_branch.is_none()
+            && let Ok(head) = self.inner.head()
             && let Some(oid) = head.target()
         {
             badges.entry(oid).or_default().push(RefBadge {
@@ -381,10 +429,15 @@ impl Repo {
                 continue;
             };
             if let Some(name) = branch.name()?.map(str::to_string) {
-                badges.entry(oid).or_default().push(RefBadge {
-                    label: name,
-                    kind: BadgeKind::LocalBranch,
-                });
+                let kind = if head_branch.as_ref() == Some(&name) {
+                    BadgeKind::CurrentBranch
+                } else {
+                    BadgeKind::LocalBranch
+                };
+                badges
+                    .entry(oid)
+                    .or_default()
+                    .push(RefBadge { label: name, kind });
             }
 
             if let Ok(upstream) = branch.upstream()

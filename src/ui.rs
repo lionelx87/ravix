@@ -6,7 +6,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use syntect::parsing::SyntaxReference;
 
-use crate::app::{App, CommitEditor, Confirm, Panel};
+use crate::app::{App, BranchCreate, CommitEditor, Confirm, Panel};
+use crate::branches::BranchPanel;
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::BadgeKind;
 use crate::working::{Focus, WorkingView};
@@ -85,7 +86,7 @@ impl Theme {
 
     fn badge_style(&self, kind: BadgeKind) -> Style {
         let color = match kind {
-            BadgeKind::Head => self.head_badge,
+            BadgeKind::Head | BadgeKind::CurrentBranch => self.head_badge,
             BadgeKind::LocalBranch => self.branch_badge,
             BadgeKind::Upstream => self.upstream_badge,
         };
@@ -137,11 +138,20 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     if let Some(panel) = app.panel() {
         render_panel(frame, app, panel, &theme, graph_area);
     }
+    if let Some(panel) = app.branch_panel() {
+        render_branch_panel(frame, panel, &theme, graph_area);
+    }
     if let Some(editor) = app.commit_editor() {
         render_commit_editor(frame, editor, &theme, area);
     }
+    if let Some(editor) = app.branch_create() {
+        render_branch_create(frame, editor, &theme, area);
+    }
     if let Some(confirm) = app.confirm() {
         render_confirm(frame, confirm, &theme, area);
+    }
+    if let Some(message) = app.alert() {
+        render_alert(frame, message, &theme, area);
     }
     if app.help_visible() {
         render_help(frame, &theme, area);
@@ -193,11 +203,17 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
         spans.push(Span::raw("  "));
 
         if let Some(commit_badges) = badges.get(&commit.id) {
+            let flash = app.checkout_flash();
             for badge in commit_badges {
-                spans.push(Span::styled(
-                    format!(" {} ", badge.label),
-                    theme.badge_style(badge.kind),
-                ));
+                let text = match badge.kind {
+                    BadgeKind::CurrentBranch => format!(" HEAD → {} ", badge.label),
+                    _ => format!(" {} ", badge.label),
+                };
+                let mut style = theme.badge_style(badge.kind);
+                if badge.kind == BadgeKind::CurrentBranch && flash > 0.0 {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                spans.push(Span::styled(text, style));
                 spans.push(Span::raw(" "));
             }
         }
@@ -332,6 +348,66 @@ fn render_panel(frame: &mut Frame, app: &App, panel: &Panel, theme: &Theme, area
     frame.render_widget(paragraph, inner);
 }
 
+fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, area: Rect) {
+    let eased = ease_out_cubic(panel.slide);
+    let full_width = ((area.width as f32) * 0.4).max(34.0).min(area.width as f32) as u16;
+    let visible = ((full_width as f32) * eased).round() as u16;
+    if visible < 6 {
+        return;
+    }
+
+    let rect = Rect {
+        x: area.right() - visible,
+        y: area.y,
+        width: visible,
+        height: area.height,
+    };
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Branches   [Enter] checkout · [n] new · [d] delete ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let mut lines = Vec::new();
+    for (index, entry) in panel.entries.iter().enumerate() {
+        let selected = index == panel.selected;
+        let mut spans = vec![
+            Span::styled(
+                if selected { "❯ " } else { "  " },
+                Style::default().fg(theme.marker),
+            ),
+            Span::styled(
+                if entry.is_head { "● " } else { "  " },
+                Style::default()
+                    .fg(theme.head_badge)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                entry.name.clone(),
+                Style::default().fg(if selected { theme.node } else { theme.summary }),
+            ),
+        ];
+        if entry.ahead > 0 || entry.behind > 0 {
+            spans.push(Span::styled(
+                format!("  ↑{} ↓{}", entry.ahead, entry.behind),
+                Style::default().fg(theme.meta),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no local branches",
+            Style::default().fg(theme.meta),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     let bindings = [
         ("j / ↓", "select next commit"),
@@ -339,7 +415,8 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("gg / G", "jump to first / last"),
         ("PgUp / PgDn", "page up / down"),
         ("Enter", "open commit detail panel"),
-        ("space", "stage / unstage file or hunk"),
+        ("space", "checkout commit / stage file or hunk"),
+        ("b", "branches: checkout · n new · d delete"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),
         ("u", "undo last action"),
@@ -714,6 +791,52 @@ fn render_commit_editor(frame: &mut Frame, editor: &CommitEditor, theme: &Theme,
         Span::styled("█", Style::default().fg(theme.branch_badge)),
     ]);
     frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_branch_create(frame: &mut Frame, editor: &BranchCreate, theme: &Theme, area: Rect) {
+    let width = 48u16.min(area.width);
+    let height = 3u16.min(area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" New branch   [Enter] create · [Esc] cancel ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let line = Line::from(vec![
+        Span::styled(editor.name.clone(), Style::default().fg(theme.node)),
+        Span::styled("█", Style::default().fg(theme.branch_badge)),
+    ]);
+    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_alert(frame: &mut Frame, message: &str, theme: &Theme, area: Rect) {
+    let width = (message.chars().count() as u16 + 4).clamp(24, area.width);
+    let height = 4u16.min(area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.warn))
+        .title(" ⚠ Blocked ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(theme.node).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "press any key to dismiss",
+            Style::default().fg(theme.meta),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_confirm(frame: &mut Frame, confirm: &Confirm, theme: &Theme, area: Rect) {

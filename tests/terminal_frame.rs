@@ -537,6 +537,513 @@ fn committing_from_the_editor_creates_a_commit() {
     );
 }
 
+#[test]
+fn b_opens_the_branch_list_marking_the_current_branch() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 80, 20));
+
+    assert!(
+        screen.contains("Branches"),
+        "branch panel title missing:\n{screen}"
+    );
+    assert!(screen.contains("main"), "branch missing:\n{screen}");
+    assert!(screen.contains("feature"), "branch missing:\n{screen}");
+    assert!(
+        screen.contains('●'),
+        "the current branch should carry a HEAD marker:\n{screen}"
+    );
+}
+
+#[test]
+fn enter_checks_out_the_focused_branch() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("feature"),
+        "HEAD should have moved to the checked-out branch"
+    );
+    let screen = dump(&draw(&mut app, 80, 20));
+    assert!(
+        screen.contains("⎇ feature"),
+        "the status bar should show the new branch:\n{screen}"
+    );
+}
+
+#[test]
+fn undo_returns_to_the_previous_branch_after_checkout() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    assert_eq!(app.meta().head_branch.as_deref(), Some("feature"));
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+    settle(&mut app);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("main"),
+        "undo should return to the branch we came from"
+    );
+}
+
+#[test]
+fn n_creates_a_branch_and_switches_to_it() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('n'));
+    for character in "spike".chars() {
+        press(&mut app, &mut input, KeyCode::Char(character));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("spike"),
+        "a created branch should become the current one"
+    );
+    let screen = dump(&draw(&mut app, 80, 20));
+    assert!(
+        screen.contains("spike"),
+        "the new branch should show as a badge:\n{screen}"
+    );
+}
+
+#[test]
+fn undo_drops_a_created_branch_and_returns_to_the_previous_one() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('n'));
+    for character in "spike".chars() {
+        press(&mut app, &mut input, KeyCode::Char(character));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    assert_eq!(app.meta().head_branch.as_deref(), Some("spike"));
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+    settle(&mut app);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("main"),
+        "undo should switch back to the previous branch"
+    );
+    let has_spike = app
+        .meta()
+        .badges
+        .values()
+        .flatten()
+        .any(|badge| badge.label == "spike");
+    assert!(!has_spike, "the created branch should be gone");
+}
+
+fn delete_repo(dir: &Path) {
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.name", "Demo"]);
+
+    std::fs::write(dir.join("app.txt"), "one\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "one"]);
+    run(&["branch", "stale"]);
+
+    run(&["switch", "-c", "feature"]);
+    std::fs::write(dir.join("feature.txt"), "wip\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "feature work"]);
+
+    run(&["switch", "main"]);
+    std::fs::write(dir.join("app.txt"), "one\ntwo\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "two"]);
+}
+
+fn branch_labels(app: &App) -> Vec<String> {
+    app.meta()
+        .badges
+        .values()
+        .flatten()
+        .map(|badge| badge.label.clone())
+        .collect()
+}
+
+#[test]
+fn d_deletes_a_merged_branch_after_confirmation() {
+    let dir = TempDir::new().unwrap();
+    delete_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('d'));
+    assert!(
+        app.confirm().is_some(),
+        "delete should ask for confirmation"
+    );
+    press(&mut app, &mut input, KeyCode::Char('y'));
+    settle(&mut app);
+
+    assert!(
+        !branch_labels(&app).contains(&"stale".to_string()),
+        "the merged branch should be gone: {:?}",
+        branch_labels(&app)
+    );
+}
+
+#[test]
+fn deleting_an_unmerged_branch_escalates_to_a_force_confirmation() {
+    let dir = TempDir::new().unwrap();
+    delete_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('d'));
+    press(&mut app, &mut input, KeyCode::Char('y'));
+
+    let confirm = app.confirm().expect("an unmerged delete should escalate");
+    assert!(
+        confirm.message.contains("Force"),
+        "the escalation should ask to force: {}",
+        confirm.message
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('y'));
+    settle(&mut app);
+    assert!(
+        !branch_labels(&app).contains(&"feature".to_string()),
+        "forcing should delete the unmerged branch: {:?}",
+        branch_labels(&app)
+    );
+}
+
+#[test]
+fn deleting_the_current_branch_is_blocked() {
+    let dir = TempDir::new().unwrap();
+    delete_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('d'));
+
+    assert!(
+        app.confirm().is_none(),
+        "no confirmation for the current branch"
+    );
+    assert!(
+        app.alert().is_some(),
+        "a blocking alert modal should appear"
+    );
+    let screen = dump(&draw(&mut app, 80, 20));
+    assert!(
+        screen.contains("Blocked") && screen.contains("current branch"),
+        "the alert modal should explain the block:\n{screen}"
+    );
+    assert!(
+        branch_labels(&app).contains(&"main".to_string()),
+        "main should still exist"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('x'));
+    assert!(app.alert().is_none(), "any key should dismiss the alert");
+}
+
+#[test]
+fn undo_recreates_a_deleted_branch() {
+    let dir = TempDir::new().unwrap();
+    delete_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('d'));
+    press(&mut app, &mut input, KeyCode::Char('y'));
+    settle(&mut app);
+    assert!(!branch_labels(&app).contains(&"stale".to_string()));
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+    settle(&mut app);
+
+    assert!(
+        branch_labels(&app).contains(&"stale".to_string()),
+        "undo should recreate the deleted branch: {:?}",
+        branch_labels(&app)
+    );
+}
+
+#[test]
+fn space_on_the_graph_checks_out_a_branch_at_the_selected_commit() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    settle(&mut app);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("feature"),
+        "selecting the feature commit and checking out should attach to its branch"
+    );
+}
+
+#[test]
+fn space_on_a_branchless_commit_checks_out_detached() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('G'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    settle(&mut app);
+
+    assert_eq!(
+        app.meta().head_branch,
+        None,
+        "checking out a branchless commit should detach HEAD"
+    );
+}
+
+#[test]
+fn checking_out_reports_the_branch_you_landed_on() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    assert_eq!(app.notice(), Some("On feature"));
+}
+
+#[test]
+fn a_detached_checkout_reports_it() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('G'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    settle(&mut app);
+
+    let notice = app.notice().expect("a detached checkout should report");
+    assert!(
+        notice.starts_with("Detached HEAD at"),
+        "notice should announce the detached HEAD: {notice}"
+    );
+}
+
+#[test]
+fn the_current_branch_shows_fused_with_head_on_the_graph() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+
+    let screen = dump(&draw(&mut app, 80, 20));
+
+    assert!(
+        screen.contains("HEAD → main"),
+        "the checked-out branch should read as HEAD → main:\n{screen}"
+    );
+}
+
+#[test]
+fn a_checkout_flashes_then_settles() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(
+        app.checkout_flash() > 0.0,
+        "a fresh checkout should trigger the celebration flash"
+    );
+
+    settle(&mut app);
+    assert_eq!(
+        app.checkout_flash(),
+        0.0,
+        "the flash should decay back to rest"
+    );
+}
+
+fn upstream_repo(work: &Path, remote: &Path) {
+    let run_in = |dir: &Path, args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run_in(remote, &["init", "-q", "--bare", "-b", "main"]);
+    run_in(work, &["init", "-q", "-b", "main"]);
+    run_in(work, &["config", "user.email", "demo@ogma.dev"]);
+    run_in(work, &["config", "user.name", "Demo"]);
+
+    std::fs::write(work.join("app.txt"), "one\n").unwrap();
+    run_in(work, &["add", "-A"]);
+    run_in(work, &["commit", "-q", "-m", "one"]);
+    run_in(work, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    run_in(work, &["push", "-q", "-u", "origin", "main"]);
+
+    std::fs::write(work.join("app.txt"), "one\ntwo\n").unwrap();
+    run_in(work, &["add", "-A"]);
+    run_in(work, &["commit", "-q", "-m", "two"]);
+}
+
+#[test]
+fn the_branch_list_shows_ahead_behind_against_upstream() {
+    let remote = TempDir::new().unwrap();
+    let work = TempDir::new().unwrap();
+    upstream_repo(work.path(), remote.path());
+    let mut app = App::open(work.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 100, 24));
+
+    assert!(
+        screen.contains("↑1"),
+        "the branch list should show the branch is one commit ahead of its upstream:\n{screen}"
+    );
+}
+
+fn conflicting_checkout_repo(dir: &Path) {
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.name", "Demo"]);
+
+    std::fs::write(dir.join("app.txt"), "base\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "base"]);
+
+    run(&["switch", "-c", "feature"]);
+    std::fs::write(dir.join("app.txt"), "feature version\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "feature"]);
+
+    run(&["switch", "main"]);
+    std::fs::write(dir.join("app.txt"), "dirty edit\n").unwrap();
+}
+
+#[test]
+fn checkout_that_git_refuses_shows_the_error_and_stays_put() {
+    let dir = TempDir::new().unwrap();
+    conflicting_checkout_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("main"),
+        "a refused checkout must not move HEAD"
+    );
+    assert!(
+        app.branch_panel().is_some(),
+        "the branch list should stay open after a refused checkout"
+    );
+    assert!(
+        app.notice().is_some(),
+        "git's refusal should surface as a notice"
+    );
+}
+
 fn code_repo(dir: &Path) {
     let run = |args: &[&str]| {
         let output = Command::new("git")

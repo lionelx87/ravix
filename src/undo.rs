@@ -8,6 +8,9 @@ pub enum UndoableAction {
     UnstagedAll,
     Discarded { path: String, snapshot: String },
     Committed,
+    CheckedOut { previous: String },
+    CreatedBranch { name: String, previous: String },
+    DeletedBranch { name: String, oid: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +23,9 @@ pub enum InversePlan {
     UnstageAll,
     RestoreFile { path: String, snapshot: String },
     ReflogSoftReset,
+    Checkout(String),
+    DropBranch { name: String, back_to: String },
+    RestoreBranch { name: String, oid: String },
 }
 
 pub fn invert(action: &UndoableAction) -> InversePlan {
@@ -35,5 +41,14 @@ pub fn invert(action: &UndoableAction) -> InversePlan {
             snapshot: snapshot.clone(),
         },
         UndoableAction::Committed => InversePlan::ReflogSoftReset,
+        UndoableAction::CheckedOut { previous } => InversePlan::Checkout(previous.clone()),
+        UndoableAction::CreatedBranch { name, previous } => InversePlan::DropBranch {
+            name: name.clone(),
+            back_to: previous.clone(),
+        },
+        UndoableAction::DeletedBranch { name, oid } => InversePlan::RestoreBranch {
+            name: name.clone(),
+            oid: oid.clone(),
+        },
     }
 }

@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use git2::Oid;
 
-use crate::git::{CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus};
+use crate::branches::{BranchEntry, BranchPanel, branch_list};
+use crate::git::{
+    BadgeKind, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus,
+};
 use crate::graph::{GraphCommit, GraphRow, lay_out};
 use crate::mutate::{GitCli, MutationError};
 use crate::staging::build_patch;
@@ -40,6 +43,13 @@ pub enum Action {
     CommitSubmit,
     ConfirmYes,
     ConfirmNo,
+    ToggleBranches,
+    Checkout,
+    NewBranch,
+    DeleteBranch,
+    BranchNameInput(char),
+    BranchNameBackspace,
+    BranchNameSubmit,
     Undo,
     Reload,
     Tick(Duration),
@@ -52,6 +62,9 @@ pub enum InputContext {
     Working,
     Commit,
     Confirm,
+    Branch,
+    BranchName,
+    Alert,
 }
 
 pub struct Panel {
@@ -66,9 +79,16 @@ pub struct CommitEditor {
     pub message: String,
 }
 
+pub struct BranchCreate {
+    pub name: String,
+    start: String,
+}
+
 enum ConfirmKind {
     Discard { path: String, untracked: bool },
     DiscardHunk { path: String, patch: String },
+    DeleteBranch { name: String, oid: Option<String> },
+    ForceDeleteBranch { name: String, oid: Option<String> },
 }
 
 pub struct Confirm {
@@ -90,8 +110,12 @@ pub struct App {
     status: WorkingStatus,
     on_wip: bool,
     working: Option<WorkingView>,
+    branch: Option<BranchPanel>,
+    branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
+    alert: Option<String>,
+    checkout_flash: f32,
     last_action: Option<UndoableAction>,
     notice: Option<String>,
     panel: Option<Panel>,
@@ -134,8 +158,12 @@ impl App {
             status,
             on_wip: false,
             working: None,
+            branch: None,
+            branch_create: None,
             commit: None,
             confirm: None,
+            alert: None,
+            checkout_flash: 0.0,
             last_action: None,
             notice: None,
             panel: None,
@@ -196,12 +224,28 @@ impl App {
         self.working.as_ref()
     }
 
+    pub fn branch_panel(&self) -> Option<&BranchPanel> {
+        self.branch.as_ref()
+    }
+
+    pub fn branch_create(&self) -> Option<&BranchCreate> {
+        self.branch_create.as_ref()
+    }
+
     pub fn commit_editor(&self) -> Option<&CommitEditor> {
         self.commit.as_ref()
     }
 
     pub fn confirm(&self) -> Option<&Confirm> {
         self.confirm.as_ref()
+    }
+
+    pub fn alert(&self) -> Option<&str> {
+        self.alert.as_deref()
+    }
+
+    pub fn checkout_flash(&self) -> f32 {
+        self.checkout_flash
     }
 
     pub fn notice(&self) -> Option<&str> {
@@ -221,10 +265,16 @@ impl App {
     }
 
     pub fn input_context(&self) -> InputContext {
-        if self.commit.is_some() {
+        if self.alert.is_some() {
+            InputContext::Alert
+        } else if self.commit.is_some() {
             InputContext::Commit
+        } else if self.branch_create.is_some() {
+            InputContext::BranchName
         } else if self.confirm.is_some() {
             InputContext::Confirm
+        } else if self.branch.is_some() {
+            InputContext::Branch
         } else if self.working.is_some() {
             InputContext::Working
         } else {
@@ -240,6 +290,11 @@ impl App {
                 .working
                 .as_ref()
                 .is_some_and(|view| view.slide != view.target)
+            || self
+                .branch
+                .as_ref()
+                .is_some_and(|panel| panel.slide != panel.target)
+            || self.checkout_flash > 0.0
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -272,6 +327,13 @@ impl App {
             Action::CommitSubmit => self.commit_submit(),
             Action::ConfirmYes => self.confirm_yes(),
             Action::ConfirmNo => self.confirm = None,
+            Action::ToggleBranches => self.toggle_branches(),
+            Action::Checkout => self.checkout(),
+            Action::NewBranch => self.open_branch_create(),
+            Action::DeleteBranch => self.request_delete_branch(),
+            Action::BranchNameInput(character) => self.branch_name_input(character),
+            Action::BranchNameBackspace => self.branch_name_backspace(),
+            Action::BranchNameSubmit => self.branch_name_submit(),
             Action::Undo => self.perform_undo(),
             Action::Reload => self.reload(),
             Action::Tick(dt) => self.tick(dt),
@@ -284,6 +346,10 @@ impl App {
     }
 
     fn move_down(&mut self, delta: isize) {
+        if let Some(panel) = &mut self.branch {
+            panel.move_selection(delta);
+            return;
+        }
         if self.working.is_some() {
             self.working_move(delta);
             return;
@@ -297,6 +363,10 @@ impl App {
     }
 
     fn move_up(&mut self, delta: isize) {
+        if let Some(panel) = &mut self.branch {
+            panel.move_selection(-delta);
+            return;
+        }
         if self.working.is_some() {
             self.working_move(-delta);
             return;
@@ -416,12 +486,18 @@ impl App {
     }
 
     fn dismiss(&mut self) {
-        if self.commit.is_some() {
+        if self.alert.is_some() {
+            self.alert = None;
+        } else if self.commit.is_some() {
             self.commit = None;
+        } else if self.branch_create.is_some() {
+            self.branch_create = None;
         } else if self.confirm.is_some() {
             self.confirm = None;
         } else if self.help_visible {
             self.help_visible = false;
+        } else if let Some(panel) = &mut self.branch {
+            panel.target = 0.0;
         } else if let Some(view) = &mut self.working {
             if view.focus == Focus::Hunks {
                 view.focus = Focus::Files;
@@ -549,6 +625,21 @@ impl App {
                 let snapshot = self.repo.snapshot_blob(&path);
                 let result = self.cli.discard_hunk(&patch);
                 self.finish_discard(result, path, snapshot);
+            }
+            ConfirmKind::DeleteBranch { name, oid } => match self.cli.delete_branch(&name) {
+                Ok(()) => self.finish_branch_delete(name, oid),
+                Err(_) => {
+                    self.confirm = Some(Confirm {
+                        message: format!("'{name}' is not fully merged. Force delete? (y/n)"),
+                        kind: ConfirmKind::ForceDeleteBranch { name, oid },
+                    });
+                }
+            },
+            ConfirmKind::ForceDeleteBranch { name, oid } => {
+                match self.cli.force_delete_branch(&name) {
+                    Ok(()) => self.finish_branch_delete(name, oid),
+                    Err(error) => self.notice = Some(error.to_string()),
+                }
             }
         }
     }
@@ -710,6 +801,18 @@ impl App {
                 self.cli.reset_soft_previous().is_ok(),
                 "Undid commit".to_string(),
             ),
+            InversePlan::Checkout(target) => (
+                self.cli.checkout(&target).is_ok(),
+                format!("Undid checkout — back on {target}"),
+            ),
+            InversePlan::DropBranch { name, back_to } => (
+                self.cli.checkout(&back_to).is_ok() && self.cli.delete_branch(&name).is_ok(),
+                format!("Undid create of {name}"),
+            ),
+            InversePlan::RestoreBranch { name, oid } => (
+                self.cli.create_branch_at(&name, &oid).is_ok(),
+                format!("Undid delete of {name}"),
+            ),
         };
         if ok {
             self.notice = Some(description);
@@ -718,6 +821,194 @@ impl App {
             self.last_action = Some(action);
         }
         self.reload();
+    }
+
+    fn load_branch_entries(&self) -> Vec<BranchEntry> {
+        let inputs = self.repo.branches().unwrap_or_default();
+        branch_list(&inputs, self.meta.head_branch.as_deref())
+    }
+
+    fn close_branch_panel(&mut self) {
+        if let Some(panel) = &mut self.branch {
+            panel.target = 0.0;
+        }
+    }
+
+    fn toggle_branches(&mut self) {
+        if self.branch.is_some() {
+            self.close_branch_panel();
+            return;
+        }
+        self.branch = Some(BranchPanel::opening(self.load_branch_entries()));
+    }
+
+    fn checkout(&mut self) {
+        if self.branch.is_some() {
+            self.checkout_focused_branch();
+        } else {
+            self.checkout_selected_commit();
+        }
+    }
+
+    fn checkout_focused_branch(&mut self) {
+        let Some(entry) = self.branch.as_ref().and_then(BranchPanel::focused) else {
+            return;
+        };
+        if entry.is_head {
+            self.close_branch_panel();
+            return;
+        }
+        self.perform_checkout(entry.name.clone(), false);
+    }
+
+    fn checkout_selected_commit(&mut self) {
+        if self.on_wip {
+            return;
+        }
+        let Some(commit) = self.selected_commit() else {
+            return;
+        };
+        let id = commit.id;
+        match self.local_branch_at(id) {
+            Some(name) => self.perform_checkout(name, false),
+            None => self.perform_checkout(id.to_string(), true),
+        }
+    }
+
+    fn local_branch_at(&self, id: Oid) -> Option<String> {
+        self.meta
+            .badges
+            .get(&id)?
+            .iter()
+            .find(|badge| badge.kind == BadgeKind::LocalBranch)
+            .map(|badge| badge.label.clone())
+    }
+
+    fn perform_checkout(&mut self, target: String, detached: bool) {
+        let previous = self.repo.head_ref();
+        let result = if detached {
+            self.cli.checkout_detached(&target)
+        } else {
+            self.cli.switch_branch(&target)
+        };
+        match result {
+            Ok(()) => {
+                if let Some(previous) = previous.filter(|previous| *previous != target) {
+                    self.last_action = Some(UndoableAction::CheckedOut { previous });
+                }
+                self.close_branch_panel();
+                self.reload();
+                self.checkout_flash = 1.0;
+                self.notice = Some(self.landing_notice());
+            }
+            Err(error) => self.notice = Some(error.to_string()),
+        }
+    }
+
+    fn landing_notice(&self) -> String {
+        match &self.meta.head_branch {
+            Some(branch) => format!("On {branch}"),
+            None => {
+                let short: String = self
+                    .repo
+                    .head_ref()
+                    .map(|head| head.chars().take(7).collect())
+                    .unwrap_or_default();
+                format!("Detached HEAD at {short}")
+            }
+        }
+    }
+
+    fn request_delete_branch(&mut self) {
+        let Some(entry) = self.branch.as_ref().and_then(BranchPanel::focused) else {
+            return;
+        };
+        if entry.is_head {
+            self.alert = Some(format!(
+                "'{}' is the current branch — checkout another first",
+                entry.name
+            ));
+            return;
+        }
+        let name = entry.name.clone();
+        let oid = self.repo.branch_tip(&name);
+        self.confirm = Some(Confirm {
+            message: format!("Delete branch {name}? (y/n)"),
+            kind: ConfirmKind::DeleteBranch { name, oid },
+        });
+    }
+
+    fn finish_branch_delete(&mut self, name: String, oid: Option<String>) {
+        self.last_action = oid.map(|oid| UndoableAction::DeletedBranch { name, oid });
+        self.notice = None;
+        self.reload();
+    }
+
+    fn refresh_branch_entries(&mut self) {
+        if self.branch.is_none() {
+            return;
+        }
+        let entries = self.load_branch_entries();
+        if let Some(panel) = &mut self.branch {
+            panel.selected = panel.selected.min(entries.len().saturating_sub(1));
+            panel.entries = entries;
+        }
+    }
+
+    fn branch_start(&self) -> String {
+        if !self.on_wip
+            && let Some(commit) = self.selected_commit()
+        {
+            return commit.id.to_string();
+        }
+        self.repo.head_ref().unwrap_or_else(|| "HEAD".to_string())
+    }
+
+    fn open_branch_create(&mut self) {
+        let start = self.branch_start();
+        self.branch_create = Some(BranchCreate {
+            name: String::new(),
+            start,
+        });
+    }
+
+    fn branch_name_input(&mut self, character: char) {
+        if let Some(editor) = &mut self.branch_create {
+            editor.name.push(character);
+        }
+    }
+
+    fn branch_name_backspace(&mut self) {
+        if let Some(editor) = &mut self.branch_create {
+            editor.name.pop();
+        }
+    }
+
+    fn branch_name_submit(&mut self) {
+        let Some(editor) = self.branch_create.take() else {
+            return;
+        };
+        let name = editor.name.trim().to_string();
+        if name.is_empty() {
+            self.notice = Some("Empty branch name".to_string());
+            self.branch_create = Some(editor);
+            return;
+        }
+        let previous = self.repo.head_ref();
+        match self.cli.create_branch(&name, &editor.start) {
+            Ok(()) => {
+                if let Some(previous) = previous {
+                    self.last_action = Some(UndoableAction::CreatedBranch { name, previous });
+                }
+                self.notice = None;
+                self.close_branch_panel();
+                self.reload();
+            }
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                self.branch_create = Some(editor);
+            }
+        }
     }
 
     fn refresh_status(&mut self) {
@@ -763,6 +1054,7 @@ impl App {
         self.clamp_offset();
         self.scroll_into_view();
         self.refresh_status();
+        self.refresh_branch_entries();
     }
 
     fn find_loading(&mut self, id: Oid) -> Option<usize> {
@@ -822,6 +1114,15 @@ impl App {
             if view.target == 0.0 && view.slide <= 0.0 {
                 self.working = None;
             }
+        }
+        if let Some(panel) = &mut self.branch {
+            advance(&mut panel.slide, panel.target, step);
+            if panel.target == 0.0 && panel.slide <= 0.0 {
+                self.branch = None;
+            }
+        }
+        if self.checkout_flash > 0.0 {
+            self.checkout_flash = (self.checkout_flash - step).max(0.0);
         }
     }
 

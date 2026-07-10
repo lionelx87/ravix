@@ -47,3 +47,41 @@ fn a_commit_inverts_to_a_reflog_soft_reset() {
         InversePlan::ReflogSoftReset
     );
 }
+
+#[test]
+fn a_checkout_inverts_to_returning_to_the_previous_head() {
+    assert_eq!(
+        invert(&UndoableAction::CheckedOut {
+            previous: "main".into(),
+        }),
+        InversePlan::Checkout("main".into())
+    );
+}
+
+#[test]
+fn creating_a_branch_inverts_to_dropping_it_and_switching_back() {
+    assert_eq!(
+        invert(&UndoableAction::CreatedBranch {
+            name: "feature".into(),
+            previous: "main".into(),
+        }),
+        InversePlan::DropBranch {
+            name: "feature".into(),
+            back_to: "main".into(),
+        }
+    );
+}
+
+#[test]
+fn deleting_a_branch_inverts_to_recreating_it_at_its_tip() {
+    assert_eq!(
+        invert(&UndoableAction::DeletedBranch {
+            name: "feature".into(),
+            oid: "deadbeef".into(),
+        }),
+        InversePlan::RestoreBranch {
+            name: "feature".into(),
+            oid: "deadbeef".into(),
+        }
+    );
+}

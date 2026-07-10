@@ -76,6 +76,34 @@ impl GitCli {
         self.run(&["reset", "--soft", "HEAD@{1}"], None)
     }
 
+    pub fn switch_branch(&self, name: &str) -> Result<(), MutationError> {
+        self.run(&["switch", name], None)
+    }
+
+    pub fn checkout_detached(&self, oid: &str) -> Result<(), MutationError> {
+        self.run(&["checkout", oid], None)
+    }
+
+    pub fn checkout(&self, target: &str) -> Result<(), MutationError> {
+        self.run(&["checkout", target], None)
+    }
+
+    pub fn create_branch(&self, name: &str, start: &str) -> Result<(), MutationError> {
+        self.run(&["switch", "-c", name, start], None)
+    }
+
+    pub fn delete_branch(&self, name: &str) -> Result<(), MutationError> {
+        self.run(&["branch", "-d", name], None)
+    }
+
+    pub fn force_delete_branch(&self, name: &str) -> Result<(), MutationError> {
+        self.run(&["branch", "-D", name], None)
+    }
+
+    pub fn create_branch_at(&self, name: &str, oid: &str) -> Result<(), MutationError> {
+        self.run(&["branch", name, oid], None)
+    }
+
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<(), MutationError> {
         let mut command = Command::new("git");
         command
