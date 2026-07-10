@@ -3,11 +3,14 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use git2::{Oid, Repository, RepositoryInitOptions, Signature, Time};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tempfile::TempDir;
 
@@ -1480,6 +1483,247 @@ fn undo_reverts_a_merge() {
         "undo should reset HEAD back to the pre-merge tip"
     );
     assert_eq!(head.parents.len(), 1, "the merge commit should be gone");
+}
+
+fn mouse(app: &mut App, input: &mut InputMap, kind: MouseEventKind, row: u16) {
+    let event = MouseEvent {
+        kind,
+        column: 3,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let graph_area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 27,
+    };
+    if let Some(action) = input.on_mouse(event, graph_area) {
+        app.update(action);
+    }
+}
+
+fn drag_row_onto(app: &mut App, input: &mut InputMap, from: u16, to: u16) {
+    mouse(app, input, MouseEventKind::Down(MouseButton::Left), from);
+    mouse(app, input, MouseEventKind::Drag(MouseButton::Left), to);
+    mouse(app, input, MouseEventKind::Up(MouseButton::Left), to);
+}
+
+#[test]
+fn dropping_a_branch_onto_head_opens_the_join_menu() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    drag_row_onto(&mut app, &mut input, 1, 0);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("main"),
+        "dropping onto the current branch needs no checkout"
+    );
+    assert_eq!(
+        app.join_menu().map(|menu| menu.title.as_str()),
+        Some("Join feature into HEAD"),
+        "the drop should open the join menu with the dragged branch as source"
+    );
+}
+
+#[test]
+fn dropping_onto_another_branch_checks_it_out_first() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    drag_row_onto(&mut app, &mut input, 0, 1);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("feature"),
+        "dropping main onto feature should check feature out"
+    );
+    assert_eq!(
+        app.join_menu().map(|menu| menu.title.as_str()),
+        Some("Join main into HEAD"),
+        "the join menu should integrate the dragged branch into the new HEAD"
+    );
+}
+
+#[test]
+fn undo_reverts_the_integration_a_drop_produced() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    drag_row_onto(&mut app, &mut input, 1, 0);
+    assert!(
+        app.join_menu().is_some(),
+        "the drop should have opened the join menu"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Enter);
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").parents.len(),
+        2,
+        "the dropped merge should land"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    assert_eq!(
+        app.head_commit().expect("HEAD commit").parents.len(),
+        1,
+        "u should undo the drop's integration"
+    );
+}
+
+#[test]
+fn releasing_on_the_same_row_selects_instead_of_dropping() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+    );
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Up(MouseButton::Left),
+        1,
+    );
+
+    assert!(
+        app.join_menu().is_none(),
+        "a click should not open the join menu"
+    );
+    assert_eq!(app.selected(), 1, "a click should select the row");
+}
+
+fn two_commit_dirty_repo(dir: &Path) {
+    init_with_base(dir, "a.txt", "1\n");
+    commit_file(dir, "b.txt", "2\n", "second");
+    std::fs::write(dir.join("a.txt"), "dirty\n").unwrap();
+}
+
+#[test]
+fn pointer_targeting_accounts_for_the_wip_row() {
+    let dir = TempDir::new().unwrap();
+    two_commit_dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    assert!(
+        app.has_wip(),
+        "the tree should be dirty so a WIP row is present"
+    );
+
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+    );
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Up(MouseButton::Left),
+        1,
+    );
+    assert_eq!(
+        app.selected(),
+        0,
+        "visible row 1 (below the WIP row) is the first commit"
+    );
+
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Down(MouseButton::Left),
+        2,
+    );
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Up(MouseButton::Left),
+        2,
+    );
+    assert_eq!(app.selected(), 1, "visible row 2 is the second commit");
+}
+
+#[test]
+fn dragging_from_a_branchless_commit_does_nothing() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    drag_row_onto(&mut app, &mut input, 2, 0);
+
+    assert!(
+        app.join_menu().is_none(),
+        "dragging a non-branch commit should not open the join menu"
+    );
+}
+
+#[test]
+fn the_drag_shows_a_ghost_over_the_target_row() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+    );
+    mouse(
+        &mut app,
+        &mut input,
+        MouseEventKind::Drag(MouseButton::Left),
+        0,
+    );
+    let screen = dump(&draw(&mut app, 100, 28));
+
+    assert!(
+        screen.contains("drop feature"),
+        "a drag should show the grabbed branch over the target row:\n{screen}"
+    );
+}
+
+#[test]
+fn a_drop_whose_checkout_git_refuses_cancels_the_drop() {
+    let dir = TempDir::new().unwrap();
+    conflicting_checkout_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    // A WIP row sits at visible row 0 (dirty tree); feature is row 1, main (HEAD) row 2.
+    assert!(app.has_wip());
+    drag_row_onto(&mut app, &mut input, 2, 1);
+
+    assert!(
+        app.join_menu().is_none(),
+        "a refused checkout should cancel the drop, not open the menu"
+    );
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("main"),
+        "a refused drop must not move HEAD"
+    );
+    assert!(
+        app.notice().is_some(),
+        "the refusal should surface as a notice"
+    );
 }
 
 fn git_ok(dir: &Path, args: &[&str]) -> bool {

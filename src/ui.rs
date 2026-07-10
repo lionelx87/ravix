@@ -185,6 +185,7 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
     }
 
     let badges = &app.meta().badges;
+    let drag = app.drag();
     let buffer = frame.buffer_mut();
 
     for row in 0..area.height as usize {
@@ -248,21 +249,43 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
             Style::default().fg(theme.meta),
         ));
 
+        if let Some((source, _, hover)) = drag
+            && index == hover
+        {
+            spans.push(Span::styled(
+                format!("   ⟵ drop {source}"),
+                Style::default()
+                    .fg(theme.head_badge)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
         buffer.set_line(area.x, y, &Line::from(spans), area.width);
 
+        let highlight = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
         if is_selected {
-            let highlight = Rect {
-                x: area.x,
-                y,
-                width: area.width,
-                height: 1,
-            };
             buffer.set_style(
                 highlight,
                 Style::default()
                     .bg(theme.selection_bg)
                     .add_modifier(Modifier::BOLD),
             );
+        }
+        if drag.is_some_and(|(_, source_row, _)| source_row == index) {
+            buffer.set_style(
+                highlight,
+                Style::default()
+                    .bg(theme.selection_bg)
+                    .add_modifier(Modifier::DIM),
+            );
+        }
+        if drag.is_some_and(|(_, _, hover)| hover == index) {
+            buffer.set_style(highlight, Style::default().bg(theme.add_emph_bg));
         }
     }
 }
@@ -715,6 +738,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("space", "checkout commit / stage file or hunk"),
         ("b", "branches: checkout · n new · d delete"),
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
+        ("drag", "drop a branch onto another to join"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),
         ("u", "undo last action"),

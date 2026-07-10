@@ -1,7 +1,8 @@
 use std::io;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossterm::event::{self, Event};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use crossterm::execute;
 use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 
@@ -24,7 +25,9 @@ fn main() -> io::Result<()> {
     };
 
     let mut terminal = ratatui::init();
+    let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal, app);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -87,12 +90,14 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
 }
 
 fn edit_in_editor(terminal: &mut DefaultTerminal, path: &std::path::Path) -> io::Result<()> {
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
     let status = std::process::Command::new(editor).arg(path).status();
     *terminal = ratatui::init();
+    let _ = execute!(io::stdout(), EnableMouseCapture);
     terminal.clear()?;
     status.map(|_| ())
 }

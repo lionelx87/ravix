@@ -61,16 +61,15 @@ impl InputMap {
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent, graph_area: Rect) -> Option<Action> {
+        let row = || (mouse.row - graph_area.y) as usize;
+        let in_graph = contains(graph_area, mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::ScrollDown => Some(Action::ScrollDown),
             MouseEventKind::ScrollUp => Some(Action::ScrollUp),
-            MouseEventKind::Down(MouseButton::Left) => {
-                if contains(graph_area, mouse.column, mouse.row) {
-                    Some(Action::ClickRow((mouse.row - graph_area.y) as usize))
-                } else {
-                    None
-                }
-            }
+            MouseEventKind::Down(MouseButton::Left) if in_graph => Some(Action::PointerDown(row())),
+            MouseEventKind::Drag(MouseButton::Left) if in_graph => Some(Action::PointerDrag(row())),
+            MouseEventKind::Up(MouseButton::Left) if in_graph => Some(Action::PointerUp(row())),
+            MouseEventKind::Up(MouseButton::Left) => Some(Action::PointerCancel),
             _ => None,
         }
     }

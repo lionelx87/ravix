@@ -5,6 +5,7 @@ use git2::Oid;
 
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
+use crate::drag::{DropIntent, RowRef, resolve_drop};
 use crate::git::{
     BadgeKind, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus,
 };
@@ -32,6 +33,10 @@ pub enum Action {
     ScrollDown,
     ScrollUp,
     ClickRow(usize),
+    PointerDown(usize),
+    PointerDrag(usize),
+    PointerUp(usize),
+    PointerCancel,
     OpenPanel,
     Dismiss,
     ToggleHelp,
@@ -98,6 +103,12 @@ pub struct BranchCreate {
     start: String,
 }
 
+pub struct DragState {
+    down: usize,
+    source_branch: Option<String>,
+    hover: usize,
+}
+
 enum ConfirmKind {
     Discard { path: String, untracked: bool },
     DiscardHunk { path: String, patch: String },
@@ -128,6 +139,7 @@ pub struct App {
     join: Option<JoinMenu>,
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
+    drag: Option<DragState>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
@@ -179,6 +191,7 @@ impl App {
             join: None,
             conflict: None,
             edit_request: None,
+            drag: None,
             branch_create: None,
             commit: None,
             confirm: None,
@@ -256,6 +269,12 @@ impl App {
 
     pub fn conflict_browser(&self) -> Option<&ConflictBrowser> {
         self.conflict.as_ref()
+    }
+
+    pub fn drag(&self) -> Option<(&str, usize, usize)> {
+        let drag = self.drag.as_ref()?;
+        let source = drag.source_branch.as_deref()?;
+        (drag.hover != drag.down).then_some((source, drag.down, drag.hover))
     }
 
     pub fn branch_create(&self) -> Option<&BranchCreate> {
@@ -359,6 +378,10 @@ impl App {
             Action::ScrollDown => self.scroll_view(SCROLL_STEP),
             Action::ScrollUp => self.scroll_view(-SCROLL_STEP),
             Action::ClickRow(visible) => self.click_row(visible),
+            Action::PointerDown(visible) => self.pointer_down(visible),
+            Action::PointerDrag(visible) => self.pointer_drag(visible),
+            Action::PointerUp(visible) => self.pointer_up(visible),
+            Action::PointerCancel => self.drag = None,
             Action::OpenPanel => self.open_or_expand(),
             Action::Dismiss => self.dismiss(),
             Action::ToggleHelp => self.help_visible = !self.help_visible,
@@ -511,17 +534,101 @@ impl App {
         self.clamp_offset();
     }
 
-    fn click_row(&mut self, visible: usize) {
-        let target = self.offset + visible;
-        if target >= self.commits.len() {
-            return;
+    fn row_to_index(&self, visible: usize) -> Option<usize> {
+        let wip = self.has_wip() as usize;
+        if visible < wip {
+            return None;
         }
+        let index = self.offset + (visible - wip);
+        (index < self.commits.len()).then_some(index)
+    }
+
+    fn click_row(&mut self, visible: usize) {
+        let Some(target) = self.row_to_index(visible) else {
+            return;
+        };
         if target == self.selected && self.panel.is_none() {
             self.open_panel();
         } else {
             self.on_wip = false;
             self.select(target);
         }
+    }
+
+    fn pointer_down(&mut self, visible: usize) {
+        if self.input_context() != InputContext::Graph {
+            return;
+        }
+        let Some(index) = self.row_to_index(visible) else {
+            self.drag = None;
+            return;
+        };
+        let source_branch = self.local_branch_at(self.commits[index].id);
+        self.drag = Some(DragState {
+            down: index,
+            source_branch,
+            hover: index,
+        });
+    }
+
+    fn pointer_drag(&mut self, visible: usize) {
+        let Some(index) = self.row_to_index(visible) else {
+            return;
+        };
+        if let Some(drag) = &mut self.drag {
+            drag.hover = index;
+        }
+    }
+
+    fn pointer_up(&mut self, visible: usize) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        let Some(up) = self.row_to_index(visible) else {
+            return;
+        };
+        let rows: Vec<RowRef> = self
+            .commits
+            .iter()
+            .map(|commit| RowRef {
+                oid: commit.id.to_string(),
+                branch: self.local_branch_at(commit.id),
+            })
+            .collect();
+        match resolve_drop(&rows, drag.down, up) {
+            Some(intent) => self.perform_drop(intent),
+            None => self.click_row(visible),
+        }
+    }
+
+    fn perform_drop(&mut self, intent: DropIntent) {
+        let on_target = self.repo.head_oid().as_deref() == Some(intent.target_oid.as_str());
+        if !on_target {
+            match &intent.target_branch {
+                Some(branch) => self.perform_checkout(branch.clone(), false),
+                None => self.perform_checkout(intent.target_oid.clone(), true),
+            }
+            if self.repo.head_oid().as_deref() != Some(intent.target_oid.as_str()) {
+                return;
+            }
+        }
+        self.open_join_with_source(intent.source_branch);
+    }
+
+    fn open_join_with_source(&mut self, name: String) {
+        let Some(oid) = self.repo.branch_tip(&name) else {
+            return;
+        };
+        self.open_join_for(Some(name), oid);
+    }
+
+    fn open_join_for(&mut self, name: Option<String>, oid: String) {
+        let head = self.repo.head_oid().unwrap_or_default();
+        if oid == head {
+            self.notice = Some("Source is already at HEAD".to_string());
+            return;
+        }
+        self.join = Some(self.build_join_menu(name, oid, &head));
     }
 
     fn open_or_expand(&mut self) {
@@ -964,7 +1071,12 @@ impl App {
             .badges
             .get(&id)?
             .iter()
-            .find(|badge| badge.kind == BadgeKind::LocalBranch)
+            .find(|badge| {
+                matches!(
+                    badge.kind,
+                    BadgeKind::LocalBranch | BadgeKind::CurrentBranch
+                )
+            })
             .map(|badge| badge.label.clone())
     }
 
@@ -1025,12 +1137,7 @@ impl App {
         let Some((source_name, source_oid)) = source else {
             return;
         };
-        let head = self.repo.head_oid().unwrap_or_default();
-        if source_oid == head {
-            self.notice = Some("Source is already at HEAD".to_string());
-            return;
-        }
-        self.join = Some(self.build_join_menu(source_name, source_oid, &head));
+        self.open_join_for(source_name, source_oid);
     }
 
     fn build_join_menu(
