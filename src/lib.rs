@@ -8,6 +8,7 @@ pub mod git;
 pub mod graph;
 pub mod join;
 pub mod mutate;
+pub mod palette;
 pub mod rebase;
 pub mod remote;
 pub mod staging;

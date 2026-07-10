@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use syntect::parsing::SyntaxReference;
 
-use crate::app::{App, BranchCreate, CommitEditor, Confirm, Panel};
+use crate::app::{App, BranchCreate, CommitEditor, Confirm, Palette, Panel};
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
@@ -164,6 +164,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     if let Some(confirm) = app.confirm() {
         render_confirm(frame, confirm, &theme, area);
+    }
+    if let Some(palette) = app.palette() {
+        render_palette(frame, palette, &theme, area);
     }
     if let Some(message) = app.alert() {
         render_alert(frame, message, &theme, area);
@@ -823,6 +826,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
         ("f / p / P", "fetch / pull / push (background)"),
         ("s / S", "stash changes / stash list"),
+        ("Ctrl+P", "command palette"),
         ("drag", "drop a branch onto another to join"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),
@@ -1244,6 +1248,52 @@ fn render_alert(frame: &mut Frame, message: &str, theme: &Theme, area: Rect) {
         )),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_palette(frame: &mut Frame, palette: &Palette, theme: &Theme, area: Rect) {
+    let rows = palette.rows();
+    let width = 54u16.min(area.width);
+    let height = (rows.len() as u16 + 4).clamp(4, area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Command palette   [Enter] run · [Esc] close ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("› ", Style::default().fg(theme.branch_badge)),
+            Span::styled(palette.query.clone(), Style::default().fg(theme.node)),
+            Span::styled("█", Style::default().fg(theme.branch_badge)),
+        ]),
+        Line::from(""),
+    ];
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no commands",
+            Style::default().fg(theme.meta),
+        )));
+    }
+    for (index, (label, hint)) in rows.iter().enumerate() {
+        let selected = index == palette.selected;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "❯ " } else { "  " },
+                Style::default().fg(theme.marker),
+            ),
+            Span::styled(
+                (*label).to_string(),
+                Style::default().fg(if selected { theme.node } else { theme.summary }),
+            ),
+            Span::styled(format!("  [{hint}]"), Style::default().fg(theme.meta)),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_confirm(frame: &mut Frame, confirm: &Confirm, theme: &Theme, area: Rect) {

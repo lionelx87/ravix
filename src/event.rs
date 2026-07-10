@@ -29,10 +29,14 @@ impl InputMap {
             InputContext::Join => on_join_key(key),
             InputContext::Conflict => on_conflict_key(key),
             InputContext::Stash => on_stash_key(key),
+            InputContext::Palette => on_palette_key(key),
         }
     }
 
     fn on_graph_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Some(Action::OpenPalette);
+        }
         if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
             if self.pending_g {
                 self.pending_g = false;
@@ -59,6 +63,7 @@ impl InputMap {
             KeyCode::Char('s') => Some(Action::StashSave),
             KeyCode::Char('S') => Some(Action::ToggleStashes),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
+            KeyCode::Char('n') => Some(Action::NewBranch),
             KeyCode::Char('u') => Some(Action::Undo),
             KeyCode::Char('?') => Some(Action::ToggleHelp),
             KeyCode::Char('q') => Some(Action::Quit),
@@ -139,6 +144,21 @@ fn on_join_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_palette_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::PaletteSubmit),
+        KeyCode::Backspace => Some(Action::PaletteBackspace),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('n') if ctrl => Some(Action::SelectNext),
+        KeyCode::Char('p') if ctrl => Some(Action::SelectPrev),
+        KeyCode::Char(character) if !ctrl => Some(Action::PaletteInput(character)),
         _ => None,
     }
 }

@@ -13,6 +13,7 @@ use crate::git::{
 use crate::graph::{GraphCommit, GraphRow, lay_out};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
+use crate::palette::fuzzy_filter;
 use crate::remote::{PullAction, PushState, pull_action, push_state};
 use crate::staging::build_patch;
 use crate::stash::StashPanel;
@@ -77,6 +78,10 @@ pub enum Action {
     BranchNameInput(char),
     BranchNameBackspace,
     BranchNameSubmit,
+    OpenPalette,
+    PaletteInput(char),
+    PaletteBackspace,
+    PaletteSubmit,
     Undo,
     Reload,
     Tick(Duration),
@@ -95,6 +100,7 @@ pub enum InputContext {
     Join,
     Conflict,
     Stash,
+    Palette,
 }
 
 pub struct Panel {
@@ -153,6 +159,58 @@ struct Notice {
     error: bool,
 }
 
+const COMMANDS: &[(&str, &str, Action)] = &[
+    ("Fetch", "f", Action::Fetch),
+    ("Pull", "p", Action::Pull),
+    ("Push", "P", Action::Push),
+    ("Stash changes", "s", Action::StashSave),
+    ("Stash list", "S", Action::ToggleStashes),
+    ("Branches", "b", Action::ToggleBranches),
+    ("New branch", "n", Action::NewBranch),
+    ("Join / merge", "M", Action::OpenJoin),
+    ("Undo", "u", Action::Undo),
+    ("Help", "?", Action::ToggleHelp),
+    ("Quit", "q", Action::Quit),
+];
+
+pub struct Palette {
+    pub query: String,
+    pub matches: Vec<usize>,
+    pub selected: usize,
+}
+
+impl Palette {
+    fn opening() -> Self {
+        Self {
+            query: String::new(),
+            matches: (0..COMMANDS.len()).collect(),
+            selected: 0,
+        }
+    }
+
+    fn refilter(&mut self) {
+        let labels: Vec<&str> = COMMANDS.iter().map(|(label, _, _)| *label).collect();
+        self.matches = fuzzy_filter(&self.query, &labels);
+        self.selected = self.selected.min(self.matches.len().saturating_sub(1));
+    }
+
+    pub fn rows(&self) -> Vec<(&'static str, &'static str)> {
+        self.matches
+            .iter()
+            .map(|&index| (COMMANDS[index].0, COMMANDS[index].1))
+            .collect()
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        if self.matches.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let last = (self.matches.len() - 1) as isize;
+        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+    }
+}
+
 pub struct App {
     repo: Repo,
     cli: GitCli,
@@ -182,6 +240,7 @@ pub struct App {
     last_action: Option<UndoableAction>,
     notice: Option<Notice>,
     panel: Option<Panel>,
+    palette: Option<Palette>,
     help_visible: bool,
     should_quit: bool,
 }
@@ -236,6 +295,7 @@ impl App {
             last_action: None,
             notice: None,
             panel: None,
+            palette: None,
             help_visible: false,
             should_quit: false,
         };
@@ -309,6 +369,10 @@ impl App {
 
     pub fn stash_panel(&self) -> Option<&StashPanel> {
         self.stash.as_ref()
+    }
+
+    pub fn palette(&self) -> Option<&Palette> {
+        self.palette.as_ref()
     }
 
     pub fn drag(&self) -> Option<(&str, usize, usize)> {
@@ -393,6 +457,8 @@ impl App {
     pub fn input_context(&self) -> InputContext {
         if self.alert.is_some() {
             InputContext::Alert
+        } else if self.palette.is_some() {
+            InputContext::Palette
         } else if self.commit.is_some() {
             InputContext::Commit
         } else if self.branch_create.is_some() {
@@ -482,6 +548,10 @@ impl App {
             Action::StashPop => self.stash_pop(),
             Action::StashApply => self.stash_apply(),
             Action::StashDrop => self.request_drop_stash(),
+            Action::OpenPalette => self.palette = Some(Palette::opening()),
+            Action::PaletteInput(character) => self.palette_input(character),
+            Action::PaletteBackspace => self.palette_backspace(),
+            Action::PaletteSubmit => self.palette_submit(),
             Action::OpenJoin => self.open_join(),
             Action::ExecuteJoin => self.execute_join(),
             Action::TakeOurs => self.resolve_block(Side::Ours),
@@ -512,6 +582,10 @@ impl App {
     }
 
     fn move_down(&mut self, delta: isize) {
+        if let Some(palette) = &mut self.palette {
+            palette.move_selection(delta);
+            return;
+        }
         if let Some(browser) = &mut self.conflict {
             browser.move_block(delta);
             return;
@@ -541,6 +615,10 @@ impl App {
     }
 
     fn move_up(&mut self, delta: isize) {
+        if let Some(palette) = &mut self.palette {
+            palette.move_selection(-delta);
+            return;
+        }
         if let Some(browser) = &mut self.conflict {
             browser.move_block(-delta);
             return;
@@ -856,6 +934,31 @@ impl App {
         }
     }
 
+    fn palette_input(&mut self, character: char) {
+        if let Some(palette) = &mut self.palette {
+            palette.query.push(character);
+            palette.refilter();
+        }
+    }
+
+    fn palette_backspace(&mut self) {
+        if let Some(palette) = &mut self.palette {
+            palette.query.pop();
+            palette.refilter();
+        }
+    }
+
+    fn palette_submit(&mut self) {
+        let Some(palette) = self.palette.take() else {
+            return;
+        };
+        let Some(&index) = palette.matches.get(palette.selected) else {
+            return;
+        };
+        let action = COMMANDS[index].2.clone();
+        self.update(action);
+    }
+
     fn push(&mut self) {
         if self.remote_busy() {
             return;
@@ -975,6 +1078,8 @@ impl App {
     fn dismiss(&mut self) {
         if self.alert.is_some() {
             self.alert = None;
+        } else if self.palette.is_some() {
+            self.palette = None;
         } else if self.commit.is_some() {
             self.commit = None;
         } else if self.branch_create.is_some() {

@@ -2182,6 +2182,161 @@ fn undo_pops_a_stash_save_back() {
     assert!(app.has_wip(), "undo should pop the saved stash back");
 }
 
+fn press_ctrl(app: &mut App, input: &mut InputMap, code: KeyCode) {
+    let event = KeyEvent {
+        code,
+        modifiers: KeyModifiers::CONTROL,
+        kind: KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    if let Some(action) = input.on_key(event, app.input_context()) {
+        app.update(action);
+    }
+}
+
+fn type_text(app: &mut App, input: &mut InputMap, text: &str) {
+    for character in text.chars() {
+        press(app, input, KeyCode::Char(character));
+    }
+}
+
+#[test]
+fn ctrl_p_opens_the_command_palette() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+
+    assert!(app.palette().is_some(), "Ctrl+P should open the palette");
+    let screen = dump(&draw(&mut app, 100, 24));
+    assert!(
+        screen.contains("Command palette"),
+        "palette title missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("Fetch") && screen.contains("Push"),
+        "the palette should list the commands:\n{screen}"
+    );
+}
+
+#[test]
+fn typing_fuzzy_filters_the_palette() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    type_text(&mut app, &mut input, "push");
+
+    let rows = app.palette().expect("palette open").rows();
+    assert_eq!(rows.len(), 1, "the query should filter to a single command");
+    assert_eq!(rows[0].0, "Push");
+}
+
+#[test]
+fn running_a_command_dispatches_its_action_and_closes_the_palette() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    type_text(&mut app, &mut input, "undo");
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(
+        app.palette().is_none(),
+        "running a command closes the palette"
+    );
+    assert_eq!(
+        app.notice(),
+        Some("Nothing to undo"),
+        "the command's action should run with its usual effect"
+    );
+}
+
+#[test]
+fn running_a_command_that_opens_a_panel_opens_it() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    type_text(&mut app, &mut input, "branches");
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(app.palette().is_none());
+    assert!(
+        app.branch_panel().is_some(),
+        "running Branches from the palette should open the branch panel"
+    );
+}
+
+#[test]
+fn ctrl_n_and_ctrl_p_move_the_palette_focus() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    assert_eq!(app.palette().unwrap().selected, 0);
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('n'));
+    assert_eq!(app.palette().unwrap().selected, 1);
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    assert_eq!(app.palette().unwrap().selected, 0);
+}
+
+#[test]
+fn n_from_the_graph_opens_the_new_branch_prompt() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('n'));
+
+    assert!(
+        app.branch_create().is_some(),
+        "n from the graph should open the new-branch prompt"
+    );
+}
+
+#[test]
+fn esc_closes_the_palette_without_running_anything() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    press(&mut app, &mut input, KeyCode::Esc);
+
+    assert!(app.palette().is_none());
+    assert!(app.notice().is_none(), "Esc should not run anything");
+}
+
+#[test]
+fn arrows_move_the_palette_focus() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    assert_eq!(app.palette().unwrap().selected, 0);
+
+    press(&mut app, &mut input, KeyCode::Down);
+    assert_eq!(app.palette().unwrap().selected, 1);
+    press(&mut app, &mut input, KeyCode::Up);
+    assert_eq!(app.palette().unwrap().selected, 0);
+}
+
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .current_dir(dir)
