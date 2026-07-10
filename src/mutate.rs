@@ -72,6 +72,10 @@ impl GitCli {
         self.run(&["commit", "--quiet", "-F", "-"], Some(message))
     }
 
+    pub fn reset_soft_previous(&self) -> Result<(), MutationError> {
+        self.run(&["reset", "--soft", "HEAD@{1}"], None)
+    }
+
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<(), MutationError> {
         let mut command = Command::new("git");
         command

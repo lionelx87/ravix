@@ -6,5 +6,6 @@ pub mod graph;
 pub mod mutate;
 pub mod staging;
 pub mod ui;
+pub mod undo;
 pub mod watcher;
 pub mod working;

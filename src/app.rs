@@ -7,6 +7,7 @@ use crate::git::{CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile
 use crate::graph::{GraphCommit, GraphRow, lay_out};
 use crate::mutate::{GitCli, MutationError};
 use crate::staging::build_patch;
+use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::working::{Focus, WorkingView};
 
 const LOAD_PAGE: usize = 500;
@@ -39,6 +40,7 @@ pub enum Action {
     CommitSubmit,
     ConfirmYes,
     ConfirmNo,
+    Undo,
     Reload,
     Tick(Duration),
     Quit,
@@ -66,7 +68,7 @@ pub struct CommitEditor {
 
 enum ConfirmKind {
     Discard { path: String, untracked: bool },
-    DiscardHunk { patch: String },
+    DiscardHunk { path: String, patch: String },
 }
 
 pub struct Confirm {
@@ -90,6 +92,7 @@ pub struct App {
     working: Option<WorkingView>,
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
+    last_action: Option<UndoableAction>,
     notice: Option<String>,
     panel: Option<Panel>,
     help_visible: bool,
@@ -133,6 +136,7 @@ impl App {
             working: None,
             commit: None,
             confirm: None,
+            last_action: None,
             notice: None,
             panel: None,
             help_visible: false,
@@ -268,6 +272,7 @@ impl App {
             Action::CommitSubmit => self.commit_submit(),
             Action::ConfirmYes => self.confirm_yes(),
             Action::ConfirmNo => self.confirm = None,
+            Action::Undo => self.perform_undo(),
             Action::Reload => self.reload(),
             Action::Tick(dt) => self.tick(dt),
             Action::Quit => self.should_quit = true,
@@ -444,12 +449,18 @@ impl App {
                 let Some(file) = self.focused_working_file() else {
                     return;
                 };
-                let result = if file.state == StageState::Staged {
-                    self.cli.unstage_file(&file.path)
+                let (result, action) = if file.state == StageState::Staged {
+                    (
+                        self.cli.unstage_file(&file.path),
+                        UndoableAction::Unstaged(file.path.clone()),
+                    )
                 } else {
-                    self.cli.stage_file(&file.path)
+                    (
+                        self.cli.stage_file(&file.path),
+                        UndoableAction::Staged(file.path.clone()),
+                    )
                 };
-                self.after_mutation(result);
+                self.after_mutation_recording(result, action);
             }
             Focus::Hunks => {
                 let Some((patch, staged_side)) = view
@@ -459,24 +470,34 @@ impl App {
                 else {
                     return;
                 };
-                let result = if staged_side {
-                    self.cli.unstage_hunk(&patch)
+                let (result, action) = if staged_side {
+                    (
+                        self.cli.unstage_hunk(&patch),
+                        UndoableAction::UnstagedHunk {
+                            patch: patch.clone(),
+                        },
+                    )
                 } else {
-                    self.cli.stage_hunk(&patch)
+                    (
+                        self.cli.stage_hunk(&patch),
+                        UndoableAction::StagedHunk {
+                            patch: patch.clone(),
+                        },
+                    )
                 };
-                self.after_mutation(result);
+                self.after_mutation_recording(result, action);
             }
         }
     }
 
     fn stage_all(&mut self) {
         let has_unstaged = !self.status.unstaged.is_empty() || !self.status.untracked.is_empty();
-        let result = if has_unstaged {
-            self.cli.stage_all()
+        let (result, action) = if has_unstaged {
+            (self.cli.stage_all(), UndoableAction::StagedAll)
         } else {
-            self.cli.unstage_all()
+            (self.cli.unstage_all(), UndoableAction::UnstagedAll)
         };
-        self.after_mutation(result);
+        self.after_mutation_recording(result, action);
     }
 
     fn request_discard(&mut self) {
@@ -484,14 +505,15 @@ impl App {
             return;
         };
         if view.focus == Focus::Hunks && !view.staged_side {
-            if let Some(patch) = view
+            let path = self.focused_working_file().map(|file| file.path);
+            let patch = view
                 .diff
                 .as_ref()
-                .map(|diff| build_patch(diff, &[view.hunk]))
-            {
+                .map(|diff| build_patch(diff, &[view.hunk]));
+            if let (Some(path), Some(patch)) = (path, patch) {
                 self.confirm = Some(Confirm {
                     message: "Discard this hunk? (y/n)".to_string(),
-                    kind: ConfirmKind::DiscardHunk { patch },
+                    kind: ConfirmKind::DiscardHunk { path, patch },
                 });
             }
             return;
@@ -513,17 +535,40 @@ impl App {
         let Some(confirm) = self.confirm.take() else {
             return;
         };
-        let result = match confirm.kind {
+        match confirm.kind {
             ConfirmKind::Discard { path, untracked } => {
-                if untracked {
+                let snapshot = self.repo.snapshot_blob(&path);
+                let result = if untracked {
                     self.cli.remove_untracked(&path)
                 } else {
                     self.cli.discard_file(&path)
-                }
+                };
+                self.finish_discard(result, path, snapshot);
             }
-            ConfirmKind::DiscardHunk { patch } => self.cli.discard_hunk(&patch),
-        };
-        self.after_mutation(result);
+            ConfirmKind::DiscardHunk { path, patch } => {
+                let snapshot = self.repo.snapshot_blob(&path);
+                let result = self.cli.discard_hunk(&patch);
+                self.finish_discard(result, path, snapshot);
+            }
+        }
+    }
+
+    fn finish_discard(
+        &mut self,
+        result: Result<(), MutationError>,
+        path: String,
+        snapshot: Option<Oid>,
+    ) {
+        match snapshot {
+            Some(oid) => self.after_mutation_recording(
+                result,
+                UndoableAction::Discarded {
+                    path,
+                    snapshot: oid.to_string(),
+                },
+            ),
+            None => self.after_mutation(result),
+        }
     }
 
     fn open_commit(&mut self) {
@@ -559,7 +604,7 @@ impl App {
             return;
         }
         let result = self.cli.commit(&editor.message);
-        self.after_mutation(result);
+        self.after_mutation_recording(result, UndoableAction::Committed);
         self.reload();
     }
 
@@ -613,6 +658,66 @@ impl App {
             Err(error) => Some(error.to_string()),
         };
         self.refresh_status();
+    }
+
+    fn after_mutation_recording(
+        &mut self,
+        result: Result<(), MutationError>,
+        action: UndoableAction,
+    ) {
+        if result.is_ok() {
+            self.last_action = Some(action);
+        }
+        self.after_mutation(result);
+    }
+
+    fn perform_undo(&mut self) {
+        let Some(action) = self.last_action.take() else {
+            self.notice = Some("Nothing to undo".to_string());
+            return;
+        };
+        let (ok, description) = match invert(&action) {
+            InversePlan::Stage(path) => (
+                self.cli.stage_file(&path).is_ok(),
+                format!("Undid unstage of {path}"),
+            ),
+            InversePlan::Unstage(path) => (
+                self.cli.unstage_file(&path).is_ok(),
+                format!("Undid stage of {path}"),
+            ),
+            InversePlan::StageHunk(patch) => (
+                self.cli.stage_hunk(&patch).is_ok(),
+                "Undid unstage of hunk".to_string(),
+            ),
+            InversePlan::UnstageHunk(patch) => (
+                self.cli.unstage_hunk(&patch).is_ok(),
+                "Undid stage of hunk".to_string(),
+            ),
+            InversePlan::StageAll => (
+                self.cli.stage_all().is_ok(),
+                "Undid unstage all".to_string(),
+            ),
+            InversePlan::UnstageAll => (
+                self.cli.unstage_all().is_ok(),
+                "Undid stage all".to_string(),
+            ),
+            InversePlan::RestoreFile { path, snapshot } => {
+                let restored =
+                    Oid::from_str(&snapshot).is_ok_and(|oid| self.repo.restore_blob(&path, oid));
+                (restored, format!("Undid discard of {path}"))
+            }
+            InversePlan::ReflogSoftReset => (
+                self.cli.reset_soft_previous().is_ok(),
+                "Undid commit".to_string(),
+            ),
+        };
+        if ok {
+            self.notice = Some(description);
+        } else {
+            self.notice = Some("Undo failed".to_string());
+            self.last_action = Some(action);
+        }
+        self.reload();
     }
 
     fn refresh_status(&mut self) {

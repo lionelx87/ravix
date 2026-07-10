@@ -187,6 +187,22 @@ impl Repo {
         Ok(commits)
     }
 
+    pub fn snapshot_blob(&self, path: &str) -> Option<Oid> {
+        let workdir = self.inner.workdir()?;
+        let bytes = std::fs::read(workdir.join(path)).ok()?;
+        self.inner.blob(&bytes).ok()
+    }
+
+    pub fn restore_blob(&self, path: &str, oid: Oid) -> bool {
+        let Some(workdir) = self.inner.workdir() else {
+            return false;
+        };
+        let Ok(blob) = self.inner.find_blob(oid) else {
+            return false;
+        };
+        std::fs::write(workdir.join(path), blob.content()).is_ok()
+    }
+
     pub fn changed_files(&self, id: Oid) -> Result<Vec<FileChange>, git2::Error> {
         let commit = self.inner.find_commit(id)?;
         let tree = commit.tree()?;

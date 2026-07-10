@@ -615,6 +615,92 @@ fn diff_view_syntax_highlights_and_marks_intraline_changes() {
 }
 
 #[test]
+fn undo_restores_a_discarded_file() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('d'));
+    press(&mut app, &mut input, KeyCode::Char('y'));
+    assert!(
+        !app.status().unstaged.iter().any(|f| f.path == "app.txt"),
+        "app.txt should have been discarded"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+    let screen = dump(&draw(&mut app, 100, 28));
+
+    let content = std::fs::read_to_string(dir.path().join("app.txt")).unwrap();
+    assert!(
+        content.contains("LINE ONE"),
+        "the discarded edit should be restored:\n{content}"
+    );
+    assert!(
+        app.status().unstaged.iter().any(|f| f.path == "app.txt"),
+        "app.txt should be back among unstaged changes"
+    );
+    assert!(
+        screen.contains("Undid"),
+        "an undo notice should show:\n{screen}"
+    );
+}
+
+#[test]
+fn undo_reverts_a_commit_and_restages_its_changes() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    for character in "commit it".chars() {
+        press(&mut app, &mut input, KeyCode::Char(character));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    assert_eq!(app.commits()[0].summary, "commit it");
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    assert_eq!(
+        app.commits()[0].summary,
+        "initial commit",
+        "the commit should be undone"
+    );
+    assert!(
+        app.status().staged.iter().any(|f| f.path == "readme.md"),
+        "the committed change should return staged: {:?}",
+        app.status()
+    );
+}
+
+#[test]
+fn undo_reverts_a_stage() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    assert!(app.status().staged.iter().any(|f| f.path == "app.txt"));
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    assert!(
+        !app.status().staged.iter().any(|f| f.path == "app.txt"),
+        "the stage should be undone: {:?}",
+        app.status()
+    );
+    assert!(
+        app.status().unstaged.iter().any(|f| f.path == "app.txt"),
+        "app.txt should be unstaged again"
+    );
+}
+
+#[test]
 fn discarding_a_hunk_reverts_only_that_hunk_in_the_working_tree() {
     let dir = TempDir::new().unwrap();
     dirty_repo(dir.path());
