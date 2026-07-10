@@ -23,8 +23,8 @@ as branches sprouting from a trunk line — exactly what this tool draws.
 |---|---|---|---|
 | 1 | Walking skeleton: open repo, render animated navigable graph, detail panel, help, auto-refresh | #1 | ✅ Done |
 | 2 | Working directory: status row, staging/unstage/discard per file and hunk, enriched diffs (syntect, intra-line), commit flow, snapshots + undo foundation | #3, #5, #7 | ✅ Done |
-| 3 | Branch operations: checkout, branch create/delete, join menu with merge-tree prediction, merge/rebase/cherry-pick, conflict browser, drag & drop | | Next |
-| 4 | Remotes & flow: fetch/pull/push, upstream tracking in graph, stash, command palette, celebrations | | |
+| 3 | Branch operations: checkout, branch create/delete, join menu with merge-tree prediction, merge/rebase/cherry-pick, conflict browser, drag & drop | #8, #10, #11, #14, #15 | ✅ Done |
+| 4 | Remotes & flow: fetch/pull/push, upstream tracking in graph, stash, command palette, celebrations | | Next |
 | 5 | Submodules (lazygit-style enter/exit with breadcrumb), focus mode, branch panel polish, side-by-side fullscreen diff | | |
 
 ## v2 wishlist (do not lose)
