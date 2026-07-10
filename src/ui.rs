@@ -176,6 +176,16 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
 }
 
+fn sparkle_burst(progress: f32) -> &'static str {
+    if progress > 0.66 {
+        "✦ ✧ ✨ "
+    } else if progress > 0.33 {
+        "✧ ✨ "
+    } else {
+        "✨ "
+    }
+}
+
 fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i64) {
     if area.height == 0 {
         return;
@@ -221,20 +231,32 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
         }
         spans.push(Span::raw("  "));
 
+        let celebration = app
+            .celebration()
+            .filter(|celebration| commit.id.to_string() == celebration.oid);
+        let celebrating = celebration.is_some();
+
         if let Some(commit_badges) = badges.get(&commit.id) {
-            let flash = app.checkout_flash();
             for badge in commit_badges {
                 let text = match badge.kind {
                     BadgeKind::CurrentBranch => format!(" HEAD → {} ", badge.label),
                     _ => format!(" {} ", badge.label),
                 };
                 let mut style = theme.badge_style(badge.kind);
-                if badge.kind == BadgeKind::CurrentBranch && flash > 0.0 {
+                let is_head = matches!(badge.kind, BadgeKind::CurrentBranch | BadgeKind::Head);
+                if is_head && celebrating {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
                 spans.push(Span::styled(text, style));
                 spans.push(Span::raw(" "));
             }
+        }
+
+        if let Some(burst) = celebration.filter(|celebration| celebration.sparkle) {
+            spans.push(Span::styled(
+                sparkle_burst(burst.progress),
+                Style::default().fg(theme.node).add_modifier(Modifier::BOLD),
+            ));
         }
 
         spans.push(Span::styled(
@@ -826,7 +848,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
         ("f / p / P", "fetch / pull / push (background)"),
         ("s / S", "stash changes / stash list"),
-        ("Ctrl+P", "command palette"),
+        ("Ctrl+P", "command palette (incl. celebrations dial)"),
         ("drag", "drop a branch onto another to join"),
         ("c", "commit staged changes"),
         ("d", "discard (file or hunk)"),
@@ -1280,7 +1302,7 @@ fn render_palette(frame: &mut Frame, palette: &Palette, theme: &Theme, area: Rec
     }
     for (index, (label, hint)) in rows.iter().enumerate() {
         let selected = index == palette.selected;
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 if selected { "❯ " } else { "  " },
                 Style::default().fg(theme.marker),
@@ -1289,8 +1311,14 @@ fn render_palette(frame: &mut Frame, palette: &Palette, theme: &Theme, area: Rec
                 (*label).to_string(),
                 Style::default().fg(if selected { theme.node } else { theme.summary }),
             ),
-            Span::styled(format!("  [{hint}]"), Style::default().fg(theme.meta)),
-        ]));
+        ];
+        if !hint.is_empty() {
+            spans.push(Span::styled(
+                format!("  [{hint}]"),
+                Style::default().fg(theme.meta),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
 
     frame.render_widget(Paragraph::new(lines), inner);

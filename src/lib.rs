@@ -1,5 +1,6 @@
 pub mod app;
 pub mod branches;
+pub mod celebrate;
 pub mod conflict;
 pub mod drag;
 pub mod enrich;

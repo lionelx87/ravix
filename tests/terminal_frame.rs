@@ -14,7 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tempfile::TempDir;
 
-use ogma::app::{Action, App};
+use ogma::app::{Action, App, InputContext};
 use ogma::event::InputMap;
 use ogma::ui::render;
 
@@ -915,28 +915,139 @@ fn the_current_branch_shows_fused_with_head_on_the_graph() {
     );
 }
 
+fn checkout_feature(app: &mut App, input: &mut InputMap) {
+    press(app, input, KeyCode::Char('b'));
+    settle(app);
+    press(app, input, KeyCode::Char('j'));
+    press(app, input, KeyCode::Enter);
+}
+
+fn cycle_celebrations(app: &mut App, input: &mut InputMap) {
+    press_ctrl(app, input, KeyCode::Char('p'));
+    type_text(app, input, "cycle");
+    press(app, input, KeyCode::Enter);
+}
+
 #[test]
-fn a_checkout_flashes_then_settles() {
+fn a_celebrated_action_sparkles_then_settles() {
     let dir = TempDir::new().unwrap();
     fixture_repo(dir.path());
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
 
-    press(&mut app, &mut input, KeyCode::Char('b'));
-    settle(&mut app);
-    press(&mut app, &mut input, KeyCode::Char('j'));
-    press(&mut app, &mut input, KeyCode::Enter);
+    checkout_feature(&mut app, &mut input);
 
     assert!(
-        app.checkout_flash() > 0.0,
-        "a fresh checkout should trigger the celebration flash"
+        app.celebration().is_some(),
+        "a fresh checkout should trigger a celebration"
+    );
+    let screen = dump(&draw(&mut app, 100, 24));
+    assert!(
+        screen.contains('✦'),
+        "Full intensity should render the sparkle burst:\n{screen}"
     );
 
     settle(&mut app);
+    assert!(
+        app.celebration().is_none(),
+        "the celebration should decay back to rest"
+    );
+    let after = dump(&draw(&mut app, 100, 24));
+    assert!(
+        !after.contains('✦'),
+        "the sparkle should be gone once it settles:\n{after}"
+    );
+}
+
+#[test]
+fn committing_also_celebrates() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    type_text(&mut app, &mut input, "land it");
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(
+        app.celebration().is_some(),
+        "landing a commit should trigger a celebration"
+    );
+}
+
+#[test]
+fn cycling_the_dial_from_the_palette_reports_the_new_level() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    cycle_celebrations(&mut app, &mut input);
+
+    assert_eq!(app.notice(), Some("Celebrations: subtle"));
+    assert!(
+        app.palette().is_none(),
+        "running the command should close the palette"
+    );
+}
+
+#[test]
+fn at_subtle_intensity_a_celebrated_action_pulses_without_sparkles() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    cycle_celebrations(&mut app, &mut input);
+    checkout_feature(&mut app, &mut input);
+
+    assert!(app.celebration().is_some(), "Subtle should still celebrate");
+    let screen = dump(&draw(&mut app, 100, 24));
+    assert!(
+        !screen.contains('✦'),
+        "Subtle intensity should not render sparkles:\n{screen}"
+    );
+}
+
+#[test]
+fn at_off_intensity_a_celebrated_action_does_not_celebrate() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    cycle_celebrations(&mut app, &mut input);
+    cycle_celebrations(&mut app, &mut input);
+    checkout_feature(&mut app, &mut input);
+
+    assert!(
+        app.celebration().is_none(),
+        "Off should suppress the celebration entirely"
+    );
+    let screen = dump(&draw(&mut app, 100, 24));
+    assert!(
+        !screen.contains('✦'),
+        "Off intensity should render no sparkles:\n{screen}"
+    );
+}
+
+#[test]
+fn a_celebration_opens_no_input_context() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('G'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+
+    assert!(app.celebration().is_some(), "a checkout should celebrate");
     assert_eq!(
-        app.checkout_flash(),
-        0.0,
-        "the flash should decay back to rest"
+        app.input_context(),
+        InputContext::Graph,
+        "a celebration is purely visual and must not capture input"
     );
 }
 

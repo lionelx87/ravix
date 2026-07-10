@@ -5,6 +5,7 @@ use std::time::Duration;
 use git2::Oid;
 
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
+use crate::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
 use crate::drag::{DropIntent, RowRef, resolve_drop};
 use crate::git::{
@@ -24,6 +25,7 @@ const LOAD_PAGE: usize = 500;
 const LOAD_MARGIN: usize = 64;
 const SCROLL_STEP: isize = 3;
 const PANEL_ANIMATION: Duration = Duration::from_millis(160);
+const CELEBRATION_DURATION: Duration = Duration::from_millis(350);
 const DEFAULT_PAGE: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +84,7 @@ pub enum Action {
     PaletteInput(char),
     PaletteBackspace,
     PaletteSubmit,
+    CycleCelebrations,
     Undo,
     Reload,
     Tick(Duration),
@@ -130,6 +133,7 @@ pub struct DragState {
 #[derive(Clone, Copy)]
 enum OnComplete {
     Notice(&'static str),
+    Push,
     Pull,
 }
 
@@ -169,9 +173,16 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("New branch", "n", Action::NewBranch),
     ("Join / merge", "M", Action::OpenJoin),
     ("Undo", "u", Action::Undo),
+    ("Cycle celebrations", "", Action::CycleCelebrations),
     ("Help", "?", Action::ToggleHelp),
     ("Quit", "q", Action::Quit),
 ];
+
+pub struct Celebration {
+    pub progress: f32,
+    pub oid: String,
+    pub sparkle: bool,
+}
 
 pub struct Palette {
     pub query: String,
@@ -236,7 +247,8 @@ pub struct App {
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
     alert: Option<String>,
-    checkout_flash: f32,
+    celebration: Option<Celebration>,
+    intensity: Intensity,
     last_action: Option<UndoableAction>,
     notice: Option<Notice>,
     panel: Option<Panel>,
@@ -291,7 +303,8 @@ impl App {
             commit: None,
             confirm: None,
             alert: None,
-            checkout_flash: 0.0,
+            celebration: None,
+            intensity: Intensity::Full,
             last_action: None,
             notice: None,
             panel: None,
@@ -397,8 +410,8 @@ impl App {
         self.alert.as_deref()
     }
 
-    pub fn checkout_flash(&self) -> f32 {
-        self.checkout_flash
+    pub fn celebration(&self) -> Option<&Celebration> {
+        self.celebration.as_ref()
     }
 
     pub fn notice(&self) -> Option<&str> {
@@ -500,7 +513,7 @@ impl App {
                 .stash
                 .as_ref()
                 .is_some_and(|panel| panel.slide != panel.target)
-            || self.checkout_flash > 0.0
+            || self.celebration.is_some()
             || self.remote.is_some()
     }
 
@@ -570,6 +583,7 @@ impl App {
             Action::BranchNameInput(character) => self.branch_name_input(character),
             Action::BranchNameBackspace => self.branch_name_backspace(),
             Action::BranchNameSubmit => self.branch_name_submit(),
+            Action::CycleCelebrations => self.cycle_celebrations(),
             Action::Undo => self.perform_undo(),
             Action::Reload => self.reload(),
             Action::Tick(dt) => self.tick(dt),
@@ -845,6 +859,7 @@ impl App {
                             self.last_action = Some(UndoableAction::Merged { previous });
                         }
                         self.reload();
+                        self.celebrate(Event::Pull);
                         self.info(format!("Pulled — fast-forwarded to {up_name}"));
                     }
                     Err(error) => self.fail(error.to_string()),
@@ -986,7 +1001,7 @@ impl App {
         &mut self,
         op: impl FnOnce(&GitCli) -> Result<(), MutationError> + Send + 'static,
     ) {
-        self.spawn_remote("pushing", OnComplete::Notice("Pushed"), op);
+        self.spawn_remote("pushing", OnComplete::Push, op);
     }
 
     fn spawn_remote(
@@ -1026,6 +1041,10 @@ impl App {
                         self.reload();
                         match on_complete {
                             OnComplete::Notice(message) => self.info(message.to_string()),
+                            OnComplete::Push => {
+                                self.celebrate(Event::Push);
+                                self.info("Pushed".to_string());
+                            }
                             OnComplete::Pull => self.pull_integrate(),
                         }
                     }
@@ -1302,8 +1321,12 @@ impl App {
             return;
         }
         let result = self.cli.commit(&editor.message);
+        let committed = result.is_ok();
         self.after_mutation_recording(result, UndoableAction::Committed);
         self.reload();
+        if committed {
+            self.celebrate(Event::Commit);
+        }
     }
 
     fn toggle_focus(&mut self) {
@@ -1515,12 +1538,31 @@ impl App {
                 }
                 self.close_branch_panel();
                 self.reload();
-                self.checkout_flash = 1.0;
+                self.celebrate(Event::Checkout);
                 let landing = self.landing_notice();
                 self.info(landing);
             }
             Err(error) => self.fail(error.to_string()),
         }
+    }
+
+    fn celebrate(&mut self, event: Event) {
+        if !should_celebrate(event, self.intensity) {
+            return;
+        }
+        let Some(oid) = self.repo.head_oid() else {
+            return;
+        };
+        self.celebration = Some(Celebration {
+            progress: 1.0,
+            oid,
+            sparkle: self.intensity == Intensity::Full,
+        });
+    }
+
+    fn cycle_celebrations(&mut self) {
+        self.intensity = next_intensity(self.intensity);
+        self.info(format!("Celebrations: {}", self.intensity.label()));
     }
 
     fn landing_notice(&self) -> String {
@@ -1701,6 +1743,11 @@ impl App {
                 }
                 self.close_join_menu();
                 self.reload();
+                self.celebrate(if strategy == JoinStrategy::CherryPick {
+                    Event::CherryPick
+                } else {
+                    Event::Merge
+                });
                 self.info(label.to_string());
             }
             Err(error) => match self.repo.state_op() {
@@ -1725,6 +1772,7 @@ impl App {
         self.close_join_menu();
         self.conflict = None;
         self.reload();
+        self.celebrate(Event::Rebase);
         self.info("Rebased".to_string());
     }
 
@@ -1863,6 +1911,11 @@ impl App {
                 }
                 self.conflict = None;
                 self.reload();
+                self.celebrate(match op {
+                    OpKind::CherryPick => Event::CherryPick,
+                    OpKind::Rebase => Event::Rebase,
+                    OpKind::Merge => Event::Merge,
+                });
                 self.info(format!("Resolved {}", op.label()));
             }
             Err(error) => self.fail(error.to_string()),
@@ -2135,8 +2188,11 @@ impl App {
                 self.stash = None;
             }
         }
-        if self.checkout_flash > 0.0 {
-            self.checkout_flash = (self.checkout_flash - step).max(0.0);
+        if let Some(celebration) = &mut self.celebration {
+            celebration.progress -= dt.as_secs_f32() / CELEBRATION_DURATION.as_secs_f32();
+            if celebration.progress <= 0.0 {
+                self.celebration = None;
+            }
         }
         if let Some(job) = &mut self.remote {
             job.spinner = job.spinner.wrapping_add(1);
