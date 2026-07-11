@@ -28,6 +28,11 @@ impl<T> SlidePanel<T> {
         self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
     }
 
+    pub fn refresh(&mut self, entries: Vec<T>) {
+        self.selected = self.selected.min(entries.len().saturating_sub(1));
+        self.entries = entries;
+    }
+
     pub fn close(&mut self) {
         self.target = 0.0;
     }

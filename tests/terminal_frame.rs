@@ -692,6 +692,108 @@ fn a_branch_lines_color_is_distinct_and_stable_when_another_branch_is_hidden() {
 }
 
 #[test]
+fn activating_a_focus_set_recomposes_the_graph_to_it() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    press(&mut app, &mut input, KeyCode::Char('F'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('n'));
+    for ch in "hide-feature".chars() {
+        press(&mut app, &mut input, KeyCode::Char(ch));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+    let shown = dump(&draw(&mut app, 80, 20));
+    assert!(
+        shown.contains("Work on feature"),
+        "feature is visible again before activating the set:\n{shown}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('F'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    let restored = dump(&draw(&mut app, 80, 20));
+    assert!(
+        !restored.contains("Work on feature"),
+        "activating the saved set hides feature again:\n{restored}"
+    );
+}
+
+#[test]
+fn j_moves_the_focus_panel_selection_marker() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('F'));
+    settle(&mut app);
+    for name in ["aaa", "bbb"] {
+        press(&mut app, &mut input, KeyCode::Char('n'));
+        for ch in name.chars() {
+            press(&mut app, &mut input, KeyCode::Char(ch));
+        }
+        press(&mut app, &mut input, KeyCode::Enter);
+    }
+
+    let before = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker on open");
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    let after = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker after move");
+
+    assert_eq!(
+        after,
+        before + 1,
+        "j moves the focus panel's own selection, not the graph underneath"
+    );
+}
+
+#[test]
+fn a_saved_focus_set_survives_a_relaunch() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('F'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('n'));
+    for ch in "myset".chars() {
+        press(&mut app, &mut input, KeyCode::Char(ch));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    let mut relaunched = App::open(dir.path()).unwrap();
+    let mut input2 = InputMap::default();
+    press(&mut relaunched, &mut input2, KeyCode::Char('F'));
+    settle(&mut relaunched);
+    let panel = panel_region(&draw(&mut relaunched, 80, 20));
+    assert!(
+        panel.contains("myset"),
+        "the saved focus set is written to disk and listed in the focus panel after relaunch:\n{panel}"
+    );
+}
+
+#[test]
 fn hiding_a_branch_recomposes_the_graph_without_its_exclusive_commits() {
     let dir = TempDir::new().unwrap();
     fixture_repo(dir.path());

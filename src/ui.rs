@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use git2::Oid;
 use syntect::parsing::SyntaxReference;
 
-use crate::app::{App, BranchCreate, CommitEditor, Confirm, Palette, Panel};
+use crate::app::{App, BranchCreate, CommitEditor, Confirm, FocusPanel, Palette, Panel};
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
@@ -165,6 +165,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     if let Some(panel) = app.stash_panel() {
         render_stash_panel(frame, panel, &theme, graph_area);
     }
+    if let Some(panel) = app.focus_panel() {
+        render_focus_panel(frame, panel, &theme, graph_area);
+    }
     if let Some(browser) = app.conflict_browser() {
         render_conflict_browser(frame, browser, &theme, graph_area);
     }
@@ -173,6 +176,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     if let Some(editor) = app.branch_create() {
         render_branch_create(frame, editor, &theme, area);
+    }
+    if let Some(name) = app.focus_name() {
+        render_focus_name(frame, name, &theme, area);
     }
     if let Some(confirm) = app.confirm() {
         render_confirm(frame, confirm, &theme, area);
@@ -949,6 +955,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
             "branches: checkout/new/delete · hide/solo/pin · / filter",
         ),
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
+        ("F", "focus sets: save / activate visibility views"),
         ("f / p / P", "fetch / pull / push (background)"),
         ("s / S", "stash changes / stash list"),
         ("Ctrl+P", "command palette (incl. celebrations dial)"),
@@ -957,8 +964,7 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("d", "discard (file or hunk)"),
         ("u", "undo last action"),
         ("Esc", "close panel or help"),
-        ("?", "toggle this help"),
-        ("q", "quit"),
+        ("? / q", "toggle this help · quit"),
     ];
 
     let width = 44u16.min(area.width);
@@ -1324,6 +1330,62 @@ fn render_commit_editor(frame: &mut Frame, editor: &CommitEditor, theme: &Theme,
 
     let line = Line::from(vec![
         Span::styled(editor.message.clone(), Style::default().fg(theme.node)),
+        Span::styled("█", Style::default().fg(theme.branch_badge)),
+    ]);
+    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_focus_panel(frame: &mut Frame, panel: &FocusPanel, theme: &Theme, area: Rect) {
+    render_slide_list(
+        frame,
+        panel,
+        theme,
+        area,
+        SlideList {
+            title: " Focus sets ",
+            empty: "no saved focus sets",
+            hints: &["Enter activate · n save current · d delete"],
+            fraction: 0.4,
+            min_width: 34.0,
+        },
+        |set, selected| {
+            Line::from(vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(theme.marker),
+                ),
+                Span::styled(
+                    set.name.clone(),
+                    Style::default().fg(if selected { theme.node } else { theme.summary }),
+                ),
+                Span::styled(
+                    format!(
+                        "  {} hidden · {} pinned",
+                        set.state.hidden.len(),
+                        set.state.pinned.len()
+                    ),
+                    Style::default().fg(theme.meta),
+                ),
+            ])
+        },
+    );
+}
+
+fn render_focus_name(frame: &mut Frame, name: &str, theme: &Theme, area: Rect) {
+    let width = 48u16.min(area.width);
+    let height = 3u16.min(area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Save focus as   [Enter] save · [Esc] cancel ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let line = Line::from(vec![
+        Span::styled(name.to_string(), Style::default().fg(theme.node)),
         Span::styled("█", Style::default().fg(theme.branch_badge)),
     ]);
     frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);

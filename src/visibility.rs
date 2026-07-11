@@ -1,5 +1,11 @@
 use std::collections::HashSet;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibilitySnapshot {
+    pub hidden: Vec<String>,
+    pub pinned: Vec<String>,
+}
+
 #[derive(Default)]
 pub struct Visibility {
     hidden: HashSet<String>,
@@ -34,4 +40,22 @@ impl Visibility {
     pub fn is_pinned(&self, name: &str) -> bool {
         self.pinned.contains(name)
     }
+
+    pub fn snapshot(&self) -> VisibilitySnapshot {
+        VisibilitySnapshot {
+            hidden: sorted(&self.hidden),
+            pinned: sorted(&self.pinned),
+        }
+    }
+
+    pub fn restore(&mut self, snapshot: VisibilitySnapshot) {
+        self.hidden = snapshot.hidden.into_iter().collect();
+        self.pinned = snapshot.pinned.into_iter().collect();
+    }
+}
+
+fn sorted(set: &HashSet<String>) -> Vec<String> {
+    let mut names: Vec<String> = set.iter().cloned().collect();
+    names.sort();
+    names
 }

@@ -10,6 +10,28 @@ fn everything_is_visible_by_default() {
 }
 
 #[test]
+fn snapshot_captures_sorted_state_and_restore_reapplies_it() {
+    let mut visibility = Visibility::default();
+    visibility.toggle("main");
+    visibility.toggle("alpha");
+    visibility.pin("feature/x");
+
+    let snapshot = visibility.snapshot();
+    assert_eq!(
+        snapshot.hidden,
+        vec!["alpha".to_string(), "main".to_string()],
+        "snapshot is sorted for deterministic output"
+    );
+    assert_eq!(snapshot.pinned, vec!["feature/x".to_string()]);
+
+    let mut restored = Visibility::default();
+    restored.restore(snapshot);
+    assert!(!restored.is_visible("alpha", false));
+    assert!(!restored.is_visible("main", false));
+    assert!(restored.is_pinned("feature/x"));
+}
+
+#[test]
 fn toggle_hides_then_reshows_a_branch() {
     let mut visibility = Visibility::default();
 

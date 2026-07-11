@@ -8,6 +8,7 @@ use crate::branches::{BranchEntry, BranchPanel, branch_list};
 use crate::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
 use crate::drag::{DropIntent, RowRef, resolve_drop};
+use crate::focus::{self, FocusSet};
 use crate::git::{
     BadgeKind, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus,
 };
@@ -86,6 +87,13 @@ pub enum Action {
     BranchFilterInput(char),
     BranchFilterBackspace,
     BranchFilterSubmit,
+    ToggleFocusPanel,
+    SaveFocus,
+    FocusNameInput(char),
+    FocusNameBackspace,
+    FocusNameSubmit,
+    ActivateFocus,
+    DeleteFocus,
     BranchNameInput(char),
     BranchNameBackspace,
     BranchNameSubmit,
@@ -109,6 +117,8 @@ pub enum InputContext {
     Branch,
     BranchName,
     BranchFilter,
+    FocusSets,
+    FocusName,
     Alert,
     Join,
     Conflict,
@@ -139,6 +149,8 @@ struct BranchFilter {
     editing: bool,
 }
 
+pub type FocusPanel = SlidePanel<FocusSet>;
+
 pub struct DragState {
     down: usize,
     source_branch: Option<String>,
@@ -166,6 +178,7 @@ enum ConfirmKind {
     ForceDeleteBranch { name: String, oid: Option<String> },
     ForcePush,
     DropStash { index: usize },
+    DeleteFocus { name: String },
 }
 
 pub struct Confirm {
@@ -185,6 +198,7 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("Stash changes", "s", Action::StashSave),
     ("Stash list", "S", Action::ToggleStashes),
     ("Branches", "b", Action::ToggleBranches),
+    ("Focus sets", "F", Action::ToggleFocusPanel),
     ("New branch", "n", Action::NewBranch),
     ("Join / merge", "M", Action::OpenJoin),
     ("Undo", "u", Action::Undo),
@@ -255,6 +269,9 @@ pub struct App {
     branch: Option<BranchPanel>,
     branch_filter: Option<BranchFilter>,
     branch_all: Vec<BranchEntry>,
+    focus_panel: Option<FocusPanel>,
+    focus_sets: Vec<FocusSet>,
+    focus_name: Option<String>,
     join: Option<JoinMenu>,
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
@@ -315,6 +332,9 @@ impl App {
             branch: None,
             branch_filter: None,
             branch_all: Vec::new(),
+            focus_panel: None,
+            focus_sets: Vec::new(),
+            focus_name: None,
             join: None,
             conflict: None,
             edit_request: None,
@@ -335,11 +355,30 @@ impl App {
             should_quit: false,
         };
         app.detect_conflict();
+        app.focus_sets = app.load_focus_sets();
         Ok(app)
     }
 
     pub fn git_dir(&self) -> std::path::PathBuf {
         self.repo.git_dir().to_path_buf()
+    }
+
+    fn focus_path(&self) -> std::path::PathBuf {
+        self.repo.git_dir().join("ogma").join("focus")
+    }
+
+    fn load_focus_sets(&self) -> Vec<FocusSet> {
+        std::fs::read_to_string(self.focus_path())
+            .map(|text| focus::parse(&text))
+            .unwrap_or_default()
+    }
+
+    fn write_focus_sets(&self) {
+        let path = self.focus_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, focus::serialize(&self.focus_sets));
     }
 
     pub fn meta(&self) -> &RepoMeta {
@@ -402,6 +441,14 @@ impl App {
         self.branch_filter
             .as_ref()
             .map(|filter| filter.query.as_str())
+    }
+
+    pub fn focus_panel(&self) -> Option<&FocusPanel> {
+        self.focus_panel.as_ref()
+    }
+
+    pub fn focus_name(&self) -> Option<&str> {
+        self.focus_name.as_deref()
     }
 
     pub fn join_menu(&self) -> Option<&JoinMenu> {
@@ -516,12 +563,16 @@ impl App {
             InputContext::Stash
         } else if self.join.is_some() {
             InputContext::Join
+        } else if self.focus_name.is_some() {
+            InputContext::FocusName
         } else if self
             .branch_filter
             .as_ref()
             .is_some_and(|filter| filter.editing)
         {
             InputContext::BranchFilter
+        } else if self.focus_panel.is_some() {
+            InputContext::FocusSets
         } else if self.branch.is_some() {
             InputContext::Branch
         } else if self.working.is_some() {
@@ -545,6 +596,10 @@ impl App {
                 .as_ref()
                 .is_some_and(|menu| menu.panel.is_sliding())
             || self.stash.as_ref().is_some_and(SlidePanel::is_sliding)
+            || self
+                .focus_panel
+                .as_ref()
+                .is_some_and(SlidePanel::is_sliding)
             || self.celebration.is_some()
             || self.remote.is_some()
     }
@@ -619,6 +674,13 @@ impl App {
             Action::BranchFilterInput(character) => self.branch_filter_input(character),
             Action::BranchFilterBackspace => self.branch_filter_backspace(),
             Action::BranchFilterSubmit => self.branch_filter_submit(),
+            Action::ToggleFocusPanel => self.toggle_focus_panel(),
+            Action::SaveFocus => self.start_save_focus(),
+            Action::FocusNameInput(character) => self.focus_name_input(character),
+            Action::FocusNameBackspace => self.focus_name_backspace(),
+            Action::FocusNameSubmit => self.focus_name_submit(),
+            Action::ActivateFocus => self.activate_focus(),
+            Action::DeleteFocus => self.request_delete_focus(),
             Action::BranchNameInput(character) => self.branch_name_input(character),
             Action::BranchNameBackspace => self.branch_name_backspace(),
             Action::BranchNameSubmit => self.branch_name_submit(),
@@ -641,6 +703,10 @@ impl App {
         }
         if let Some(browser) = &mut self.conflict {
             browser.move_block(delta);
+            return;
+        }
+        if let Some(panel) = &mut self.focus_panel {
+            panel.move_selection(delta);
             return;
         }
         if let Some(panel) = &mut self.stash {
@@ -674,6 +740,10 @@ impl App {
         }
         if let Some(browser) = &mut self.conflict {
             browser.move_block(-delta);
+            return;
+        }
+        if let Some(panel) = &mut self.focus_panel {
+            panel.move_selection(-delta);
             return;
         }
         if let Some(panel) = &mut self.stash {
@@ -941,8 +1011,7 @@ impl App {
     fn refresh_stash(&mut self) {
         let entries = self.cli.stash_list();
         if let Some(panel) = &mut self.stash {
-            panel.selected = panel.selected.min(entries.len().saturating_sub(1));
-            panel.entries = entries;
+            panel.refresh(entries);
         }
     }
 
@@ -1134,7 +1203,9 @@ impl App {
     }
 
     fn dismiss(&mut self) {
-        if self.branch_filter.is_some() {
+        if self.focus_name.is_some() {
+            self.focus_name = None;
+        } else if self.branch_filter.is_some() {
             self.branch_filter = None;
             self.apply_branch_filter();
         } else if self.alert.is_some() {
@@ -1149,6 +1220,8 @@ impl App {
             self.confirm = None;
         } else if self.help_visible {
             self.help_visible = false;
+        } else if let Some(panel) = &mut self.focus_panel {
+            panel.close();
         } else if let Some(panel) = &mut self.stash {
             panel.close();
         } else if let Some(menu) = &mut self.join {
@@ -1304,6 +1377,11 @@ impl App {
             ConfirmKind::DropStash { index } => {
                 let result = self.cli.stash_drop(index);
                 self.after_stash_mutation(result, "Dropped stash");
+            }
+            ConfirmKind::DeleteFocus { name } => {
+                focus::remove(&mut self.focus_sets, &name);
+                self.write_focus_sets();
+                self.refresh_focus_panel();
             }
         }
     }
@@ -1619,9 +1697,90 @@ impl App {
                 .collect()
         };
         if let Some(panel) = &mut self.branch {
-            panel.selected = panel.selected.min(entries.len().saturating_sub(1));
-            panel.entries = entries;
+            panel.refresh(entries);
         }
+    }
+
+    fn toggle_focus_panel(&mut self) {
+        if self.focus_panel.is_some() {
+            self.close_focus_panel();
+            return;
+        }
+        self.focus_panel = Some(FocusPanel::opening(self.focus_sets.clone()));
+    }
+
+    fn close_focus_panel(&mut self) {
+        if let Some(panel) = &mut self.focus_panel {
+            panel.close();
+        }
+    }
+
+    fn start_save_focus(&mut self) {
+        if self.focus_panel.is_some() {
+            self.focus_name = Some(String::new());
+        }
+    }
+
+    fn focus_name_input(&mut self, character: char) {
+        if let Some(name) = &mut self.focus_name {
+            name.push(character);
+        }
+    }
+
+    fn focus_name_backspace(&mut self) {
+        if let Some(name) = &mut self.focus_name {
+            name.pop();
+        }
+    }
+
+    fn focus_name_submit(&mut self) {
+        let Some(name) = self.focus_name.take() else {
+            return;
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let state = self.visibility.snapshot();
+        focus::upsert(&mut self.focus_sets, FocusSet { name, state });
+        self.write_focus_sets();
+        self.refresh_focus_panel();
+    }
+
+    fn refresh_focus_panel(&mut self) {
+        let entries = self.focus_sets.clone();
+        if let Some(panel) = &mut self.focus_panel {
+            panel.refresh(entries);
+        }
+    }
+
+    fn activate_focus(&mut self) {
+        let Some(set) = self
+            .focus_panel
+            .as_ref()
+            .and_then(FocusPanel::focused)
+            .cloned()
+        else {
+            return;
+        };
+        self.visibility.restore(set.state);
+        self.close_focus_panel();
+        self.reload();
+    }
+
+    fn request_delete_focus(&mut self) {
+        let Some(name) = self
+            .focus_panel
+            .as_ref()
+            .and_then(FocusPanel::focused)
+            .map(|set| set.name.clone())
+        else {
+            return;
+        };
+        self.confirm = Some(Confirm {
+            message: format!("Delete focus set '{name}'? (y/n)"),
+            kind: ConfirmKind::DeleteFocus { name },
+        });
     }
 
     fn checkout_focused_branch(&mut self) {
@@ -2331,6 +2490,13 @@ impl App {
             panel.advance(step);
             if panel.is_dismissed() {
                 self.stash = None;
+            }
+        }
+        if let Some(panel) = &mut self.focus_panel {
+            panel.advance(step);
+            if panel.is_dismissed() {
+                self.focus_panel = None;
+                self.focus_name = None;
             }
         }
         if let Some(celebration) = &mut self.celebration {

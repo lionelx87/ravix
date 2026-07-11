@@ -5,6 +5,7 @@ pub mod conflict;
 pub mod drag;
 pub mod enrich;
 pub mod event;
+pub mod focus;
 pub mod git;
 pub mod graph;
 pub mod join;
