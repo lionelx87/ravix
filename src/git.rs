@@ -502,14 +502,14 @@ impl Repo {
                 let mut lines = Vec::new();
                 for line_index in 0..line_count {
                     let line = patch.line_in_hunk(hunk_index, line_index)?;
-                    let text = String::from_utf8_lossy(line.content());
-                    let text = text.strip_suffix('\n').unwrap_or(&text);
-                    let marker = match line.origin() {
-                        '+' | '>' => '+',
-                        '-' | '<' => '-',
-                        _ => ' ',
+                    let content = String::from_utf8_lossy(line.content());
+                    let rendered = match line.origin() {
+                        '+' => format!("+{}", content.strip_suffix('\n').unwrap_or(&content)),
+                        '-' => format!("-{}", content.strip_suffix('\n').unwrap_or(&content)),
+                        ' ' => format!(" {}", content.strip_suffix('\n').unwrap_or(&content)),
+                        _ => content.trim_matches('\n').to_string(),
                     };
-                    lines.push(format!("{marker}{text}"));
+                    lines.push(rendered);
                 }
                 hunks.push(Hunk { header, lines });
             }
