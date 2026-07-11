@@ -18,7 +18,7 @@ use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
 use crate::remote::{PullAction, PushState, is_non_fast_forward, pull_action, push_state};
 use crate::slide::{self, SlidePanel, advance};
-use crate::staging::build_patch;
+use crate::staging::{FileDiff, build_patch};
 use crate::stash::StashPanel;
 use crate::submodule::{Submodule, breadcrumb_label};
 use crate::undo::{InversePlan, UndoableAction, invert};
@@ -125,6 +125,7 @@ pub enum InputContext {
     FocusSets,
     FocusName,
     Submodules,
+    CommitDiff,
     Alert,
     Join,
     Conflict,
@@ -137,6 +138,10 @@ pub struct Panel {
     pub changed_files: Vec<FileChange>,
     pub progress: f32,
     pub target: f32,
+    pub fullscreen: bool,
+    pub file: usize,
+    pub diff: Option<FileDiff>,
+    pub split: bool,
 }
 
 #[derive(Default)]
@@ -602,6 +607,8 @@ impl App {
             InputContext::Branch
         } else if self.working.is_some() {
             InputContext::Working
+        } else if self.panel.as_ref().is_some_and(|panel| panel.fullscreen) {
+            InputContext::CommitDiff
         } else {
             InputContext::Graph
         }
@@ -724,6 +731,10 @@ impl App {
     }
 
     fn move_down(&mut self, delta: isize) {
+        if self.panel.as_ref().is_some_and(|panel| panel.fullscreen) {
+            self.commit_diff_move(delta);
+            return;
+        }
         if let Some(palette) = &mut self.palette {
             palette.move_selection(delta);
             return;
@@ -765,6 +776,10 @@ impl App {
     }
 
     fn move_up(&mut self, delta: isize) {
+        if self.panel.as_ref().is_some_and(|panel| panel.fullscreen) {
+            self.commit_diff_move(-delta);
+            return;
+        }
         if let Some(palette) = &mut self.palette {
             palette.move_selection(-delta);
             return;
@@ -1222,6 +1237,8 @@ impl App {
                 self.working = Some(WorkingView::opening());
                 self.sync_focus_diff();
             }
+        } else if self.panel.as_ref().is_some_and(|panel| !panel.fullscreen) {
+            self.expand_commit_diff();
         } else {
             self.open_panel();
         }
@@ -1237,6 +1254,10 @@ impl App {
                 panel.commit_index = self.selected;
                 panel.changed_files = changed_files;
                 panel.target = 1.0;
+                panel.fullscreen = false;
+                panel.file = 0;
+                panel.diff = None;
+                panel.split = false;
             }
             None => {
                 self.panel = Some(Panel {
@@ -1244,9 +1265,46 @@ impl App {
                     changed_files,
                     progress: 0.0,
                     target: 1.0,
+                    fullscreen: false,
+                    file: 0,
+                    diff: None,
+                    split: false,
                 });
             }
         }
+    }
+
+    fn expand_commit_diff(&mut self) {
+        if let Some(panel) = &mut self.panel {
+            panel.fullscreen = true;
+            panel.file = 0;
+        }
+        self.sync_commit_diff();
+    }
+
+    fn sync_commit_diff(&mut self) {
+        let Some(panel) = self.panel.as_ref() else {
+            return;
+        };
+        let commit_id = self.commits.get(panel.commit_index).map(|commit| commit.id);
+        let path = panel
+            .changed_files
+            .get(panel.file)
+            .map(|file| file.path.clone());
+        let diff = match (commit_id, path) {
+            (Some(id), Some(path)) => self.repo.commit_file_diff(id, &path).ok().flatten(),
+            _ => None,
+        };
+        if let Some(panel) = &mut self.panel {
+            panel.diff = diff;
+        }
+    }
+
+    fn commit_diff_move(&mut self, delta: isize) {
+        if let Some(panel) = &mut self.panel {
+            panel.file = slide::clamp_index(panel.file, delta, panel.changed_files.len());
+        }
+        self.sync_commit_diff();
     }
 
     fn dismiss(&mut self) {
@@ -1286,7 +1344,11 @@ impl App {
                 view.target = 0.0;
             }
         } else if let Some(panel) = &mut self.panel {
-            panel.target = 0.0;
+            if panel.fullscreen {
+                panel.fullscreen = false;
+            } else {
+                panel.target = 0.0;
+            }
         }
     }
 
@@ -1519,6 +1581,10 @@ impl App {
     fn toggle_diff_view(&mut self) {
         if let Some(view) = &mut self.working {
             view.split = !view.split;
+        } else if let Some(panel) = &mut self.panel
+            && panel.fullscreen
+        {
+            panel.split = !panel.split;
         }
     }
 

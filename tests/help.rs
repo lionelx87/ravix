@@ -75,6 +75,7 @@ fn every_panel_help_key_is_actually_bound_by_its_handler() {
         InputContext::Submodules,
         InputContext::Join,
         InputContext::Conflict,
+        InputContext::CommitDiff,
     ];
     for context in contexts {
         for (keys, description) in context_help(context).bindings {

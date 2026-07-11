@@ -39,6 +39,10 @@ pub fn context_help(context: InputContext) -> HelpPage {
             title: "Submodules",
             bindings: SUBMODULE,
         },
+        InputContext::CommitDiff => HelpPage {
+            title: "Commit diff",
+            bindings: COMMIT_DIFF,
+        },
         _ => HelpPage {
             title: "Keys",
             bindings: FALLBACK,
@@ -122,6 +126,12 @@ const SUBMODULE: &[(&str, &str)] = &[
     ("j / k", "select a submodule"),
     ("Enter", "enter the submodule"),
     ("> / Esc", "close (use < in the graph to exit a submodule)"),
+];
+
+const COMMIT_DIFF: &[(&str, &str)] = &[
+    ("j / k", "select next / previous file"),
+    ("v", "toggle side-by-side diff"),
+    ("Esc", "collapse to the graph"),
 ];
 
 const FALLBACK: &[(&str, &str)] = &[

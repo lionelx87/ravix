@@ -34,12 +34,7 @@ impl WorkingView {
     }
 
     pub fn move_file(&mut self, delta: isize, len: usize) {
-        if len == 0 {
-            self.selected = 0;
-            return;
-        }
-        let last = (len - 1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+        self.selected = crate::slide::clamp_index(self.selected, delta, len);
     }
 
     pub fn move_hunk(&mut self, delta: isize) {

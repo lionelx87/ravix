@@ -16,11 +16,11 @@ use crate::app::{
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
-use crate::git::{BadgeKind, RefBadge};
+use crate::git::{BadgeKind, FileStatus, RefBadge};
 use crate::help::context_help;
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
-use crate::staging::{content_of, marker_of, split_rows};
+use crate::staging::{FileDiff, content_of, marker_of, split_rows};
 use crate::stash::StashPanel;
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
@@ -153,7 +153,11 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
         }
     }
     if let Some(panel) = app.panel() {
-        render_panel(frame, app, panel, &theme, graph_area);
+        if panel.fullscreen {
+            render_commit_fullscreen(frame, app, panel, &theme, graph_area);
+        } else {
+            render_panel(frame, app, panel, &theme, graph_area);
+        }
     }
     if let Some(panel) = app.branch_panel() {
         render_branch_panel(
@@ -219,6 +223,51 @@ fn branch_name_at(oid: &Oid, badges: &HashMap<Oid, Vec<RefBadge>>) -> Option<Str
             )
         })
         .map(|badge| badge.label.clone())
+}
+
+fn status_color(code: char, theme: &Theme) -> Color {
+    match code {
+        'A' => theme.added,
+        'D' => theme.removed,
+        'M' => theme.wip,
+        'R' | 'C' | 'T' => theme.branch_badge,
+        _ => theme.meta,
+    }
+}
+
+fn status_span(status: FileStatus, theme: &Theme) -> Span<'static> {
+    let code = status.code();
+    Span::styled(
+        format!("{code} "),
+        Style::default()
+            .fg(status_color(code, theme))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn render_diff_pane(
+    frame: &mut Frame,
+    diff: Option<&FileDiff>,
+    split: bool,
+    focused_hunk: Option<usize>,
+    theme: &Theme,
+    area: Rect,
+) {
+    let mode = if split {
+        "side-by-side · [v] unified"
+    } else {
+        "[v] side-by-side"
+    };
+    let title = diff
+        .map(|diff| format!(" {}   {mode} ", diff.new_path))
+        .unwrap_or_else(|| format!(" Diff   {mode} "));
+    let diff_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.label))
+        .title(title);
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let content = diff_pane_lines(diff, split, focused_hunk, inner_width, theme);
+    frame.render_widget(Paragraph::new(content).block(diff_block), area);
 }
 
 fn fnv1a(text: &str) -> u32 {
@@ -487,7 +536,11 @@ fn render_panel(frame: &mut Frame, app: &App, panel: &Panel, theme: &Theme, area
         )),
     ];
     for file in &panel.changed_files {
-        lines.push(Line::from(format!(" {} {}", file.status, file.path)));
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            status_span(file.status, theme),
+            Span::raw(file.path.clone()),
+        ]));
     }
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
@@ -1104,15 +1157,11 @@ fn hunk_header_line(header: &str, focused: bool, theme: &Theme) -> Line<'static>
     ])
 }
 
-fn diff_lines(view: &WorkingView, theme: &Theme) -> Vec<Line<'static>> {
-    let Some(diff) = view.diff.as_ref() else {
-        return no_diff_lines(theme);
-    };
-
+fn diff_lines(diff: &FileDiff, focused_hunk: Option<usize>, theme: &Theme) -> Vec<Line<'static>> {
     let syntax = enrich::highlighter().language(&diff.new_path);
     let mut lines = Vec::new();
     for (index, hunk) in diff.hunks.iter().enumerate() {
-        let focused = view.focus == Focus::Hunks && index == view.hunk;
+        let focused = focused_hunk == Some(index);
         lines.push(hunk_header_line(&hunk.header, focused, theme));
         let emphasis = intraline_emphasis(&hunk.lines);
         for (line, flags) in hunk.lines.iter().zip(&emphasis) {
@@ -1263,7 +1312,11 @@ fn render_working_panel(
         "── diff ───────────────",
         Style::default().fg(theme.meta),
     )));
-    lines.extend(diff_lines(view, theme));
+    let focused_hunk = (view.focus == Focus::Hunks).then_some(view.hunk);
+    match view.diff.as_ref() {
+        Some(diff) => lines.extend(diff_lines(diff, focused_hunk, theme)),
+        None => lines.extend(no_diff_lines(theme)),
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "[space] stage  [Tab] hunks  [d] discard  [c] commit",
@@ -1271,6 +1324,56 @@ fn render_working_panel(
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_commit_fullscreen(
+    frame: &mut Frame,
+    app: &App,
+    panel: &Panel,
+    theme: &Theme,
+    area: Rect,
+) {
+    frame.render_widget(Clear, area);
+    let columns = Layout::horizontal([Constraint::Length(46), Constraint::Min(0)]).split(area);
+
+    let heading = app
+        .commits()
+        .get(panel.commit_index)
+        .map(|commit| format!(" {}   {} ", commit.short_id, commit.summary))
+        .unwrap_or_else(|| " Commit ".to_string());
+    let files_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(heading);
+    let file_lines: Vec<Line> = panel
+        .changed_files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            let selected = index == panel.file;
+            Line::from(vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(theme.marker),
+                ),
+                status_span(file.status, theme),
+                Span::styled(
+                    file.path.clone(),
+                    Style::default().fg(if selected { theme.node } else { theme.summary }),
+                ),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(file_lines).block(files_block), columns[0]);
+
+    render_diff_pane(
+        frame,
+        panel.diff.as_ref(),
+        panel.split,
+        None,
+        theme,
+        columns[1],
+    );
 }
 
 fn render_working_fullscreen(
@@ -1292,34 +1395,35 @@ fn render_working_fullscreen(
         columns[0],
     );
 
-    let mode = if view.split {
-        "side-by-side · [v] unified"
-    } else {
-        "[v] side-by-side"
-    };
-    let title = view
-        .diff
-        .as_ref()
-        .map(|diff| format!(" {}   {mode} ", diff.new_path))
-        .unwrap_or_else(|| format!(" Diff   {mode} "));
-    let diff_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.label))
-        .title(title);
-    let diff_content = if view.split {
-        let inner_width = columns[1].width.saturating_sub(2) as usize;
-        split_diff_lines(view, inner_width, theme)
-    } else {
-        diff_lines(view, theme)
-    };
-    frame.render_widget(Paragraph::new(diff_content).block(diff_block), columns[1]);
+    let focused_hunk = (view.focus == Focus::Hunks).then_some(view.hunk);
+    render_diff_pane(
+        frame,
+        view.diff.as_ref(),
+        view.split,
+        focused_hunk,
+        theme,
+        columns[1],
+    );
 }
 
-fn split_diff_lines(view: &WorkingView, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let Some(diff) = view.diff.as_ref() else {
+fn diff_pane_lines(
+    diff: Option<&FileDiff>,
+    split: bool,
+    focused_hunk: Option<usize>,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let Some(diff) = diff else {
         return no_diff_lines(theme);
     };
+    if split {
+        split_diff_lines(diff, width, theme)
+    } else {
+        diff_lines(diff, focused_hunk, theme)
+    }
+}
 
+fn split_diff_lines(diff: &FileDiff, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let syntax = enrich::highlighter().language(&diff.new_path);
     let col_width = width.saturating_sub(SPLIT_SEPARATOR.chars().count()) / 2;
     let mut lines = Vec::new();

@@ -20,12 +20,7 @@ impl<T> SlidePanel<T> {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        if self.entries.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        let last = (self.entries.len() - 1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+        self.selected = clamp_index(self.selected, delta, self.entries.len());
     }
 
     pub fn refresh(&mut self, entries: Vec<T>) {
@@ -48,6 +43,14 @@ impl<T> SlidePanel<T> {
     pub fn is_dismissed(&self) -> bool {
         self.target == 0.0 && self.slide <= 0.0
     }
+}
+
+pub fn clamp_index(current: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let last = (len - 1) as isize;
+    (current as isize + delta).clamp(0, last) as usize
 }
 
 pub fn advance_panel<T>(panel: &mut Option<SlidePanel<T>>, step: f32) -> bool {

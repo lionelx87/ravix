@@ -472,8 +472,27 @@ impl Repo {
             self.inner.diff_index_to_workdir(None, Some(&mut options))?
         };
 
+        Self::diff_to_file(&diff, path)
+    }
+
+    pub fn commit_file_diff(&self, id: Oid, path: &str) -> Result<Option<FileDiff>, git2::Error> {
+        let commit = self.inner.find_commit(id)?;
+        let tree = commit.tree()?;
+        let parent_tree = match commit.parents().next() {
+            Some(parent) => Some(parent.tree()?),
+            None => None,
+        };
+        let mut options = DiffOptions::new();
+        options.pathspec(path).context_lines(3);
+        let diff =
+            self.inner
+                .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))?;
+        Self::diff_to_file(&diff, path)
+    }
+
+    fn diff_to_file(diff: &git2::Diff, path: &str) -> Result<Option<FileDiff>, git2::Error> {
         for index in 0..diff.deltas().count() {
-            let Some(patch) = Patch::from_diff(&diff, index)? else {
+            let Some(patch) = Patch::from_diff(diff, index)? else {
                 continue;
             };
             let Some(delta) = diff.get_delta(index) else {

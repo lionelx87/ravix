@@ -29,6 +29,7 @@ impl InputMap {
             InputContext::FocusSets => on_focus_key(key),
             InputContext::FocusName => on_focus_name_key(key),
             InputContext::Submodules => on_submodule_key(key),
+            InputContext::CommitDiff => on_commit_diff_key(key),
             InputContext::Alert => Some(Action::Dismiss),
             InputContext::Join => on_join_key(key),
             InputContext::Conflict => on_conflict_key(key),
@@ -155,6 +156,18 @@ fn on_focus_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('n') => Some(Action::SaveFocus),
         KeyCode::Char('d') => Some(Action::DeleteFocus),
         KeyCode::Char('F') | KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_commit_diff_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Char('v') => Some(Action::ToggleDiffView),
+        KeyCode::Enter | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
         _ => None,

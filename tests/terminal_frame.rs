@@ -233,6 +233,28 @@ fn panel_marker_row(buffer: &Buffer) -> Option<u16> {
         .find(|&y| (panel_side..area.width).any(|x| buffer.cell((x, y)).unwrap().symbol() == "❯"))
 }
 
+fn status_code_fg(buffer: &Buffer, path: &str) -> Color {
+    let area = buffer.area();
+    let panel_side = area.width / 2;
+    for y in 0..area.height {
+        let mut line = String::new();
+        for x in panel_side..area.width {
+            line.push_str(buffer.cell((x, y)).unwrap().symbol());
+        }
+        if line.contains(path) {
+            for x in panel_side..area.width {
+                let symbol = buffer.cell((x, y)).unwrap().symbol();
+                if symbol.chars().count() == 1
+                    && symbol.chars().next().unwrap().is_ascii_uppercase()
+                {
+                    return buffer.cell((x, y)).unwrap().fg;
+                }
+            }
+        }
+    }
+    panic!("no status code found on the row for {path}");
+}
+
 fn node_fg(buffer: &Buffer, summary: &str) -> Color {
     let area = buffer.area();
     for y in 0..area.height {
@@ -636,6 +658,79 @@ fn v_toggles_the_fullscreen_diff_to_side_by_side() {
     assert!(
         !any_row_has_both(&back, "line 1", "LINE ONE"),
         "v again returns to unified:\n{back}"
+    );
+}
+
+fn two_commit_repo(dir: &Path) {
+    git_run(dir, &["init", "-q", "-b", "main"]);
+    git_run(dir, &["config", "user.email", "d@e.com"]);
+    git_run(dir, &["config", "user.name", "Dev"]);
+    std::fs::write(dir.join("app.txt"), "alpha\nbeta\n").unwrap();
+    git_run(dir, &["add", "-A"]);
+    git_run(dir, &["commit", "-q", "-m", "First commit"]);
+    std::fs::write(dir.join("app.txt"), "alpha\nBETACHANGED\n").unwrap();
+    git_run(dir, &["add", "-A"]);
+    git_run(dir, &["commit", "-q", "-m", "Second commit"]);
+}
+
+#[test]
+fn the_commit_panel_colours_file_status_codes_by_kind() {
+    let dir = TempDir::new().unwrap();
+    git_run(dir.path(), &["init", "-q", "-b", "main"]);
+    git_run(dir.path(), &["config", "user.email", "d@e.com"]);
+    git_run(dir.path(), &["config", "user.name", "Dev"]);
+    std::fs::write(dir.path().join("keep.txt"), "one\n").unwrap();
+    git_run(dir.path(), &["add", "-A"]);
+    git_run(dir.path(), &["commit", "-q", "-m", "first"]);
+    std::fs::write(dir.path().join("keep.txt"), "two\n").unwrap();
+    std::fs::write(dir.path().join("new.txt"), "added\n").unwrap();
+    git_run(dir.path(), &["add", "-A"]);
+    git_run(dir.path(), &["commit", "-q", "-m", "second"]);
+
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    let buffer = draw(&mut app, 100, 28);
+
+    let modified = status_code_fg(&buffer, "keep.txt");
+    let added = status_code_fg(&buffer, "new.txt");
+    assert_ne!(
+        modified, added,
+        "the M and A status codes are coloured differently by change kind"
+    );
+}
+
+#[test]
+fn enter_expands_a_commit_to_a_fullscreen_line_level_diff() {
+    let dir = TempDir::new().unwrap();
+    two_commit_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    let unified = dump(&draw(&mut app, 100, 28));
+    assert!(
+        unified.contains("BETACHANGED"),
+        "the fullscreen commit diff shows the added line:\n{unified}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('v'));
+    let split = dump(&draw(&mut app, 100, 28));
+    assert!(
+        any_row_has_both(&split, "beta", "BETACHANGED"),
+        "side-by-side puts old and new on the same row:\n{split}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+    let collapsed = dump(&draw(&mut app, 100, 28));
+    assert!(
+        !collapsed.contains("BETACHANGED"),
+        "Esc collapses the fullscreen diff:\n{collapsed}"
     );
 }
 
