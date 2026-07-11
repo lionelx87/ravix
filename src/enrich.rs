@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
@@ -59,7 +60,7 @@ fn emphasis(spans: &[WordSpan], mark: WordKind) -> Vec<bool> {
     flags
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HlSpan {
     pub color: (u8, u8, u8),
     pub text: String,
@@ -68,6 +69,7 @@ pub struct HlSpan {
 pub struct Highlighter {
     syntaxes: SyntaxSet,
     theme: Theme,
+    cache: Mutex<HashMap<(String, String), Vec<HlSpan>>>,
 }
 
 static HIGHLIGHTER: OnceLock<Highlighter> = OnceLock::new();
@@ -85,7 +87,11 @@ impl Highlighter {
             .remove("base16-ocean.dark")
             .or_else(|| themes.themes.values().next().cloned())
             .expect("syntect ships default themes");
-        Self { syntaxes, theme }
+        Self {
+            syntaxes,
+            theme,
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn language(&self, path: &str) -> Option<&SyntaxReference> {
@@ -94,6 +100,16 @@ impl Highlighter {
     }
 
     pub fn highlight(&self, syntax: &SyntaxReference, line: &str) -> Vec<HlSpan> {
+        let key = (syntax.name.clone(), line.to_string());
+        if let Some(cached) = self.cache.lock().unwrap().get(&key) {
+            return cached.clone();
+        }
+        let spans = self.compute_highlight(syntax, line);
+        self.cache.lock().unwrap().insert(key, spans.clone());
+        spans
+    }
+
+    fn compute_highlight(&self, syntax: &SyntaxReference, line: &str) -> Vec<HlSpan> {
         let mut highlighter = HighlightLines::new(syntax, &self.theme);
         match highlighter.highlight_line(line, &self.syntaxes) {
             Ok(ranges) => ranges
