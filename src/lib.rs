@@ -12,6 +12,7 @@ pub mod mutate;
 pub mod palette;
 pub mod rebase;
 pub mod remote;
+pub mod slide;
 pub mod staging;
 pub mod stash;
 pub mod ui;

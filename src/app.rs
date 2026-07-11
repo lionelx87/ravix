@@ -16,6 +16,7 @@ use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction,
 use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
 use crate::remote::{PullAction, PushState, pull_action, push_state};
+use crate::slide::{SlidePanel, advance};
 use crate::staging::build_patch;
 use crate::stash::StashPanel;
 use crate::undo::{InversePlan, UndoableAction, invert};
@@ -501,18 +502,12 @@ impl App {
                 .working
                 .as_ref()
                 .is_some_and(|view| view.slide != view.target)
-            || self
-                .branch
-                .as_ref()
-                .is_some_and(|panel| panel.slide != panel.target)
+            || self.branch.as_ref().is_some_and(SlidePanel::is_sliding)
             || self
                 .join
                 .as_ref()
-                .is_some_and(|menu| menu.slide != menu.target)
-            || self
-                .stash
-                .as_ref()
-                .is_some_and(|panel| panel.slide != panel.target)
+                .is_some_and(|menu| menu.panel.is_sliding())
+            || self.stash.as_ref().is_some_and(SlidePanel::is_sliding)
             || self.celebration.is_some()
             || self.remote.is_some()
     }
@@ -609,7 +604,7 @@ impl App {
             return;
         }
         if let Some(menu) = &mut self.join {
-            menu.move_selection(delta);
+            menu.panel.move_selection(delta);
             return;
         }
         if let Some(panel) = &mut self.branch {
@@ -642,7 +637,7 @@ impl App {
             return;
         }
         if let Some(menu) = &mut self.join {
-            menu.move_selection(-delta);
+            menu.panel.move_selection(-delta);
             return;
         }
         if let Some(panel) = &mut self.branch {
@@ -895,7 +890,7 @@ impl App {
 
     fn close_stash(&mut self) {
         if let Some(panel) = &mut self.stash {
-            panel.target = 0.0;
+            panel.close();
         }
     }
 
@@ -1108,11 +1103,11 @@ impl App {
         } else if self.help_visible {
             self.help_visible = false;
         } else if let Some(panel) = &mut self.stash {
-            panel.target = 0.0;
+            panel.close();
         } else if let Some(menu) = &mut self.join {
-            menu.target = 0.0;
+            menu.panel.close();
         } else if let Some(panel) = &mut self.branch {
-            panel.target = 0.0;
+            panel.close();
         } else if let Some(view) = &mut self.working {
             if view.focus == Focus::Hunks {
                 view.focus = Focus::Files;
@@ -1465,7 +1460,7 @@ impl App {
 
     fn close_branch_panel(&mut self) {
         if let Some(panel) = &mut self.branch {
-            panel.target = 0.0;
+            panel.close();
         }
     }
 
@@ -1581,7 +1576,7 @@ impl App {
 
     fn close_join_menu(&mut self) {
         if let Some(menu) = &mut self.join {
-            menu.target = 0.0;
+            menu.panel.close();
         }
     }
 
@@ -1674,12 +1669,9 @@ impl App {
             title,
             source_name,
             source_oid,
-            options,
+            panel: SlidePanel::opening(options),
             conflict_files,
             summary,
-            selected: 0,
-            slide: 0.0,
-            target: 1.0,
         }
     }
 
@@ -1706,7 +1698,7 @@ impl App {
         let Some(menu) = self.join.as_ref() else {
             return;
         };
-        let Some(option) = menu.focused() else {
+        let Some(option) = menu.panel.focused() else {
             return;
         };
         if !option.enabled {
@@ -2171,20 +2163,20 @@ impl App {
             }
         }
         if let Some(panel) = &mut self.branch {
-            advance(&mut panel.slide, panel.target, step);
-            if panel.target == 0.0 && panel.slide <= 0.0 {
+            panel.advance(step);
+            if panel.is_dismissed() {
                 self.branch = None;
             }
         }
         if let Some(menu) = &mut self.join {
-            advance(&mut menu.slide, menu.target, step);
-            if menu.target == 0.0 && menu.slide <= 0.0 {
+            menu.panel.advance(step);
+            if menu.panel.is_dismissed() {
                 self.join = None;
             }
         }
         if let Some(panel) = &mut self.stash {
-            advance(&mut panel.slide, panel.target, step);
-            if panel.target == 0.0 && panel.slide <= 0.0 {
+            panel.advance(step);
+            if panel.is_dismissed() {
                 self.stash = None;
             }
         }
@@ -2263,14 +2255,6 @@ fn join_summary(prediction: &MergePrediction, is_branch: bool, incoming: usize) 
         MergePrediction::Conflicts { files } => {
             format!("{} conflicting file(s) · resolve in 3.3", files.len())
         }
-    }
-}
-
-fn advance(value: &mut f32, target: f32, step: f32) {
-    if *value < target {
-        *value = (*value + step).min(target);
-    } else if *value > target {
-        *value = (*value - step).max(target);
     }
 }
 

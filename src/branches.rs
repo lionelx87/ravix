@@ -31,33 +31,4 @@ pub fn branch_list(branches: &[BranchInput], head: Option<&str>) -> Vec<BranchEn
     entries
 }
 
-pub struct BranchPanel {
-    pub entries: Vec<BranchEntry>,
-    pub selected: usize,
-    pub slide: f32,
-    pub target: f32,
-}
-
-impl BranchPanel {
-    pub fn opening(entries: Vec<BranchEntry>) -> Self {
-        Self {
-            entries,
-            selected: 0,
-            slide: 0.0,
-            target: 1.0,
-        }
-    }
-
-    pub fn move_selection(&mut self, delta: isize) {
-        if self.entries.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        let last = (self.entries.len() - 1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
-    }
-
-    pub fn focused(&self) -> Option<&BranchEntry> {
-        self.entries.get(self.selected)
-    }
-}
+pub type BranchPanel = crate::slide::SlidePanel<BranchEntry>;

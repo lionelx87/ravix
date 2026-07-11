@@ -1,3 +1,5 @@
+use crate::slide::SlidePanel;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergePrediction {
     UpToDate,
@@ -37,27 +39,9 @@ pub struct JoinMenu {
     pub title: String,
     pub source_name: Option<String>,
     pub source_oid: String,
-    pub options: Vec<JoinOption>,
+    pub panel: SlidePanel<JoinOption>,
     pub conflict_files: Vec<String>,
     pub summary: String,
-    pub selected: usize,
-    pub slide: f32,
-    pub target: f32,
-}
-
-impl JoinMenu {
-    pub fn focused(&self) -> Option<&JoinOption> {
-        self.options.get(self.selected)
-    }
-
-    pub fn move_selection(&mut self, delta: isize) {
-        if self.options.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        let last = (self.options.len() - 1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
-    }
 }
 
 pub fn classify(ancestry: Ancestry, merge_tree: &MergeTreeResult) -> MergePrediction {

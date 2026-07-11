@@ -12,6 +12,7 @@ use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::BadgeKind;
 use crate::join::JoinMenu;
+use crate::slide::SlidePanel;
 use crate::stash::StashPanel;
 use crate::working::{Focus, WorkingView};
 
@@ -437,59 +438,59 @@ fn render_panel(frame: &mut Frame, app: &App, panel: &Panel, theme: &Theme, area
     frame.render_widget(paragraph, inner);
 }
 
-fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, area: Rect) {
-    let eased = ease_out_cubic(panel.slide);
-    let full_width = ((area.width as f32) * 0.4).max(34.0).min(area.width as f32) as u16;
+fn slide_rect(area: Rect, slide: f32, fraction: f32, min_width: f32) -> Option<Rect> {
+    let eased = ease_out_cubic(slide);
+    let full_width = ((area.width as f32) * fraction)
+        .max(min_width)
+        .min(area.width as f32) as u16;
     let visible = ((full_width as f32) * eased).round() as u16;
     if visible < 6 {
-        return;
+        return None;
     }
-
-    let rect = Rect {
+    Some(Rect {
         x: area.right() - visible,
         y: area.y,
         width: visible,
         height: area.height,
+    })
+}
+
+struct SlideList<'a> {
+    title: &'a str,
+    empty: &'a str,
+    fraction: f32,
+    min_width: f32,
+}
+
+fn render_slide_list<T>(
+    frame: &mut Frame,
+    panel: &SlidePanel<T>,
+    theme: &Theme,
+    area: Rect,
+    list: SlideList,
+    mut row: impl FnMut(&T, bool) -> Line<'static>,
+) {
+    let Some(rect) = slide_rect(area, panel.slide, list.fraction, list.min_width) else {
+        return;
     };
     frame.render_widget(Clear, rect);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(" Branches   [Enter] checkout · [n] new · [d] delete · [M] join ");
+        .title(list.title.to_string());
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let mut lines = Vec::new();
-    for (index, entry) in panel.entries.iter().enumerate() {
-        let selected = index == panel.selected;
-        let mut spans = vec![
-            Span::styled(
-                if selected { "❯ " } else { "  " },
-                Style::default().fg(theme.marker),
-            ),
-            Span::styled(
-                if entry.is_head { "● " } else { "  " },
-                Style::default()
-                    .fg(theme.head_badge)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                entry.name.clone(),
-                Style::default().fg(if selected { theme.node } else { theme.summary }),
-            ),
-        ];
-        if entry.ahead > 0 || entry.behind > 0 {
-            spans.push(Span::styled(
-                format!("  ↑{} ↓{}", entry.ahead, entry.behind),
-                Style::default().fg(theme.meta),
-            ));
-        }
-        lines.push(Line::from(spans));
-    }
+    let mut lines: Vec<Line> = panel
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| row(entry, index == panel.selected))
+        .collect();
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "no local branches",
+            list.empty,
             Style::default().fg(theme.meta),
         )));
     }
@@ -497,8 +498,48 @@ fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, ar
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, area: Rect) {
+    render_slide_list(
+        frame,
+        panel,
+        theme,
+        area,
+        SlideList {
+            title: " Branches   [Enter] checkout · [n] new · [d] delete · [M] join ",
+            empty: "no local branches",
+            fraction: 0.4,
+            min_width: 34.0,
+        },
+        |entry, selected| {
+            let mut spans = vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(theme.marker),
+                ),
+                Span::styled(
+                    if entry.is_head { "● " } else { "  " },
+                    Style::default()
+                        .fg(theme.head_badge)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    entry.name.clone(),
+                    Style::default().fg(if selected { theme.node } else { theme.summary }),
+                ),
+            ];
+            if entry.ahead > 0 || entry.behind > 0 {
+                spans.push(Span::styled(
+                    format!("  ↑{} ↓{}", entry.ahead, entry.behind),
+                    Style::default().fg(theme.meta),
+                ));
+            }
+            Line::from(spans)
+        },
+    );
+}
+
 fn render_ghost_preview(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rect) {
-    if area.height < 2 || !menu.focused().is_some_and(|option| option.enabled) {
+    if area.height < 2 || !menu.panel.focused().is_some_and(|option| option.enabled) {
         return;
     }
     let ghost = Style::default().fg(theme.meta).add_modifier(Modifier::DIM);
@@ -523,20 +564,8 @@ fn render_ghost_preview(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area:
 }
 
 fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rect) {
-    let eased = ease_out_cubic(menu.slide);
-    let full_width = ((area.width as f32) * 0.45)
-        .max(40.0)
-        .min(area.width as f32) as u16;
-    let visible = ((full_width as f32) * eased).round() as u16;
-    if visible < 6 {
+    let Some(rect) = slide_rect(area, menu.panel.slide, 0.45, 40.0) else {
         return;
-    }
-
-    let rect = Rect {
-        x: area.right() - visible,
-        y: area.y,
-        width: visible,
-        height: area.height,
     };
     frame.render_widget(Clear, rect);
 
@@ -548,8 +577,8 @@ fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rec
     frame.render_widget(block, rect);
 
     let mut lines = Vec::new();
-    for (index, option) in menu.options.iter().enumerate() {
-        let selected = index == menu.selected;
+    for (index, option) in menu.panel.entries.iter().enumerate() {
+        let selected = index == menu.panel.selected;
         let label_color = if !option.enabled {
             theme.meta
         } else if selected {
@@ -615,56 +644,34 @@ fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rec
 }
 
 fn render_stash_panel(frame: &mut Frame, panel: &StashPanel, theme: &Theme, area: Rect) {
-    let eased = ease_out_cubic(panel.slide);
-    let full_width = ((area.width as f32) * 0.45)
-        .max(38.0)
-        .min(area.width as f32) as u16;
-    let visible = ((full_width as f32) * eased).round() as u16;
-    if visible < 6 {
-        return;
-    }
-
-    let rect = Rect {
-        x: area.right() - visible,
-        y: area.y,
-        width: visible,
-        height: area.height,
-    };
-    frame.render_widget(Clear, rect);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.panel_border))
-        .title(" Stashes   [p] pop · [a] apply · [d] drop ");
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-
-    let mut lines = Vec::new();
-    for (index, entry) in panel.entries.iter().enumerate() {
-        let selected = index == panel.selected;
-        lines.push(Line::from(vec![
-            Span::styled(
-                if selected { "❯ " } else { "  " },
-                Style::default().fg(theme.marker),
-            ),
-            Span::styled(
-                format!("stash@{{{}}} ", entry.index),
-                Style::default().fg(theme.short_id),
-            ),
-            Span::styled(
-                entry.message.clone(),
-                Style::default().fg(if selected { theme.node } else { theme.summary }),
-            ),
-        ]));
-    }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "no stashes",
-            Style::default().fg(theme.meta),
-        )));
-    }
-
-    frame.render_widget(Paragraph::new(lines), inner);
+    render_slide_list(
+        frame,
+        panel,
+        theme,
+        area,
+        SlideList {
+            title: " Stashes   [p] pop · [a] apply · [d] drop ",
+            empty: "no stashes",
+            fraction: 0.45,
+            min_width: 38.0,
+        },
+        |entry, selected| {
+            Line::from(vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(theme.marker),
+                ),
+                Span::styled(
+                    format!("stash@{{{}}} ", entry.index),
+                    Style::default().fg(theme.short_id),
+                ),
+                Span::styled(
+                    entry.message.clone(),
+                    Style::default().fg(if selected { theme.node } else { theme.summary }),
+                ),
+            ])
+        },
+    );
 }
 
 fn render_conflict_browser(

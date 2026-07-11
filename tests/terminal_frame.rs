@@ -172,6 +172,13 @@ fn marker_row(buffer: &Buffer) -> Option<u16> {
     (0..area.height).find(|&y| buffer.cell((0, y)).unwrap().symbol() == "❯")
 }
 
+fn panel_marker_row(buffer: &Buffer) -> Option<u16> {
+    let area = buffer.area();
+    let panel_side = area.width / 2;
+    (0..area.height)
+        .find(|&y| (panel_side..area.width).any(|x| buffer.cell((x, y)).unwrap().symbol() == "❯"))
+}
+
 #[test]
 fn initial_frame_shows_graph_badges_and_status() {
     let dir = TempDir::new().unwrap();
@@ -560,6 +567,27 @@ fn b_opens_the_branch_list_marking_the_current_branch() {
     assert!(
         screen.contains('●'),
         "the current branch should carry a HEAD marker:\n{screen}"
+    );
+}
+
+#[test]
+fn j_moves_the_branch_panel_marker_down_one_row() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    let before = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker visible on open");
+
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    let after = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker still visible");
+
+    assert_eq!(
+        after,
+        before + 1,
+        "the focus marker should slide down exactly one branch row"
     );
 }
 

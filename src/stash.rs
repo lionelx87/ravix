@@ -19,33 +19,4 @@ fn parse_line(line: &str) -> Option<StashEntry> {
     Some(StashEntry { index, message })
 }
 
-pub struct StashPanel {
-    pub entries: Vec<StashEntry>,
-    pub selected: usize,
-    pub slide: f32,
-    pub target: f32,
-}
-
-impl StashPanel {
-    pub fn opening(entries: Vec<StashEntry>) -> Self {
-        Self {
-            entries,
-            selected: 0,
-            slide: 0.0,
-            target: 1.0,
-        }
-    }
-
-    pub fn move_selection(&mut self, delta: isize) {
-        if self.entries.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        let last = (self.entries.len() - 1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
-    }
-
-    pub fn focused(&self) -> Option<&StashEntry> {
-        self.entries.get(self.selected)
-    }
-}
+pub type StashPanel = crate::slide::SlidePanel<StashEntry>;
