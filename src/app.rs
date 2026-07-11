@@ -242,7 +242,7 @@ pub struct App {
     cli: GitCli,
     meta: RepoMeta,
     commits: Vec<CommitInfo>,
-    rows: Vec<GraphRow>,
+    rows: Vec<GraphRow<Oid>>,
     exhausted: bool,
     load_page: usize,
     selected: usize,
@@ -346,7 +346,7 @@ impl App {
         &self.meta
     }
 
-    pub fn rows(&self) -> &[GraphRow] {
+    pub fn rows(&self) -> &[GraphRow<Oid>] {
         &self.rows
     }
 
@@ -2411,7 +2411,7 @@ fn join_summary(prediction: &MergePrediction, is_branch: bool, incoming: usize) 
     }
 }
 
-fn layout_rows(commits: &[CommitInfo]) -> Vec<GraphRow> {
+fn layout_rows(commits: &[CommitInfo]) -> Vec<GraphRow<Oid>> {
     let graph_commits: Vec<GraphCommit<Oid>> = commits
         .iter()
         .map(|commit| GraphCommit {

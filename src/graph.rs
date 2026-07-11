@@ -5,9 +5,11 @@ pub struct GraphCommit<Id> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphRow {
+pub struct GraphRow<Id> {
     pub node_column: usize,
     pub glyphs: String,
+    pub node_key: Id,
+    pub lane_keys: Vec<Option<Id>>,
 }
 
 const NODE: char = '●';
@@ -17,15 +19,21 @@ const OPEN_RIGHT: char = '╮';
 const CLOSE_RIGHT: char = '╯';
 const CROSS: char = '┼';
 
-pub fn lay_out<Id: Clone + PartialEq>(commits: &[GraphCommit<Id>]) -> Vec<GraphRow> {
-    let mut lanes: Vec<Option<Id>> = Vec::new();
+#[derive(Clone)]
+struct Lane<Id> {
+    expected: Id,
+    key: Id,
+}
+
+pub fn lay_out<Id: Clone + PartialEq>(commits: &[GraphCommit<Id>]) -> Vec<GraphRow<Id>> {
+    let mut lanes: Vec<Option<Lane<Id>>> = Vec::new();
     let mut rows = Vec::with_capacity(commits.len());
 
     for commit in commits {
         let merging: Vec<usize> = lanes
             .iter()
             .enumerate()
-            .filter(|(_, lane)| lane.as_ref() == Some(&commit.id))
+            .filter(|(_, lane)| lane.as_ref().map(|lane| &lane.expected) == Some(&commit.id))
             .map(|(index, _)| index)
             .collect();
 
@@ -34,19 +42,34 @@ pub fn lay_out<Id: Clone + PartialEq>(commits: &[GraphCommit<Id>]) -> Vec<GraphR
             None => free_lane(&mut lanes),
         };
 
-        let incoming = lanes.clone();
+        let node_key = lanes[node_column]
+            .as_ref()
+            .map(|lane| lane.key.clone())
+            .unwrap_or_else(|| commit.id.clone());
+
+        let incoming: Vec<bool> = lanes.iter().map(Option::is_some).collect();
+        let incoming_keys: Vec<Option<Id>> = lanes
+            .iter()
+            .map(|lane| lane.as_ref().map(|lane| lane.key.clone()))
+            .collect();
 
         for &index in &merging {
             lanes[index] = None;
         }
 
         let mut parents = commit.parents.iter();
-        lanes[node_column] = parents.next().cloned();
+        lanes[node_column] = parents.next().map(|parent| Lane {
+            expected: parent.clone(),
+            key: node_key.clone(),
+        });
 
         let mut opened = Vec::new();
         for parent in parents {
             let slot = free_lane(&mut lanes);
-            lanes[slot] = Some(parent.clone());
+            lanes[slot] = Some(Lane {
+                expected: parent.clone(),
+                key: parent.clone(),
+            });
             opened.push(slot);
         }
 
@@ -56,16 +79,28 @@ pub fn lay_out<Id: Clone + PartialEq>(commits: &[GraphCommit<Id>]) -> Vec<GraphR
             .filter(|&index| index != node_column)
             .collect();
 
+        let outgoing: Vec<bool> = lanes.iter().map(Option::is_some).collect();
+        let lane_keys = (0..lanes.len().max(incoming_keys.len()))
+            .map(|index| {
+                lanes
+                    .get(index)
+                    .and_then(|lane| lane.as_ref().map(|lane| lane.key.clone()))
+                    .or_else(|| incoming_keys.get(index).cloned().flatten())
+            })
+            .collect();
+
         rows.push(GraphRow {
             node_column,
-            glyphs: render_row(node_column, &incoming, &lanes, &opened, &closed),
+            glyphs: render_row(node_column, &incoming, &outgoing, &opened, &closed),
+            node_key,
+            lane_keys,
         });
     }
 
     rows
 }
 
-fn free_lane<Id>(lanes: &mut Vec<Option<Id>>) -> usize {
+fn free_lane<Id>(lanes: &mut Vec<Option<Lane<Id>>>) -> usize {
     match lanes.iter().position(|lane| lane.is_none()) {
         Some(index) => index,
         None => {
@@ -75,10 +110,10 @@ fn free_lane<Id>(lanes: &mut Vec<Option<Id>>) -> usize {
     }
 }
 
-fn render_row<Id>(
+fn render_row(
     node_column: usize,
-    incoming: &[Option<Id>],
-    outgoing: &[Option<Id>],
+    incoming: &[bool],
+    outgoing: &[bool],
     opened: &[usize],
     closed: &[usize],
 ) -> String {
@@ -86,8 +121,8 @@ fn render_row<Id>(
     let mut cells = vec![' '; lane_count * 2];
 
     for lane in 0..lane_count {
-        let present_before = incoming.get(lane).is_some_and(Option::is_some);
-        let present_after = outgoing.get(lane).is_some_and(Option::is_some);
+        let present_before = incoming.get(lane).copied().unwrap_or(false);
+        let present_after = outgoing.get(lane).copied().unwrap_or(false);
         if lane != node_column && present_before && present_after {
             cells[lane * 2] = VERTICAL;
         }

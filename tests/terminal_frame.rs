@@ -72,6 +72,60 @@ fn fixture_repo(dir: &Path) {
         .unwrap();
 }
 
+fn three_branch_repo(dir: &Path) {
+    let mut opts = RepositoryInitOptions::new();
+    opts.initial_head("main");
+    let repo = Repository::init_opts(dir, &opts).unwrap();
+
+    let sig = |t| Signature::new("Dev", "dev@example.com", &Time::new(t, 0)).unwrap();
+    let root = commit(
+        &repo,
+        &sig(1000),
+        None,
+        "README",
+        "root\n",
+        "Root",
+        &[],
+        true,
+    );
+    commit(
+        &repo,
+        &sig(1003),
+        Some(root),
+        "main.rs",
+        "// main\n",
+        "Main work",
+        &[root],
+        true,
+    );
+    let alpha = commit(
+        &repo,
+        &sig(1002),
+        Some(root),
+        "alpha.rs",
+        "// alpha\n",
+        "Alpha work",
+        &[root],
+        false,
+    );
+    repo.branch("alpha", &repo.find_commit(alpha).unwrap(), true)
+        .unwrap();
+    let beta = commit(
+        &repo,
+        &sig(1001),
+        Some(root),
+        "beta.rs",
+        "// beta\n",
+        "Beta work",
+        &[root],
+        false,
+    );
+    repo.branch("beta", &repo.find_commit(beta).unwrap(), true)
+        .unwrap();
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .unwrap();
+}
+
 fn linear_repo(dir: &Path, count: usize) {
     let mut opts = RepositoryInitOptions::new();
     opts.initial_head("main");
@@ -177,6 +231,24 @@ fn panel_marker_row(buffer: &Buffer) -> Option<u16> {
     let panel_side = area.width / 2;
     (0..area.height)
         .find(|&y| (panel_side..area.width).any(|x| buffer.cell((x, y)).unwrap().symbol() == "❯"))
+}
+
+fn node_fg(buffer: &Buffer, summary: &str) -> Color {
+    let area = buffer.area();
+    for y in 0..area.height {
+        let mut line = String::new();
+        for x in 0..area.width {
+            line.push_str(buffer.cell((x, y)).unwrap().symbol());
+        }
+        if line.contains(summary) {
+            for x in 0..area.width {
+                if buffer.cell((x, y)).unwrap().symbol() == "●" {
+                    return buffer.cell((x, y)).unwrap().fg;
+                }
+            }
+        }
+    }
+    panic!("no node glyph found on the row for {summary}");
 }
 
 fn panel_region(buffer: &Buffer) -> String {
@@ -588,6 +660,34 @@ fn b_opens_the_branch_list_marking_the_current_branch() {
     assert!(
         screen.contains("o solo"),
         "the panel lists its visibility keys:\n{screen}"
+    );
+}
+
+#[test]
+fn a_branch_lines_color_is_distinct_and_stable_when_another_branch_is_hidden() {
+    let dir = TempDir::new().unwrap();
+    three_branch_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    let beta_before = node_fg(&draw(&mut app, 100, 20), "Beta work");
+    let main_color = node_fg(&draw(&mut app, 100, 20), "Main work");
+    assert_ne!(
+        beta_before, main_color,
+        "distinct branches get distinct node colors"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    let beta_after = node_fg(&draw(&mut app, 100, 20), "Beta work");
+    assert_eq!(
+        beta_before, beta_after,
+        "beta keeps its color when alpha is hidden and columns shift"
     );
 }
 

@@ -4,13 +4,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use std::collections::HashMap;
+
+use git2::Oid;
 use syntect::parsing::SyntaxReference;
 
 use crate::app::{App, BranchCreate, CommitEditor, Confirm, Palette, Panel};
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
-use crate::git::BadgeKind;
+use crate::git::{BadgeKind, RefBadge};
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
 use crate::stash::StashPanel;
@@ -185,6 +188,33 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
 }
 
+fn lane_color(key: &Oid, badges: &HashMap<Oid, Vec<RefBadge>>, theme: &Theme) -> Color {
+    let label = branch_name_at(key, badges).unwrap_or_else(|| key.to_string());
+    theme.lane(fnv1a(&label) as usize)
+}
+
+fn branch_name_at(oid: &Oid, badges: &HashMap<Oid, Vec<RefBadge>>) -> Option<String> {
+    badges
+        .get(oid)?
+        .iter()
+        .find(|badge| {
+            matches!(
+                badge.kind,
+                BadgeKind::LocalBranch | BadgeKind::CurrentBranch
+            )
+        })
+        .map(|badge| badge.label.clone())
+}
+
+fn fnv1a(text: &str) -> u32 {
+    let mut hash: u32 = 2_166_136_261;
+    for byte in text.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    hash
+}
+
 fn sparkle_burst(progress: f32) -> &'static str {
     if progress > 0.66 {
         "✦ ✧ ✨ "
@@ -231,11 +261,14 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
         ));
 
         for (column, glyph) in graph_row.glyphs.chars().enumerate() {
-            let color = if glyph == '●' {
-                theme.node
+            let key = if glyph == '●' {
+                Some(&graph_row.node_key)
             } else {
-                theme.lane(column / 2)
+                graph_row.lane_keys.get(column / 2).and_then(Option::as_ref)
             };
+            let color = key
+                .map(|key| lane_color(key, badges, theme))
+                .unwrap_or(theme.node);
             spans.push(Span::styled(glyph.to_string(), Style::default().fg(color)));
         }
         spans.push(Span::raw("  "));
