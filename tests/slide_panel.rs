@@ -1,4 +1,4 @@
-use ogma::slide::{SlidePanel, advance_panel};
+use ravix::slide::{SlidePanel, advance_panel};
 
 #[test]
 fn opening_starts_collapsed_and_animating_open() {

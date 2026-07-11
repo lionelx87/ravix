@@ -1,4 +1,4 @@
-use ogma::join::{Ancestry, MergePrediction, MergeTreeResult, classify};
+use ravix::join::{Ancestry, MergePrediction, MergeTreeResult, classify};
 
 fn clean() -> MergeTreeResult {
     MergeTreeResult {

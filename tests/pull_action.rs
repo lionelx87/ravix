@@ -1,5 +1,5 @@
-use ogma::join::MergePrediction;
-use ogma::remote::{PullAction, pull_action};
+use ravix::join::MergePrediction;
+use ravix::remote::{PullAction, pull_action};
 
 #[test]
 fn an_upstream_already_in_head_is_up_to_date() {

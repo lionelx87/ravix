@@ -957,19 +957,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ogma"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "git2",
- "notify",
- "ratatui",
- "similar",
- "syntect",
- "tempfile",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1315,6 +1302,19 @@ dependencies = [
  "time",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "ravix"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "git2",
+ "notify",
+ "ratatui",
+ "similar",
+ "syntect",
+ "tempfile",
 ]
 
 [[package]]

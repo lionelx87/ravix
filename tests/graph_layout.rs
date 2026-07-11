@@ -1,4 +1,4 @@
-use ogma::graph::{GraphCommit, lay_out};
+use ravix::graph::{GraphCommit, lay_out};
 
 fn commit(id: &str, parents: &[&str]) -> GraphCommit<String> {
     GraphCommit {
@@ -7,11 +7,11 @@ fn commit(id: &str, parents: &[&str]) -> GraphCommit<String> {
     }
 }
 
-fn columns(rows: &[ogma::graph::GraphRow<String>]) -> Vec<usize> {
+fn columns(rows: &[ravix::graph::GraphRow<String>]) -> Vec<usize> {
     rows.iter().map(|r| r.node_column).collect()
 }
 
-fn glyphs(rows: &[ogma::graph::GraphRow<String>]) -> Vec<&str> {
+fn glyphs(rows: &[ravix::graph::GraphRow<String>]) -> Vec<&str> {
     rows.iter().map(|r| r.glyphs.as_str()).collect()
 }
 

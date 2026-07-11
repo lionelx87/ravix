@@ -1,9 +1,6 @@
-# Ogma Roadmap
+# Ravix Roadmap
 
-Ogma (binary `og`) — a spectacular, animated git TUI. Personal daily driver.
-
-Named after the Celtic god who invented Ogham, the tree alphabet: letters carved
-as branches sprouting from a trunk line — exactly what this tool draws.
+Ravix (binary `rx`) — a spectacular, animated git TUI. Personal daily driver.
 
 ## Design pillars (agreed 2026-07-09)
 

@@ -1,4 +1,4 @@
-use ogma::branches::{BranchEntry, BranchInput, branch_list};
+use ravix::branches::{BranchEntry, BranchInput, branch_list};
 
 fn plain(name: &str) -> BranchInput {
     BranchInput {

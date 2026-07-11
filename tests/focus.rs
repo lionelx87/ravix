@@ -1,5 +1,5 @@
-use ogma::focus::{FocusSet, parse, remove, serialize, upsert};
-use ogma::visibility::VisibilitySnapshot;
+use ravix::focus::{FocusSet, parse, remove, serialize, upsert};
+use ravix::visibility::VisibilitySnapshot;
 
 fn set(name: &str, hidden: &[&str], pinned: &[&str]) -> FocusSet {
     FocusSet {

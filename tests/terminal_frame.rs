@@ -14,9 +14,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tempfile::TempDir;
 
-use ogma::app::{Action, App, InputContext};
-use ogma::event::InputMap;
-use ogma::ui::render;
+use ravix::app::{Action, App, InputContext};
+use ravix::event::InputMap;
+use ravix::ui::render;
 
 const NOW: i64 = 100_000;
 
@@ -500,7 +500,7 @@ fn dirty_repo(dir: &Path) {
     let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.email", "demo@ravix.dev"]);
     run(&["config", "user.name", "Demo"]);
 
     let base: String = (1..=12).map(|n| format!("line {n}\n")).collect();
@@ -611,7 +611,7 @@ fn a_long_left_line_is_truncated_so_the_right_column_stays_visible() {
     let dir = TempDir::new().unwrap();
     let run = |args: &[&str]| git_run(dir.path(), args);
     run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.email", "demo@ravix.dev"]);
     run(&["config", "user.name", "Demo"]);
     std::fs::write(dir.path().join("app.txt"), format!("{}\n", "x".repeat(120))).unwrap();
     run(&["add", "-A"]);
@@ -1418,7 +1418,7 @@ fn delete_repo(dir: &Path) {
     let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.email", "demo@ravix.dev"]);
     run(&["config", "user.name", "Demo"]);
 
     std::fs::write(dir.join("app.txt"), "one\n").unwrap();
@@ -1796,7 +1796,7 @@ fn upstream_repo(work: &Path, remote: &Path) {
 
     run_in(remote, &["init", "-q", "--bare", "-b", "main"]);
     run_in(work, &["init", "-q", "-b", "main"]);
-    run_in(work, &["config", "user.email", "demo@ogma.dev"]);
+    run_in(work, &["config", "user.email", "demo@ravix.dev"]);
     run_in(work, &["config", "user.name", "Demo"]);
 
     std::fs::write(work.join("app.txt"), "one\n").unwrap();
@@ -1832,7 +1832,7 @@ fn conflicting_checkout_repo(dir: &Path) {
     let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.email", "demo@ravix.dev"]);
     run(&["config", "user.name", "Demo"]);
 
     std::fs::write(dir.join("app.txt"), "base\n").unwrap();
@@ -1919,7 +1919,7 @@ fn git_run(dir: &Path, args: &[&str]) {
 
 fn init_with_base(dir: &Path, file: &str, content: &str) {
     git_run(dir, &["init", "-q", "-b", "main"]);
-    git_run(dir, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(dir, &["config", "user.email", "demo@ravix.dev"]);
     git_run(dir, &["config", "user.name", "Demo"]);
     std::fs::write(dir.join(file), content).unwrap();
     git_run(dir, &["add", "-A"]);
@@ -2238,7 +2238,7 @@ fn a_conflict_cherry_pick_resolves_through_the_browser() {
 }
 
 #[test]
-fn an_in_progress_merge_is_detected_when_ogma_opens() {
+fn an_in_progress_merge_is_detected_when_ravix_opens() {
     let dir = TempDir::new().unwrap();
     conflict_repo(dir.path());
     let out = Command::new("git")
@@ -2583,7 +2583,7 @@ fn diverged_repo(work: &Path, remote: &Path, other: &Path) {
     git_run(work, &["push", "-q", "-u", "origin", "main"]);
 
     git_clone(remote, other);
-    git_run(other, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(other, &["config", "user.email", "demo@ravix.dev"]);
     git_run(other, &["config", "user.name", "Demo"]);
     commit_file(other, "b.txt", "b\n", "remote work");
     git_run(other, &["push", "-q"]);
@@ -2712,7 +2712,7 @@ fn behind_repo(work: &Path, remote: &Path, other: &Path) {
     unpushed_repo(work, remote);
     git_run(work, &["push", "-q", "-u", "origin", "main"]);
     git_clone(remote, other);
-    git_run(other, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(other, &["config", "user.email", "demo@ravix.dev"]);
     git_run(other, &["config", "user.name", "Demo"]);
     commit_file(other, "b.txt", "b\n", "remote work");
     git_run(other, &["push", "-q"]);
@@ -2724,7 +2724,7 @@ fn diverged_conflict_repo(work: &Path, remote: &Path, other: &Path) {
     git_run(work, &["remote", "add", "origin", remote.to_str().unwrap()]);
     git_run(work, &["push", "-q", "-u", "origin", "main"]);
     git_clone(remote, other);
-    git_run(other, &["config", "user.email", "demo@ogma.dev"]);
+    git_run(other, &["config", "user.email", "demo@ravix.dev"]);
     git_run(other, &["config", "user.name", "Demo"]);
     commit_file(other, "shared.txt", "remote\n", "remote edit");
     git_run(other, &["push", "-q"]);
@@ -2956,7 +2956,7 @@ fn dropping_a_stash_removes_it_after_confirmation() {
 fn a_conflicting_pop_surfaces_the_error_and_refreshes_the_working_view() {
     let dir = TempDir::new().unwrap();
     git_run(dir.path(), &["init", "-q", "-b", "main"]);
-    git_run(dir.path(), &["config", "user.email", "demo@ogma.dev"]);
+    git_run(dir.path(), &["config", "user.email", "demo@ravix.dev"]);
     git_run(dir.path(), &["config", "user.name", "Demo"]);
     std::fs::write(dir.path().join("f.txt"), "base\n").unwrap();
     git_run(dir.path(), &["add", "-A"]);
@@ -3213,7 +3213,7 @@ fn a_multi_step_rebase_resolves_through_the_browser() {
 
     assert!(
         app.conflict_browser()
-            .is_some_and(|b| b.op == ogma::conflict::OpKind::Rebase),
+            .is_some_and(|b| b.op == ravix::conflict::OpKind::Rebase),
         "a conflicting rebase should open the browser as a rebase"
     );
     let screen = dump(&draw(&mut app, 100, 28));
@@ -3396,7 +3396,7 @@ fn skipping_a_commit_drops_it_from_the_rebase() {
 }
 
 #[test]
-fn an_in_progress_rebase_is_detected_when_ogma_opens() {
+fn an_in_progress_rebase_is_detected_when_ravix_opens() {
     let dir = TempDir::new().unwrap();
     rebase_conflict_repo(dir.path());
     let out = Command::new("git")
@@ -3410,7 +3410,7 @@ fn an_in_progress_rebase_is_detected_when_ogma_opens() {
 
     assert!(
         app.conflict_browser()
-            .is_some_and(|b| b.op == ogma::conflict::OpKind::Rebase),
+            .is_some_and(|b| b.op == ravix::conflict::OpKind::Rebase),
         "an already-conflicted rebase should open the browser on startup"
     );
     let screen = dump(&draw(&mut app, 100, 28));
@@ -3424,7 +3424,7 @@ fn code_repo(dir: &Path) {
     let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.email", "demo@ravix.dev"]);
     run(&["config", "user.name", "Demo"]);
 
     std::fs::write(

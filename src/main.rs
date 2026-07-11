@@ -6,10 +6,10 @@ use crossterm::execute;
 use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 
-use ogma::app::{Action, App};
-use ogma::event::InputMap;
-use ogma::ui::{regions, render};
-use ogma::watcher::RepoWatcher;
+use ravix::app::{Action, App};
+use ravix::event::InputMap;
+use ravix::ui::{regions, render};
+use ravix::watcher::RepoWatcher;
 
 const IDLE_POLL: Duration = Duration::from_millis(200);
 const FRAME_POLL: Duration = Duration::from_millis(16);

@@ -1,4 +1,4 @@
-use ogma::celebrate::{Event, Intensity, next_intensity, should_celebrate};
+use ravix::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 
 #[test]
 fn the_dial_cycles_full_subtle_off() {

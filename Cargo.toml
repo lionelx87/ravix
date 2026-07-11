@@ -1,14 +1,14 @@
 [package]
-name = "ogma"
+name = "ravix"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "og"
+name = "rx"
 path = "src/main.rs"
 
 [lib]
-name = "ogma"
+name = "ravix"
 path = "src/lib.rs"
 
 [dependencies]

@@ -1,6 +1,6 @@
 use git2::Oid;
-use ogma::git::Repo;
-use ogma::staging::build_patch;
+use ravix::git::Repo;
+use ravix::staging::build_patch;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;

@@ -1,4 +1,4 @@
-use ogma::enrich::{WordKind, WordSpan, word_diff};
+use ravix::enrich::{WordKind, WordSpan, word_diff};
 
 fn equal(text: &str) -> WordSpan {
     WordSpan {

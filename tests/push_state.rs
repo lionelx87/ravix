@@ -1,4 +1,4 @@
-use ogma::remote::{PushState, push_state};
+use ravix::remote::{PushState, push_state};
 
 #[test]
 fn a_branch_without_an_upstream_has_nothing_to_track() {
@@ -32,9 +32,9 @@ fn a_rejected_push_is_recognised_as_non_fast_forward() {
     let rejection = " ! [rejected]        main -> main (non-fast-forward)\n\
         error: failed to push some refs to 'origin'\n\
         hint: Updates were rejected because the tip of your current branch is behind";
-    assert!(ogma::remote::is_non_fast_forward(rejection));
+    assert!(ravix::remote::is_non_fast_forward(rejection));
 
-    assert!(!ogma::remote::is_non_fast_forward(
+    assert!(!ravix::remote::is_non_fast_forward(
         "fatal: unable to access 'origin': Could not resolve host"
     ));
 }

@@ -1,4 +1,4 @@
-use ogma::undo::{InversePlan, UndoableAction, invert};
+use ravix::undo::{InversePlan, UndoableAction, invert};
 
 #[test]
 fn staging_inverts_to_unstaging_and_back() {

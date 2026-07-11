@@ -1,4 +1,4 @@
-use ogma::staging::{SplitRow, split_rows};
+use ravix::staging::{SplitRow, split_rows};
 
 fn row(left: Option<&str>, right: Option<&str>) -> SplitRow {
     SplitRow {

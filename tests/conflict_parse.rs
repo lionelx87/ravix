@@ -1,4 +1,4 @@
-use ogma::conflict::{Segment, Side, conflict_count, parse, resolve};
+use ravix::conflict::{Segment, Side, conflict_count, parse, resolve};
 
 const CONFLICTED: &str = "\
 fn main() {

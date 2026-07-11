@@ -1,4 +1,4 @@
-use ogma::submodule::breadcrumb_label;
+use ravix::submodule::breadcrumb_label;
 use std::path::{Path, PathBuf};
 
 #[test]

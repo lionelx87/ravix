@@ -1,4 +1,4 @@
-use ogma::enrich::highlighter;
+use ravix::enrich::highlighter;
 
 #[test]
 fn highlighting_a_line_is_deterministic_across_calls() {

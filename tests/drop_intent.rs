@@ -1,4 +1,4 @@
-use ogma::drag::{DropIntent, RowRef, resolve_drop};
+use ravix::drag::{DropIntent, RowRef, resolve_drop};
 
 fn rows() -> Vec<RowRef> {
     vec![

@@ -1,4 +1,4 @@
-use ogma::palette::fuzzy_filter;
+use ravix::palette::fuzzy_filter;
 
 const COMMANDS: &[&str] = &["Fetch", "Push", "Pull", "Stash changes", "Stash list"];
 

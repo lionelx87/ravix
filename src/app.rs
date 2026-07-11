@@ -381,7 +381,7 @@ impl App {
     }
 
     fn focus_path(&self) -> std::path::PathBuf {
-        self.repo.git_dir().join("ogma").join("focus")
+        self.repo.git_dir().join("ravix").join("focus")
     }
 
     fn load_focus_sets(&self) -> Vec<FocusSet> {

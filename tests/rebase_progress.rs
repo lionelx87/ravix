@@ -1,4 +1,4 @@
-use ogma::rebase::parse_progress;
+use ravix::rebase::parse_progress;
 
 #[test]
 fn parses_the_current_step_and_total() {

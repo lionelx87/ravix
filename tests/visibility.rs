@@ -1,4 +1,4 @@
-use ogma::visibility::Visibility;
+use ravix::visibility::Visibility;
 
 #[test]
 fn everything_is_visible_by_default() {

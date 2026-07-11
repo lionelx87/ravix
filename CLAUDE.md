@@ -1,12 +1,12 @@
-# Ogma
+# Ravix
 
-A spectacular, animated git TUI (binary `og`). Rust + Ratatui. See `ROADMAP.md` for design pillars and phases.
+A spectacular, animated git TUI (binary `rx`). Rust + Ratatui. See `ROADMAP.md` for design pillars and phases.
 
 ## Agent skills
 
 ### Issue tracker
 
-Issues and PRDs live in GitHub Issues at `lionelx87/ogma` (via the `gh` CLI); external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+Issues and PRDs live in GitHub Issues at `lionelx87/ravix` (via the `gh` CLI); external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

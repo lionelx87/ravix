@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-use ogma::app::InputContext;
-use ogma::event::InputMap;
-use ogma::help::{HelpPage, context_help};
+use ravix::app::InputContext;
+use ravix::event::InputMap;
+use ravix::help::{HelpPage, context_help};
 
 fn key_codes(label: &str) -> Vec<KeyCode> {
     label

@@ -1,4 +1,4 @@
-use ogma::stash::{StashEntry, parse_stash_list};
+use ravix::stash::{StashEntry, parse_stash_list};
 
 const LIST: &str = "\
 stash@{0}: WIP on main: 1a2b3c4 add feature

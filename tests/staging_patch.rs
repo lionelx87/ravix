@@ -1,4 +1,4 @@
-use ogma::staging::{FileDiff, Hunk, build_patch};
+use ravix::staging::{FileDiff, Hunk, build_patch};
 
 fn sample() -> FileDiff {
     FileDiff {

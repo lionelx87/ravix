@@ -6,7 +6,7 @@
 
 ## Context
 
-Ogma reads a repository constantly (graph, status, diffs) and, from Phase 2
+Ravix reads a repository constantly (graph, status, diffs) and, from Phase 2
 onward, mutates it (staging, discarding, committing). Reads and mutations have
 different needs: reads want a fast in-process library; mutations must behave
 exactly like the user's own `git` so that hooks and config are honored. The
