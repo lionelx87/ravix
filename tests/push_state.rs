@@ -26,3 +26,15 @@ fn ahead_and_behind_means_a_diverged_push_needing_force() {
         }
     );
 }
+
+#[test]
+fn a_rejected_push_is_recognised_as_non_fast_forward() {
+    let rejection = " ! [rejected]        main -> main (non-fast-forward)\n\
+        error: failed to push some refs to 'origin'\n\
+        hint: Updates were rejected because the tip of your current branch is behind";
+    assert!(ogma::remote::is_non_fast_forward(rejection));
+
+    assert!(!ogma::remote::is_non_fast_forward(
+        "fatal: unable to access 'origin': Could not resolve host"
+    ));
+}

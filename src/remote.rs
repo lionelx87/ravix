@@ -23,6 +23,12 @@ pub enum PushState {
     Diverged { ahead: usize, behind: usize },
 }
 
+pub fn is_non_fast_forward(error: &str) -> bool {
+    error.contains("non-fast-forward")
+        || error.contains("fetch first")
+        || error.contains("Updates were rejected")
+}
+
 pub fn push_state(tracking: Option<(usize, usize)>) -> PushState {
     let Some((ahead, behind)) = tracking else {
         return PushState::NoUpstream;

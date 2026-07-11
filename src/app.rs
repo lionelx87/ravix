@@ -16,7 +16,7 @@ use crate::graph::{GraphCommit, GraphRow, lay_out};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
-use crate::remote::{PullAction, PushState, pull_action, push_state};
+use crate::remote::{PullAction, PushState, is_non_fast_forward, pull_action, push_state};
 use crate::slide::{self, SlidePanel, advance};
 use crate::staging::build_patch;
 use crate::stash::StashPanel;
@@ -1191,7 +1191,19 @@ impl App {
                             OnComplete::Pull => self.pull_integrate(),
                         }
                     }
-                    Err(error) => self.fail(error.to_string()),
+                    Err(error) => {
+                        let text = error.to_string();
+                        if matches!(on_complete, OnComplete::Push) && is_non_fast_forward(&text) {
+                            self.confirm = Some(Confirm {
+                                message:
+                                    "Push rejected — remote has moved. Force-with-lease? (y/n)"
+                                        .to_string(),
+                                kind: ConfirmKind::ForcePush,
+                            });
+                        } else {
+                            self.fail(text);
+                        }
+                    }
                 }
             }
             Err(mpsc::TryRecvError::Empty) => {}
