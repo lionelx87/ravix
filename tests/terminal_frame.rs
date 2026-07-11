@@ -475,18 +475,7 @@ fn question_mark_toggles_the_help_overlay() {
 }
 
 fn dirty_repo(dir: &Path) {
-    let run = |args: &[&str]| {
-        let output = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
+    let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
     run(&["config", "user.email", "demo@ogma.dev"]);
@@ -508,18 +497,7 @@ fn dirty_repo(dir: &Path) {
 }
 
 fn submodule_repo(dir: &Path) -> std::path::PathBuf {
-    let git = |cwd: &Path, args: &[&str]| {
-        assert!(
-            Command::new("git")
-                .current_dir(cwd)
-                .args(args)
-                .output()
-                .unwrap()
-                .status
-                .success(),
-            "git {args:?}"
-        );
-    };
+    let git = git_run;
 
     let origin = dir.join("sub-origin");
     std::fs::create_dir(&origin).unwrap();
@@ -609,17 +587,7 @@ fn any_row_has_both(screen: &str, left: &str, right: &str) -> bool {
 #[test]
 fn a_long_left_line_is_truncated_so_the_right_column_stays_visible() {
     let dir = TempDir::new().unwrap();
-    let run = |args: &[&str]| {
-        assert!(
-            Command::new("git")
-                .current_dir(dir.path())
-                .args(args)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-    };
+    let run = |args: &[&str]| git_run(dir.path(), args);
     run(&["init", "-q", "-b", "main"]);
     run(&["config", "user.email", "demo@ogma.dev"]);
     run(&["config", "user.name", "Demo"]);
@@ -782,6 +750,32 @@ fn committing_from_the_editor_creates_a_commit() {
         !app.status().staged.iter().any(|f| f.path == "readme.md"),
         "readme.md should have been committed: {:?}",
         app.status()
+    );
+}
+
+#[test]
+fn the_open_branch_list_refreshes_on_reload_after_an_external_ref_change() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    let before = panel_region(&draw(&mut app, 80, 20));
+    assert!(
+        !before.contains("hotfix"),
+        "the externally-created branch is not listed yet:\n{before}"
+    );
+
+    git_run(dir.path(), &["branch", "hotfix"]);
+    app.update(Action::Reload);
+    settle(&mut app);
+
+    let after = panel_region(&draw(&mut app, 80, 20));
+    assert!(
+        after.contains("hotfix"),
+        "Reload refreshes the open branch list with the new ref:\n{after}"
     );
 }
 
@@ -1326,18 +1320,7 @@ fn undo_drops_a_created_branch_and_returns_to_the_previous_one() {
 }
 
 fn delete_repo(dir: &Path) {
-    let run = |args: &[&str]| {
-        let output = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
+    let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
     run(&["config", "user.email", "demo@ogma.dev"]);
@@ -1751,18 +1734,7 @@ fn the_branch_list_shows_ahead_behind_against_upstream() {
 }
 
 fn conflicting_checkout_repo(dir: &Path) {
-    let run = |args: &[&str]| {
-        let output = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
+    let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
     run(&["config", "user.email", "demo@ogma.dev"]);
@@ -3354,18 +3326,7 @@ fn an_in_progress_rebase_is_detected_when_ogma_opens() {
 }
 
 fn code_repo(dir: &Path) {
-    let run = |args: &[&str]| {
-        let output = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
+    let run = |args: &[&str]| git_run(dir, args);
 
     run(&["init", "-q", "-b", "main"]);
     run(&["config", "user.email", "demo@ogma.dev"]);
