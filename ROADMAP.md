@@ -25,7 +25,7 @@ as branches sprouting from a trunk line — exactly what this tool draws.
 | 2 | Working directory: status row, staging/unstage/discard per file and hunk, enriched diffs (syntect, intra-line), commit flow, snapshots + undo foundation | #3, #5, #7 | ✅ Done |
 | 3 | Branch operations: checkout, branch create/delete, join menu with merge-tree prediction, merge/rebase/cherry-pick, conflict browser, drag & drop | #8, #10, #11, #14, #15 | ✅ Done |
 | 4 | Remotes & flow: fetch/pull/push, upstream tracking in graph, stash, command palette, celebrations | #16, #18, #19, #21, #22 | ✅ Done |
-| 5 | Submodules (lazygit-style enter/exit with breadcrumb), focus mode, branch panel polish, side-by-side fullscreen diff | | |
+| 5 | Submodules (lazygit-style enter/exit with breadcrumb), focus mode, branch panel polish, side-by-side fullscreen diff | #20, #23, #2, #24, #25, #26, #13 | ✅ Done |
 
 ## v2 wishlist (do not lose)
 

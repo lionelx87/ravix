@@ -10,12 +10,14 @@ use git2::Oid;
 use syntect::parsing::SyntaxReference;
 
 use crate::app::{
-    App, BranchCreate, CommitEditor, Confirm, FocusPanel, Palette, Panel, SubmodulePanel,
+    App, BranchCreate, CommitEditor, Confirm, FocusPanel, InputContext, Palette, Panel,
+    SubmodulePanel,
 };
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::{BadgeKind, RefBadge};
+use crate::help::context_help;
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
 use crate::staging::{content_of, marker_of, split_rows};
@@ -197,7 +199,7 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
         render_alert(frame, message, &theme, area);
     }
     if app.help_visible() {
-        render_help(frame, &theme, area);
+        render_help(frame, app.input_context(), &theme, area);
     }
 }
 
@@ -949,33 +951,32 @@ fn conflict_code_line(
     Line::from(spans)
 }
 
-fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
-    let bindings = [
-        ("j / ↓", "select next commit"),
-        ("k / ↑", "select previous commit"),
-        ("gg / G", "jump to first / last"),
-        ("PgUp / PgDn", "page up / down"),
-        ("Enter", "open commit detail panel"),
-        ("space", "checkout commit / stage file or hunk"),
-        (
-            "b",
-            "branches: checkout/new/delete · hide/solo/pin · / filter",
-        ),
-        ("M", "join: merge / cherry-pick / rebase (predicted)"),
-        ("F", "focus sets: save / activate visibility views"),
-        ("> / <", "submodules: enter / exit to parent"),
-        ("f / p / P", "fetch / pull / push (background)"),
-        ("s / S", "stash changes / stash list"),
-        ("Ctrl+P", "command palette (incl. celebrations dial)"),
-        ("drag", "drop a branch onto another to join"),
-        ("c / d", "commit staged · discard (file or hunk)"),
-        ("u", "undo last action"),
-        ("Esc", "close panel or help"),
-        ("? / q", "toggle this help · quit"),
-    ];
+fn render_help(frame: &mut Frame, context: InputContext, theme: &Theme, area: Rect) {
+    let page = context_help(context);
+    let universal = ("Esc / ? / q", "close · help · quit");
 
-    let width = 44u16.min(area.width);
-    let height = (bindings.len() as u16 + 2).min(area.height);
+    let help_line = |keys: &str, description: &str| {
+        Line::from(vec![
+            Span::styled(
+                format!(" {keys:<12}"),
+                Style::default()
+                    .fg(theme.branch_badge)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(description.to_string()),
+        ])
+    };
+
+    let mut lines: Vec<Line> = page
+        .bindings
+        .iter()
+        .map(|(keys, description)| help_line(keys, description))
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(help_line(universal.0, universal.1));
+
+    let width = 46u16.min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -984,25 +985,10 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     };
     frame.render_widget(Clear, rect);
 
-    let lines: Vec<Line> = bindings
-        .iter()
-        .map(|(keys, description)| {
-            Line::from(vec![
-                Span::styled(
-                    format!(" {keys:<12}"),
-                    Style::default()
-                        .fg(theme.branch_badge)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(description.to_string()),
-            ])
-        })
-        .collect();
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(" Help ");
+        .title(format!(" Help — {} ", page.title));
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 

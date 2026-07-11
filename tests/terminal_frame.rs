@@ -427,6 +427,40 @@ fn wheel_scroll_moves_the_viewport_but_not_the_selection() {
 }
 
 #[test]
+fn help_is_context_aware() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('?'));
+    let graph_help = dump(&draw(&mut app, 100, 24));
+    assert!(
+        graph_help.contains("Help — Graph"),
+        "the graph help is titled Graph:\n{graph_help}"
+    );
+    assert!(
+        !graph_help.contains("solo"),
+        "the graph help does not list branch-panel-only keys:\n{graph_help}"
+    );
+    assert!(graph_help.contains("quit"), "the universal footer shows");
+    press(&mut app, &mut input, KeyCode::Char('?'));
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('?'));
+    let branch_help = dump(&draw(&mut app, 100, 24));
+    assert!(
+        branch_help.contains("Help — Branches"),
+        "the branch panel help is titled Branches:\n{branch_help}"
+    );
+    assert!(
+        branch_help.contains("solo"),
+        "the branch help lists the branch-panel keys:\n{branch_help}"
+    );
+}
+
+#[test]
 fn question_mark_toggles_the_help_overlay() {
     let dir = TempDir::new().unwrap();
     fixture_repo(dir.path());
