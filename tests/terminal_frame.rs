@@ -179,6 +179,19 @@ fn panel_marker_row(buffer: &Buffer) -> Option<u16> {
         .find(|&y| (panel_side..area.width).any(|x| buffer.cell((x, y)).unwrap().symbol() == "❯"))
 }
 
+fn panel_region(buffer: &Buffer) -> String {
+    let area = buffer.area();
+    let panel_side = area.width / 2;
+    let mut out = String::new();
+    for y in 0..area.height {
+        for x in panel_side..area.width {
+            out.push_str(buffer.cell((x, y)).unwrap().symbol());
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[test]
 fn initial_frame_shows_graph_badges_and_status() {
     let dir = TempDir::new().unwrap();
@@ -567,6 +580,193 @@ fn b_opens_the_branch_list_marking_the_current_branch() {
     assert!(
         screen.contains('●'),
         "the current branch should carry a HEAD marker:\n{screen}"
+    );
+    assert!(
+        screen.contains("M join"),
+        "the panel lists its action keys, including join:\n{screen}"
+    );
+    assert!(
+        screen.contains("o solo"),
+        "the panel lists its visibility keys:\n{screen}"
+    );
+}
+
+#[test]
+fn hiding_a_branch_recomposes_the_graph_without_its_exclusive_commits() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    let before = dump(&draw(&mut app, 80, 20));
+    assert!(
+        before.contains("Work on feature"),
+        "the feature branch's exclusive commit is present initially:\n{before}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    let after = dump(&draw(&mut app, 80, 20));
+    assert!(
+        !after.contains("Work on feature"),
+        "hiding feature drops its exclusive commit from the graph:\n{after}"
+    );
+    assert!(
+        after.contains("Initial commit"),
+        "the shared fork-point commit remains:\n{after}"
+    );
+    assert!(
+        after.contains("Add feature base"),
+        "main's own commit remains:\n{after}"
+    );
+}
+
+#[test]
+fn slash_filters_the_branch_list_to_matches() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    let before = panel_region(&draw(&mut app, 80, 20));
+    assert!(
+        before.contains("main"),
+        "main is listed before filtering:\n{before}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    for ch in "feat".chars() {
+        press(&mut app, &mut input, KeyCode::Char(ch));
+    }
+
+    let after = panel_region(&draw(&mut app, 80, 20));
+    assert!(
+        after.contains("feature"),
+        "the matching branch stays listed:\n{after}"
+    );
+    assert!(
+        !after.contains("main"),
+        "the non-matching branch is filtered out of the panel:\n{after}"
+    );
+}
+
+#[test]
+fn esc_clears_a_submitted_filter_and_restores_the_full_list() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    for ch in "feat".chars() {
+        press(&mut app, &mut input, KeyCode::Char(ch));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    let filtered = panel_region(&draw(&mut app, 80, 20));
+    assert!(
+        !filtered.contains("main"),
+        "the submitted filter still hides non-matches:\n{filtered}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    let restored = panel_region(&draw(&mut app, 80, 20));
+    assert!(
+        restored.contains("main"),
+        "Esc clears the submitted filter and restores the full list:\n{restored}"
+    );
+    assert!(
+        restored.contains("feature"),
+        "the full list is back:\n{restored}"
+    );
+}
+
+#[test]
+fn the_branch_panel_marks_hidden_and_pinned_branches() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    press(&mut app, &mut input, KeyCode::Char('k'));
+    press(&mut app, &mut input, KeyCode::Char('p'));
+    settle(&mut app);
+
+    let screen = dump(&draw(&mut app, 80, 20));
+    assert!(
+        screen.contains("feature"),
+        "a hidden branch stays listed in the panel:\n{screen}"
+    );
+    assert!(
+        screen.contains('◌'),
+        "a hidden branch carries a hidden marker:\n{screen}"
+    );
+    assert!(
+        screen.contains('★'),
+        "a pinned branch carries a pin marker:\n{screen}"
+    );
+}
+
+#[test]
+fn a_pinned_branch_survives_soloing_another() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('p'));
+    press(&mut app, &mut input, KeyCode::Char('k'));
+    press(&mut app, &mut input, KeyCode::Char('o'));
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    let after = dump(&draw(&mut app, 80, 20));
+    assert!(
+        after.contains("Work on feature"),
+        "the pinned feature branch survives soloing main:\n{after}"
+    );
+    assert!(
+        after.contains("Add feature base"),
+        "the soloed main keeps its commit:\n{after}"
+    );
+}
+
+#[test]
+fn soloing_a_branch_hides_every_other_branch_from_the_graph() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('o'));
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    let after = dump(&draw(&mut app, 80, 20));
+    assert!(
+        after.contains("Add feature base"),
+        "the soloed HEAD branch keeps its commit:\n{after}"
+    );
+    assert!(
+        !after.contains("Work on feature"),
+        "soloing main hides the feature branch's exclusive commit:\n{after}"
     );
 }
 

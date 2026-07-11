@@ -25,6 +25,7 @@ impl InputMap {
             InputContext::Confirm => on_confirm_key(key),
             InputContext::Branch => on_branch_key(key),
             InputContext::BranchName => on_branch_name_key(key),
+            InputContext::BranchFilter => on_branch_filter_key(key),
             InputContext::Alert => Some(Action::Dismiss),
             InputContext::Join => on_join_key(key),
             InputContext::Conflict => on_conflict_key(key),
@@ -123,7 +124,11 @@ fn on_branch_key(key: KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
-        KeyCode::Enter | KeyCode::Char(' ') => Some(Action::Checkout),
+        KeyCode::Enter => Some(Action::Checkout),
+        KeyCode::Char(' ') => Some(Action::ToggleBranchVisibility),
+        KeyCode::Char('o') => Some(Action::SoloBranch),
+        KeyCode::Char('p') => Some(Action::PinBranch),
+        KeyCode::Char('/') => Some(Action::StartBranchFilter),
         KeyCode::Char('M') => Some(Action::OpenJoin),
         KeyCode::Char('n') => Some(Action::NewBranch),
         KeyCode::Char('d') => Some(Action::DeleteBranch),
@@ -131,6 +136,17 @@ fn on_branch_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_branch_filter_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::BranchFilterSubmit),
+        KeyCode::Backspace => Some(Action::BranchFilterBackspace),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char(character) if !ctrl => Some(Action::BranchFilterInput(character)),
         _ => None,
     }
 }

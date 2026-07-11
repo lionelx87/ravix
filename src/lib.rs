@@ -17,5 +17,6 @@ pub mod staging;
 pub mod stash;
 pub mod ui;
 pub mod undo;
+pub mod visibility;
 pub mod watcher;
 pub mod working;

@@ -20,6 +20,7 @@ use crate::slide::{SlidePanel, advance};
 use crate::staging::build_patch;
 use crate::stash::StashPanel;
 use crate::undo::{InversePlan, UndoableAction, invert};
+use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
 const LOAD_PAGE: usize = 500;
@@ -78,6 +79,13 @@ pub enum Action {
     ConflictNextFile,
     NewBranch,
     DeleteBranch,
+    ToggleBranchVisibility,
+    SoloBranch,
+    PinBranch,
+    StartBranchFilter,
+    BranchFilterInput(char),
+    BranchFilterBackspace,
+    BranchFilterSubmit,
     BranchNameInput(char),
     BranchNameBackspace,
     BranchNameSubmit,
@@ -100,6 +108,7 @@ pub enum InputContext {
     Confirm,
     Branch,
     BranchName,
+    BranchFilter,
     Alert,
     Join,
     Conflict,
@@ -123,6 +132,11 @@ pub struct CommitEditor {
 pub struct BranchCreate {
     pub name: String,
     start: String,
+}
+
+struct BranchFilter {
+    query: String,
+    editing: bool,
 }
 
 pub struct DragState {
@@ -236,8 +250,11 @@ pub struct App {
     page: usize,
     status: WorkingStatus,
     on_wip: bool,
+    visibility: Visibility,
     working: Option<WorkingView>,
     branch: Option<BranchPanel>,
+    branch_filter: Option<BranchFilter>,
+    branch_all: Vec<BranchEntry>,
     join: Option<JoinMenu>,
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
@@ -275,7 +292,8 @@ impl App {
         let cli = GitCli::new(workdir);
         let meta = repo.meta()?;
         let load_page = load_page.max(1);
-        let commits = repo.commits(0, load_page)?;
+        let visibility = Visibility::default();
+        let commits = repo.commits(0, load_page, &visibility)?;
         let exhausted = commits.len() < load_page;
         let rows = layout_rows(&commits);
         let status = repo.working_status().unwrap_or_default();
@@ -292,8 +310,11 @@ impl App {
             page: DEFAULT_PAGE,
             status,
             on_wip: false,
+            visibility,
             working: None,
             branch: None,
+            branch_filter: None,
+            branch_all: Vec::new(),
             join: None,
             conflict: None,
             edit_request: None,
@@ -371,6 +392,16 @@ impl App {
 
     pub fn branch_panel(&self) -> Option<&BranchPanel> {
         self.branch.as_ref()
+    }
+
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+
+    pub fn branch_filter_query(&self) -> Option<&str> {
+        self.branch_filter
+            .as_ref()
+            .map(|filter| filter.query.as_str())
     }
 
     pub fn join_menu(&self) -> Option<&JoinMenu> {
@@ -485,6 +516,12 @@ impl App {
             InputContext::Stash
         } else if self.join.is_some() {
             InputContext::Join
+        } else if self
+            .branch_filter
+            .as_ref()
+            .is_some_and(|filter| filter.editing)
+        {
+            InputContext::BranchFilter
         } else if self.branch.is_some() {
             InputContext::Branch
         } else if self.working.is_some() {
@@ -575,6 +612,13 @@ impl App {
             }
             Action::NewBranch => self.open_branch_create(),
             Action::DeleteBranch => self.request_delete_branch(),
+            Action::ToggleBranchVisibility => self.toggle_branch_visibility(),
+            Action::SoloBranch => self.solo_branch(),
+            Action::PinBranch => self.pin_branch(),
+            Action::StartBranchFilter => self.start_branch_filter(),
+            Action::BranchFilterInput(character) => self.branch_filter_input(character),
+            Action::BranchFilterBackspace => self.branch_filter_backspace(),
+            Action::BranchFilterSubmit => self.branch_filter_submit(),
             Action::BranchNameInput(character) => self.branch_name_input(character),
             Action::BranchNameBackspace => self.branch_name_backspace(),
             Action::BranchNameSubmit => self.branch_name_submit(),
@@ -1090,7 +1134,10 @@ impl App {
     }
 
     fn dismiss(&mut self) {
-        if self.alert.is_some() {
+        if self.branch_filter.is_some() {
+            self.branch_filter = None;
+            self.apply_branch_filter();
+        } else if self.alert.is_some() {
             self.alert = None;
         } else if self.palette.is_some() {
             self.palette = None;
@@ -1469,7 +1516,8 @@ impl App {
             self.close_branch_panel();
             return;
         }
-        self.branch = Some(BranchPanel::opening(self.load_branch_entries()));
+        self.branch_all = self.load_branch_entries();
+        self.branch = Some(BranchPanel::opening(self.branch_all.clone()));
     }
 
     fn checkout(&mut self) {
@@ -1477,6 +1525,102 @@ impl App {
             self.checkout_focused_branch();
         } else {
             self.checkout_selected_commit();
+        }
+    }
+
+    fn focused_branch_name(&self) -> Option<String> {
+        self.branch
+            .as_ref()
+            .and_then(BranchPanel::focused)
+            .map(|entry| entry.name.clone())
+    }
+
+    fn branch_names(&self) -> Vec<String> {
+        self.branch_all
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    fn toggle_branch_visibility(&mut self) {
+        let Some(name) = self.focused_branch_name() else {
+            return;
+        };
+        self.visibility.toggle(&name);
+        self.reload();
+    }
+
+    fn solo_branch(&mut self) {
+        let Some(name) = self.focused_branch_name() else {
+            return;
+        };
+        let names = self.branch_names();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.visibility.solo(&name, &refs);
+        self.reload();
+    }
+
+    fn pin_branch(&mut self) {
+        let Some(name) = self.focused_branch_name() else {
+            return;
+        };
+        self.visibility.pin(&name);
+        self.reload();
+    }
+
+    fn start_branch_filter(&mut self) {
+        if self.branch.is_none() {
+            return;
+        }
+        self.branch_filter = Some(BranchFilter {
+            query: String::new(),
+            editing: true,
+        });
+    }
+
+    fn branch_filter_input(&mut self, character: char) {
+        if let Some(filter) = &mut self.branch_filter {
+            filter.query.push(character);
+        }
+        self.apply_branch_filter();
+    }
+
+    fn branch_filter_backspace(&mut self) {
+        if let Some(filter) = &mut self.branch_filter {
+            filter.query.pop();
+        }
+        self.apply_branch_filter();
+    }
+
+    fn branch_filter_submit(&mut self) {
+        if let Some(filter) = &mut self.branch_filter {
+            if filter.query.is_empty() {
+                self.branch_filter = None;
+            } else {
+                filter.editing = false;
+            }
+        }
+    }
+
+    fn apply_branch_filter(&mut self) {
+        let query = self
+            .branch_filter
+            .as_ref()
+            .map(|filter| filter.query.clone())
+            .unwrap_or_default();
+        let entries = if query.is_empty() {
+            self.branch_all.clone()
+        } else {
+            let names = self.branch_names();
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            fuzzy_filter(&query, &refs)
+                .into_iter()
+                .map(|index| self.branch_all[index].clone())
+                .collect()
+        };
+        if let Some(panel) = &mut self.branch {
+            panel.selected = panel.selected.min(entries.len().saturating_sub(1));
+            panel.entries = entries;
         }
     }
 
@@ -1994,11 +2138,8 @@ impl App {
         if self.branch.is_none() {
             return;
         }
-        let entries = self.load_branch_entries();
-        if let Some(panel) = &mut self.branch {
-            panel.selected = panel.selected.min(entries.len().saturating_sub(1));
-            panel.entries = entries;
-        }
+        self.branch_all = self.load_branch_entries();
+        self.apply_branch_filter();
     }
 
     fn branch_start(&self) -> String {
@@ -2081,7 +2222,7 @@ impl App {
         if let Ok(meta) = self.repo.meta() {
             self.meta = meta;
         }
-        if let Ok(commits) = self.repo.commits(0, self.load_page) {
+        if let Ok(commits) = self.repo.commits(0, self.load_page, &self.visibility) {
             self.exhausted = commits.len() < self.load_page;
             self.commits = commits;
             self.rebuild_rows();
@@ -2089,6 +2230,7 @@ impl App {
 
         self.selected = selected_id
             .and_then(|id| self.find_loading(id))
+            .or_else(|| self.head_row())
             .unwrap_or(0)
             .min(self.last_index());
 
@@ -2102,6 +2244,13 @@ impl App {
         self.refresh_status();
         self.refresh_branch_entries();
         self.detect_conflict();
+    }
+
+    fn head_row(&self) -> Option<usize> {
+        let head = self.repo.head_oid()?;
+        self.commits
+            .iter()
+            .position(|commit| commit.id.to_string() == head)
     }
 
     fn find_loading(&mut self, id: Oid) -> Option<usize> {
@@ -2123,7 +2272,10 @@ impl App {
     }
 
     fn load_more(&mut self) {
-        match self.repo.commits(self.commits.len(), self.load_page) {
+        match self
+            .repo
+            .commits(self.commits.len(), self.load_page, &self.visibility)
+        {
             Ok(mut more) => {
                 if more.len() < self.load_page {
                     self.exhausted = true;
@@ -2166,6 +2318,7 @@ impl App {
             panel.advance(step);
             if panel.is_dismissed() {
                 self.branch = None;
+                self.branch_filter = None;
             }
         }
         if let Some(menu) = &mut self.join {

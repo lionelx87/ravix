@@ -7,6 +7,7 @@ use git2::{BranchType, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions}
 use crate::branches::BranchInput;
 use crate::conflict::OpKind;
 use crate::staging::{FileDiff, Hunk};
+use crate::visibility::Visibility;
 
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -258,10 +259,15 @@ impl Repo {
         })
     }
 
-    pub fn commits(&self, skip: usize, limit: usize) -> Result<Vec<CommitInfo>, git2::Error> {
+    pub fn commits(
+        &self,
+        skip: usize,
+        limit: usize,
+        visibility: &Visibility,
+    ) -> Result<Vec<CommitInfo>, git2::Error> {
         let mut revwalk = self.inner.revwalk()?;
         revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
-        for tip in self.visible_tips()? {
+        for tip in self.visible_tips(visibility)? {
             revwalk.push(tip)?;
         }
 
@@ -517,8 +523,9 @@ impl Repo {
         Ok(None)
     }
 
-    fn visible_tips(&self) -> Result<Vec<Oid>, git2::Error> {
+    fn visible_tips(&self, visibility: &Visibility) -> Result<Vec<Oid>, git2::Error> {
         let mut tips = Vec::new();
+        let head_branch = self.head_branch();
 
         if let Ok(head) = self.inner.head()
             && let Some(oid) = head.target()
@@ -528,6 +535,13 @@ impl Repo {
 
         for branch in self.inner.branches(Some(BranchType::Local))? {
             let (branch, _) = branch?;
+            let Some(name) = branch.name()?.map(str::to_string) else {
+                continue;
+            };
+            let is_head = head_branch.as_deref() == Some(name.as_str());
+            if !visibility.is_visible(&name, is_head) {
+                continue;
+            }
             if let Some(oid) = branch.get().target() {
                 tips.push(oid);
             }

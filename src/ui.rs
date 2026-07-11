@@ -14,6 +14,7 @@ use crate::git::BadgeKind;
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
 use crate::stash::StashPanel;
+use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
 const SELECTION_MARKER: &str = "❯ ";
@@ -146,7 +147,14 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
         render_panel(frame, app, panel, &theme, graph_area);
     }
     if let Some(panel) = app.branch_panel() {
-        render_branch_panel(frame, panel, &theme, graph_area);
+        render_branch_panel(
+            frame,
+            panel,
+            app.visibility(),
+            app.branch_filter_query(),
+            &theme,
+            graph_area,
+        );
     }
     if let Some(menu) = app.join_menu() {
         render_join_menu(frame, menu, &theme, graph_area);
@@ -458,6 +466,7 @@ fn slide_rect(area: Rect, slide: f32, fraction: f32, min_width: f32) -> Option<R
 struct SlideList<'a> {
     title: &'a str,
     empty: &'a str,
+    hints: &'a [&'a str],
     fraction: f32,
     min_width: f32,
 }
@@ -482,6 +491,15 @@ fn render_slide_list<T>(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
+    let footer_height = list.hints.len() as u16;
+    let (rows_area, footer_area) = if footer_height > 0 && inner.height > footer_height + 2 {
+        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(footer_height + 1)])
+            .split(inner);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (inner, None)
+    };
+
     let mut lines: Vec<Line> = panel
         .entries
         .iter()
@@ -494,23 +512,66 @@ fn render_slide_list<T>(
             Style::default().fg(theme.meta),
         )));
     }
+    frame.render_widget(Paragraph::new(lines), rows_area);
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    if let Some(footer_area) = footer_area {
+        let separator = "─".repeat(footer_area.width as usize);
+        let mut hint_lines = vec![Line::from(Span::styled(
+            separator,
+            Style::default().fg(theme.panel_border),
+        ))];
+        for hint in list.hints {
+            hint_lines.push(Line::from(Span::styled(
+                *hint,
+                Style::default().fg(theme.meta),
+            )));
+        }
+        frame.render_widget(Paragraph::new(hint_lines), footer_area);
+    }
 }
 
-fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, area: Rect) {
+fn render_branch_panel(
+    frame: &mut Frame,
+    panel: &BranchPanel,
+    visibility: &Visibility,
+    filter: Option<&str>,
+    theme: &Theme,
+    area: Rect,
+) {
+    let title = match filter {
+        Some(query) => format!(" Branches   /{query}▏"),
+        None => " Branches ".to_string(),
+    };
     render_slide_list(
         frame,
         panel,
         theme,
         area,
         SlideList {
-            title: " Branches   [Enter] checkout · [n] new · [d] delete · [M] join ",
-            empty: "no local branches",
+            title: &title,
+            empty: "no matching branches",
+            hints: &[
+                "↵ checkout · n new · d delete · M join",
+                "Space hide · o solo · p pin · / filter",
+            ],
             fraction: 0.4,
-            min_width: 34.0,
+            min_width: 40.0,
         },
         |entry, selected| {
+            let hidden = !visibility.is_visible(&entry.name, entry.is_head);
+            let pinned = visibility.is_pinned(&entry.name);
+            let (mark, mark_color) = if pinned {
+                ("★ ", theme.branch_badge)
+            } else if hidden {
+                ("◌ ", theme.meta)
+            } else {
+                ("  ", theme.marker)
+            };
+            let mut name_style =
+                Style::default().fg(if selected { theme.node } else { theme.summary });
+            if hidden {
+                name_style = name_style.add_modifier(Modifier::DIM);
+            }
             let mut spans = vec![
                 Span::styled(
                     if selected { "❯ " } else { "  " },
@@ -522,10 +583,8 @@ fn render_branch_panel(frame: &mut Frame, panel: &BranchPanel, theme: &Theme, ar
                         .fg(theme.head_badge)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    entry.name.clone(),
-                    Style::default().fg(if selected { theme.node } else { theme.summary }),
-                ),
+                Span::styled(mark, Style::default().fg(mark_color)),
+                Span::styled(entry.name.clone(), name_style),
             ];
             if entry.ahead > 0 || entry.behind > 0 {
                 spans.push(Span::styled(
@@ -652,6 +711,7 @@ fn render_stash_panel(frame: &mut Frame, panel: &StashPanel, theme: &Theme, area
         SlideList {
             title: " Stashes   [p] pop · [a] apply · [d] drop ",
             empty: "no stashes",
+            hints: &[],
             fraction: 0.45,
             min_width: 38.0,
         },
@@ -851,7 +911,10 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("PgUp / PgDn", "page up / down"),
         ("Enter", "open commit detail panel"),
         ("space", "checkout commit / stage file or hunk"),
-        ("b", "branches: checkout · n new · d delete"),
+        (
+            "b",
+            "branches: checkout/new/delete · hide/solo/pin · / filter",
+        ),
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
         ("f / p / P", "fetch / pull / push (background)"),
         ("s / S", "stash changes / stash list"),
