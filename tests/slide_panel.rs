@@ -1,4 +1,4 @@
-use ogma::slide::SlidePanel;
+use ogma::slide::{SlidePanel, advance_panel};
 
 #[test]
 fn opening_starts_collapsed_and_animating_open() {
@@ -72,4 +72,19 @@ fn close_then_advance_settles_shut_and_reports_dismissable() {
         panel.is_dismissed(),
         "fully collapsed and closing is dismissable"
     );
+}
+
+#[test]
+fn advance_panel_keeps_an_opening_panel_and_drops_a_settled_closing_one() {
+    let mut panel = Some(SlidePanel::opening(vec!['a']));
+
+    let dropped = advance_panel(&mut panel, 0.5);
+    assert!(!dropped, "an opening panel is not dropped");
+    assert!(panel.is_some());
+
+    panel.as_mut().unwrap().advance(1.0);
+    panel.as_mut().unwrap().close();
+    let dropped = advance_panel(&mut panel, 1.0);
+    assert!(dropped, "a settled closing panel is dropped");
+    assert!(panel.is_none(), "and the option is cleared");
 }

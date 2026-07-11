@@ -17,7 +17,7 @@ use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction,
 use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
 use crate::remote::{PullAction, PushState, pull_action, push_state};
-use crate::slide::{SlidePanel, advance};
+use crate::slide::{self, SlidePanel, advance};
 use crate::staging::build_patch;
 use crate::stash::StashPanel;
 use crate::submodule::{Submodule, breadcrumb_label};
@@ -615,20 +615,14 @@ impl App {
                 .working
                 .as_ref()
                 .is_some_and(|view| view.slide != view.target)
-            || self.branch.as_ref().is_some_and(SlidePanel::is_sliding)
+            || slide::is_animating(&self.branch)
             || self
                 .join
                 .as_ref()
                 .is_some_and(|menu| menu.panel.is_sliding())
-            || self.stash.as_ref().is_some_and(SlidePanel::is_sliding)
-            || self
-                .focus_panel
-                .as_ref()
-                .is_some_and(SlidePanel::is_sliding)
-            || self
-                .submodule_panel
-                .as_ref()
-                .is_some_and(SlidePanel::is_sliding)
+            || slide::is_animating(&self.stash)
+            || slide::is_animating(&self.focus_panel)
+            || slide::is_animating(&self.submodule_panel)
             || self.celebration.is_some()
             || self.remote.is_some()
     }
@@ -2585,12 +2579,8 @@ impl App {
                 self.working = None;
             }
         }
-        if let Some(panel) = &mut self.branch {
-            panel.advance(step);
-            if panel.is_dismissed() {
-                self.branch = None;
-                self.branch_filter = None;
-            }
+        if slide::advance_panel(&mut self.branch, step) {
+            self.branch_filter = None;
         }
         if let Some(menu) = &mut self.join {
             menu.panel.advance(step);
@@ -2598,25 +2588,11 @@ impl App {
                 self.join = None;
             }
         }
-        if let Some(panel) = &mut self.stash {
-            panel.advance(step);
-            if panel.is_dismissed() {
-                self.stash = None;
-            }
+        slide::advance_panel(&mut self.stash, step);
+        if slide::advance_panel(&mut self.focus_panel, step) {
+            self.focus_name = None;
         }
-        if let Some(panel) = &mut self.focus_panel {
-            panel.advance(step);
-            if panel.is_dismissed() {
-                self.focus_panel = None;
-                self.focus_name = None;
-            }
-        }
-        if let Some(panel) = &mut self.submodule_panel {
-            panel.advance(step);
-            if panel.is_dismissed() {
-                self.submodule_panel = None;
-            }
-        }
+        slide::advance_panel(&mut self.submodule_panel, step);
         if let Some(celebration) = &mut self.celebration {
             celebration.progress -= dt.as_secs_f32() / CELEBRATION_DURATION.as_secs_f32();
             if celebration.progress <= 0.0 {

@@ -50,6 +50,21 @@ impl<T> SlidePanel<T> {
     }
 }
 
+pub fn advance_panel<T>(panel: &mut Option<SlidePanel<T>>, step: f32) -> bool {
+    let dismissed = panel.as_mut().is_some_and(|slide| {
+        slide.advance(step);
+        slide.is_dismissed()
+    });
+    if dismissed {
+        *panel = None;
+    }
+    dismissed
+}
+
+pub fn is_animating<T>(panel: &Option<SlidePanel<T>>) -> bool {
+    panel.as_ref().is_some_and(SlidePanel::is_sliding)
+}
+
 pub fn advance(value: &mut f32, target: f32, step: f32) {
     if *value < target {
         *value = (*value + step).min(target);
