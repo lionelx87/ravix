@@ -16,6 +16,7 @@ pub mod remote;
 pub mod slide;
 pub mod staging;
 pub mod stash;
+pub mod submodule;
 pub mod ui;
 pub mod undo;
 pub mod visibility;

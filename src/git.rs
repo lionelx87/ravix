@@ -7,6 +7,7 @@ use git2::{BranchType, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions}
 use crate::branches::BranchInput;
 use crate::conflict::OpKind;
 use crate::staging::{FileDiff, Hunk};
+use crate::submodule::Submodule;
 use crate::visibility::Visibility;
 
 #[derive(Debug, Clone)]
@@ -521,6 +522,21 @@ impl Repo {
         }
 
         Ok(None)
+    }
+
+    pub fn submodules(&self) -> Vec<Submodule> {
+        self.inner
+            .submodules()
+            .map(|subs| {
+                subs.iter()
+                    .map(|sub| Submodule {
+                        name: sub.name().unwrap_or_default().to_string(),
+                        path: sub.path().to_string_lossy().into_owned(),
+                        initialized: sub.open().is_ok(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn visible_tips(&self, visibility: &Visibility) -> Result<Vec<Oid>, git2::Error> {

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -20,6 +20,7 @@ use crate::remote::{PullAction, PushState, pull_action, push_state};
 use crate::slide::{SlidePanel, advance};
 use crate::staging::build_patch;
 use crate::stash::StashPanel;
+use crate::submodule::{Submodule, breadcrumb_label};
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
@@ -95,6 +96,9 @@ pub enum Action {
     FocusNameSubmit,
     ActivateFocus,
     DeleteFocus,
+    ToggleSubmodulePanel,
+    EnterSubmodule,
+    ExitSubmodule,
     BranchNameInput(char),
     BranchNameBackspace,
     BranchNameSubmit,
@@ -120,6 +124,7 @@ pub enum InputContext {
     BranchFilter,
     FocusSets,
     FocusName,
+    Submodules,
     Alert,
     Join,
     Conflict,
@@ -151,6 +156,7 @@ struct BranchFilter {
 }
 
 pub type FocusPanel = SlidePanel<FocusSet>;
+pub type SubmodulePanel = SlidePanel<Submodule>;
 
 pub struct DragState {
     down: usize,
@@ -200,6 +206,7 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("Stash list", "S", Action::ToggleStashes),
     ("Branches", "b", Action::ToggleBranches),
     ("Focus sets", "F", Action::ToggleFocusPanel),
+    ("Submodules", ">", Action::ToggleSubmodulePanel),
     ("New branch", "n", Action::NewBranch),
     ("Join / merge", "M", Action::OpenJoin),
     ("Undo", "u", Action::Undo),
@@ -273,6 +280,8 @@ pub struct App {
     focus_panel: Option<FocusPanel>,
     focus_sets: Vec<FocusSet>,
     focus_name: Option<String>,
+    submodule_panel: Option<SubmodulePanel>,
+    breadcrumb: Vec<PathBuf>,
     join: Option<JoinMenu>,
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
@@ -336,6 +345,8 @@ impl App {
             focus_panel: None,
             focus_sets: Vec::new(),
             focus_name: None,
+            submodule_panel: None,
+            breadcrumb: Vec::new(),
             join: None,
             conflict: None,
             edit_request: None,
@@ -450,6 +461,17 @@ impl App {
 
     pub fn focus_name(&self) -> Option<&str> {
         self.focus_name.as_deref()
+    }
+
+    pub fn submodule_panel(&self) -> Option<&SubmodulePanel> {
+        self.submodule_panel.as_ref()
+    }
+
+    pub fn breadcrumb(&self) -> Option<String> {
+        if self.breadcrumb.is_empty() {
+            return None;
+        }
+        Some(breadcrumb_label(&self.breadcrumb, &self.current_workdir()))
     }
 
     pub fn join_menu(&self) -> Option<&JoinMenu> {
@@ -574,6 +596,8 @@ impl App {
             InputContext::BranchFilter
         } else if self.focus_panel.is_some() {
             InputContext::FocusSets
+        } else if self.submodule_panel.is_some() {
+            InputContext::Submodules
         } else if self.branch.is_some() {
             InputContext::Branch
         } else if self.working.is_some() {
@@ -599,6 +623,10 @@ impl App {
             || self.stash.as_ref().is_some_and(SlidePanel::is_sliding)
             || self
                 .focus_panel
+                .as_ref()
+                .is_some_and(SlidePanel::is_sliding)
+            || self
+                .submodule_panel
                 .as_ref()
                 .is_some_and(SlidePanel::is_sliding)
             || self.celebration.is_some()
@@ -683,6 +711,9 @@ impl App {
             Action::FocusNameSubmit => self.focus_name_submit(),
             Action::ActivateFocus => self.activate_focus(),
             Action::DeleteFocus => self.request_delete_focus(),
+            Action::ToggleSubmodulePanel => self.toggle_submodule_panel(),
+            Action::EnterSubmodule => self.enter_submodule(),
+            Action::ExitSubmodule => self.exit_submodule(),
             Action::BranchNameInput(character) => self.branch_name_input(character),
             Action::BranchNameBackspace => self.branch_name_backspace(),
             Action::BranchNameSubmit => self.branch_name_submit(),
@@ -708,6 +739,10 @@ impl App {
             return;
         }
         if let Some(panel) = &mut self.focus_panel {
+            panel.move_selection(delta);
+            return;
+        }
+        if let Some(panel) = &mut self.submodule_panel {
             panel.move_selection(delta);
             return;
         }
@@ -745,6 +780,10 @@ impl App {
             return;
         }
         if let Some(panel) = &mut self.focus_panel {
+            panel.move_selection(-delta);
+            return;
+        }
+        if let Some(panel) = &mut self.submodule_panel {
             panel.move_selection(-delta);
             return;
         }
@@ -1223,6 +1262,8 @@ impl App {
         } else if self.help_visible {
             self.help_visible = false;
         } else if let Some(panel) = &mut self.focus_panel {
+            panel.close();
+        } else if let Some(panel) = &mut self.submodule_panel {
             panel.close();
         } else if let Some(panel) = &mut self.stash {
             panel.close();
@@ -1789,6 +1830,69 @@ impl App {
             message: format!("Delete focus set '{name}'? (y/n)"),
             kind: ConfirmKind::DeleteFocus { name },
         });
+    }
+
+    fn toggle_submodule_panel(&mut self) {
+        if self.submodule_panel.is_some() {
+            self.close_submodule_panel();
+            return;
+        }
+        self.submodule_panel = Some(SubmodulePanel::opening(self.repo.submodules()));
+    }
+
+    fn close_submodule_panel(&mut self) {
+        if let Some(panel) = &mut self.submodule_panel {
+            panel.close();
+        }
+    }
+
+    fn current_workdir(&self) -> PathBuf {
+        self.repo
+            .workdir()
+            .unwrap_or_else(|| self.repo.git_dir())
+            .to_path_buf()
+    }
+
+    fn enter_submodule(&mut self) {
+        let Some(sub) = self
+            .submodule_panel
+            .as_ref()
+            .and_then(SubmodulePanel::focused)
+            .cloned()
+        else {
+            return;
+        };
+        if !sub.initialized {
+            self.info(format!("Submodule '{}' is not initialized", sub.name));
+            return;
+        }
+        let current = self.current_workdir();
+        let sub_workdir = current.join(&sub.path);
+        let mut breadcrumb = self.breadcrumb.clone();
+        breadcrumb.push(current);
+        match App::open(&sub_workdir) {
+            Ok(mut app) => {
+                app.breadcrumb = breadcrumb;
+                app.intensity = self.intensity;
+                *self = app;
+            }
+            Err(_) => self.fail(format!("Could not open submodule '{}'", sub.name)),
+        }
+    }
+
+    fn exit_submodule(&mut self) {
+        let mut breadcrumb = self.breadcrumb.clone();
+        let Some(parent) = breadcrumb.pop() else {
+            return;
+        };
+        match App::open(&parent) {
+            Ok(mut app) => {
+                app.breadcrumb = breadcrumb;
+                app.intensity = self.intensity;
+                *self = app;
+            }
+            Err(_) => self.fail("Could not return to the parent repository".to_string()),
+        }
     }
 
     fn checkout_focused_branch(&mut self) {
@@ -2505,6 +2609,12 @@ impl App {
             if panel.is_dismissed() {
                 self.focus_panel = None;
                 self.focus_name = None;
+            }
+        }
+        if let Some(panel) = &mut self.submodule_panel {
+            panel.advance(step);
+            if panel.is_dismissed() {
+                self.submodule_panel = None;
             }
         }
         if let Some(celebration) = &mut self.celebration {

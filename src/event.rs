@@ -28,6 +28,7 @@ impl InputMap {
             InputContext::BranchFilter => on_branch_filter_key(key),
             InputContext::FocusSets => on_focus_key(key),
             InputContext::FocusName => on_focus_name_key(key),
+            InputContext::Submodules => on_submodule_key(key),
             InputContext::Alert => Some(Action::Dismiss),
             InputContext::Join => on_join_key(key),
             InputContext::Conflict => on_conflict_key(key),
@@ -67,6 +68,8 @@ impl InputMap {
             KeyCode::Char('S') => Some(Action::ToggleStashes),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
             KeyCode::Char('F') => Some(Action::ToggleFocusPanel),
+            KeyCode::Char('>') => Some(Action::ToggleSubmodulePanel),
+            KeyCode::Char('<') => Some(Action::ExitSubmodule),
             KeyCode::Char('n') => Some(Action::NewBranch),
             KeyCode::Char('u') => Some(Action::Undo),
             KeyCode::Char('?') => Some(Action::ToggleHelp),
@@ -152,6 +155,18 @@ fn on_focus_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('n') => Some(Action::SaveFocus),
         KeyCode::Char('d') => Some(Action::DeleteFocus),
         KeyCode::Char('F') | KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_submodule_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Enter => Some(Action::EnterSubmodule),
+        KeyCode::Char('>') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
         _ => None,

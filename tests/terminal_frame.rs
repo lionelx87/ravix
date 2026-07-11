@@ -473,6 +473,52 @@ fn dirty_repo(dir: &Path) {
     std::fs::write(dir.join("notes.txt"), "todo\n").unwrap();
 }
 
+fn submodule_repo(dir: &Path) -> std::path::PathBuf {
+    let git = |cwd: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "git {args:?}"
+        );
+    };
+
+    let origin = dir.join("sub-origin");
+    std::fs::create_dir(&origin).unwrap();
+    git(&origin, &["init", "-q", "-b", "main"]);
+    git(&origin, &["config", "user.email", "d@e.com"]);
+    git(&origin, &["config", "user.name", "Dev"]);
+    std::fs::write(origin.join("lib.rs"), "// lib\n").unwrap();
+    git(&origin, &["add", "-A"]);
+    git(&origin, &["commit", "-q", "-m", "Submodule work"]);
+
+    let parent = dir.join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    git(&parent, &["init", "-q", "-b", "main"]);
+    git(&parent, &["config", "user.email", "d@e.com"]);
+    git(&parent, &["config", "user.name", "Dev"]);
+    std::fs::write(parent.join("main.rs"), "// main\n").unwrap();
+    git(&parent, &["add", "-A"]);
+    git(&parent, &["commit", "-q", "-m", "Parent work"]);
+    git(
+        &parent,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            origin.to_str().unwrap(),
+            "vendored",
+        ],
+    );
+    git(&parent, &["commit", "-q", "-m", "Add submodule"]);
+    parent
+}
+
 fn settle(app: &mut App) {
     for _ in 0..24 {
         app.update(Action::Tick(Duration::from_millis(16)));
@@ -836,6 +882,74 @@ fn j_moves_the_focus_panel_selection_marker() {
         after,
         before + 1,
         "j moves the focus panel's own selection, not the graph underneath"
+    );
+}
+
+#[test]
+fn entering_a_submodule_preserves_the_celebrations_intensity() {
+    let dir = TempDir::new().unwrap();
+    let parent = submodule_repo(dir.path());
+    let mut app = App::open(&parent).unwrap();
+    let mut input = InputMap::default();
+
+    app.update(Action::CycleCelebrations);
+
+    press(&mut app, &mut input, KeyCode::Char('>'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+
+    app.update(Action::CycleCelebrations);
+    let screen = dump(&draw(&mut app, 100, 24));
+    assert!(
+        screen.contains("Celebrations: off"),
+        "the celebrations dial (a user preference) survives entering a submodule:\n{screen}"
+    );
+}
+
+#[test]
+fn entering_a_submodule_switches_the_graph_and_shows_a_breadcrumb() {
+    let dir = TempDir::new().unwrap();
+    let parent = submodule_repo(dir.path());
+    let mut app = App::open(&parent).unwrap();
+    let mut input = InputMap::default();
+
+    let before = dump(&draw(&mut app, 100, 24));
+    assert!(
+        before.contains("Parent work"),
+        "parent graph shown:\n{before}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('>'));
+    settle(&mut app);
+    let panel = panel_region(&draw(&mut app, 100, 24));
+    assert!(
+        panel.contains("vendored"),
+        "the submodule is listed in the panel:\n{panel}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Enter);
+    settle(&mut app);
+    let inside = dump(&draw(&mut app, 100, 24));
+    assert!(
+        inside.contains("Submodule work"),
+        "the graph switches to the submodule:\n{inside}"
+    );
+    assert!(
+        !inside.contains("Parent work"),
+        "the parent graph is gone:\n{inside}"
+    );
+    assert!(
+        inside.contains("vendored"),
+        "the breadcrumb shows the submodule:\n{inside}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('<'));
+    settle(&mut app);
+    let back = dump(&draw(&mut app, 100, 24));
+    assert!(
+        back.contains("Parent work"),
+        "exiting returns to the parent:\n{back}"
     );
 }
 

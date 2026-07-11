@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use git2::Oid;
 use syntect::parsing::SyntaxReference;
 
-use crate::app::{App, BranchCreate, CommitEditor, Confirm, FocusPanel, Palette, Panel};
+use crate::app::{
+    App, BranchCreate, CommitEditor, Confirm, FocusPanel, Palette, Panel, SubmodulePanel,
+};
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
@@ -169,6 +171,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     if let Some(panel) = app.focus_panel() {
         render_focus_panel(frame, panel, &theme, graph_area);
+    }
+    if let Some(panel) = app.submodule_panel() {
+        render_submodule_panel(frame, panel, &theme, graph_area);
     }
     if let Some(browser) = app.conflict_browser() {
         render_conflict_browser(frame, browser, &theme, graph_area);
@@ -374,17 +379,17 @@ fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let branch = meta.head_branch.as_deref().unwrap_or("detached HEAD");
     let position = format!("{}/{}", app.selected() + 1, app.commits().len().max(1));
 
+    let heading = app.breadcrumb().unwrap_or_else(|| meta.name.clone());
     let mut spans = vec![
         Span::raw(" "),
-        Span::styled(
-            meta.name.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(heading, Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("  ⎇ "),
+    ];
+    spans.extend([
         Span::styled(branch.to_string(), Style::default().fg(theme.branch_badge)),
         Span::raw("  "),
         Span::raw(position),
-    ];
+    ]);
     if let Some((ahead, behind)) = app.head_tracking() {
         spans.push(Span::styled(
             format!("  ↑{ahead} ↓{behind}"),
@@ -958,12 +963,12 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ),
         ("M", "join: merge / cherry-pick / rebase (predicted)"),
         ("F", "focus sets: save / activate visibility views"),
+        ("> / <", "submodules: enter / exit to parent"),
         ("f / p / P", "fetch / pull / push (background)"),
         ("s / S", "stash changes / stash list"),
         ("Ctrl+P", "command palette (incl. celebrations dial)"),
         ("drag", "drop a branch onto another to join"),
-        ("c", "commit staged changes"),
-        ("d", "discard (file or hunk)"),
+        ("c / d", "commit staged · discard (file or hunk)"),
         ("u", "undo last action"),
         ("Esc", "close panel or help"),
         ("? / q", "toggle this help · quit"),
@@ -1451,6 +1456,43 @@ fn render_focus_panel(frame: &mut Frame, panel: &FocusPanel, theme: &Theme, area
                     Style::default().fg(theme.meta),
                 ),
             ])
+        },
+    );
+}
+
+fn render_submodule_panel(frame: &mut Frame, panel: &SubmodulePanel, theme: &Theme, area: Rect) {
+    render_slide_list(
+        frame,
+        panel,
+        theme,
+        area,
+        SlideList {
+            title: " Submodules ",
+            empty: "no submodules",
+            hints: &["Enter enter · < exit to parent"],
+            fraction: 0.4,
+            min_width: 34.0,
+        },
+        |sub, selected| {
+            let mut name_style =
+                Style::default().fg(if selected { theme.node } else { theme.summary });
+            if !sub.initialized {
+                name_style = name_style.add_modifier(Modifier::DIM);
+            }
+            let mut spans = vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(theme.marker),
+                ),
+                Span::styled(sub.name.clone(), name_style),
+            ];
+            if !sub.initialized {
+                spans.push(Span::styled(
+                    "  (uninitialized)",
+                    Style::default().fg(theme.meta),
+                ));
+            }
+            Line::from(spans)
         },
     );
 }
