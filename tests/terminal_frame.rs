@@ -518,6 +518,79 @@ fn opening_the_wip_panel_lists_the_changed_files() {
     assert!(screen.contains("notes.txt"), "file missing:\n{screen}");
 }
 
+fn any_row_has_both(screen: &str, left: &str, right: &str) -> bool {
+    screen.lines().any(|line| {
+        line.find(left)
+            .zip(line.rfind(right))
+            .is_some_and(|(l, r)| l < r)
+    })
+}
+
+#[test]
+fn a_long_left_line_is_truncated_so_the_right_column_stays_visible() {
+    let dir = TempDir::new().unwrap();
+    let run = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "demo@ogma.dev"]);
+    run(&["config", "user.name", "Demo"]);
+    std::fs::write(dir.path().join("app.txt"), format!("{}\n", "x".repeat(120))).unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "long line"]);
+    std::fs::write(dir.path().join("app.txt"), "SENTINEL\n").unwrap();
+
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Char('v'));
+
+    let screen = dump(&draw(&mut app, 100, 28));
+    assert!(
+        screen.contains("SENTINEL"),
+        "the long old line is clipped to its column so the new line stays on screen:\n{screen}"
+    );
+}
+
+#[test]
+fn v_toggles_the_fullscreen_diff_to_side_by_side() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Enter);
+    let unified = dump(&draw(&mut app, 100, 28));
+    assert!(
+        !any_row_has_both(&unified, "line 1", "LINE ONE"),
+        "unified keeps old and new on separate rows:\n{unified}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('v'));
+    let split = dump(&draw(&mut app, 100, 28));
+    assert!(
+        any_row_has_both(&split, "line 1", "LINE ONE"),
+        "side-by-side puts old (left) and new (right) on the same row:\n{split}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('v'));
+    let back = dump(&draw(&mut app, 100, 28));
+    assert!(
+        !any_row_has_both(&back, "line 1", "LINE ONE"),
+        "v again returns to unified:\n{back}"
+    );
+}
+
 #[test]
 fn enter_expands_the_panel_to_a_fullscreen_two_pane() {
     let dir = TempDir::new().unwrap();

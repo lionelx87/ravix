@@ -102,6 +102,7 @@ fn on_working_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('c') => Some(Action::OpenCommit),
         KeyCode::Char('s') => Some(Action::StashSave),
         KeyCode::Char('b') => Some(Action::ToggleBranches),
+        KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Tab => Some(Action::ToggleFocus),
         KeyCode::Enter => Some(Action::OpenPanel),

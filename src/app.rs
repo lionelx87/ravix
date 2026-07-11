@@ -54,6 +54,7 @@ pub enum Action {
     Discard,
     OpenCommit,
     ToggleFocus,
+    ToggleDiffView,
     CommitInput(char),
     CommitBackspace,
     CommitSubmit,
@@ -633,6 +634,7 @@ impl App {
             Action::Discard => self.request_discard(),
             Action::OpenCommit => self.open_commit(),
             Action::ToggleFocus => self.toggle_focus(),
+            Action::ToggleDiffView => self.toggle_diff_view(),
             Action::CommitInput(character) => self.commit_input(character),
             Action::CommitBackspace => self.commit_backspace(),
             Action::CommitSubmit => self.commit_submit(),
@@ -1464,6 +1466,12 @@ impl App {
                 }
                 Focus::Hunks => view.focus = Focus::Files,
             }
+        }
+    }
+
+    fn toggle_diff_view(&mut self) {
+        if let Some(view) = &mut self.working {
+            view.split = !view.split;
         }
     }
 

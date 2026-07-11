@@ -16,11 +16,13 @@ use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::{BadgeKind, RefBadge};
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
+use crate::staging::{content_of, marker_of, split_rows};
 use crate::stash::StashPanel;
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
 const SELECTION_MARKER: &str = "❯ ";
+const SPLIT_SEPARATOR: &str = " │ ";
 
 pub struct Theme {
     lanes: [Color; 8],
@@ -1089,30 +1091,38 @@ fn working_file_lines(app: &App, view: &WorkingView, theme: &Theme) -> Vec<Line<
     lines
 }
 
+fn no_diff_lines(theme: &Theme) -> Vec<Line<'static>> {
+    vec![Line::from(Span::styled(
+        "No textual diff — press Tab to stage hunks",
+        Style::default().fg(theme.meta),
+    ))]
+}
+
+fn hunk_header_line(header: &str, focused: bool, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            if focused { "❯ " } else { "  " },
+            Style::default().fg(theme.marker),
+        ),
+        Span::styled(
+            header.to_string(),
+            Style::default()
+                .fg(theme.branch_badge)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
 fn diff_lines(view: &WorkingView, theme: &Theme) -> Vec<Line<'static>> {
     let Some(diff) = view.diff.as_ref() else {
-        return vec![Line::from(Span::styled(
-            "No textual diff — press Tab to stage hunks",
-            Style::default().fg(theme.meta),
-        ))];
+        return no_diff_lines(theme);
     };
 
     let syntax = enrich::highlighter().language(&diff.new_path);
     let mut lines = Vec::new();
     for (index, hunk) in diff.hunks.iter().enumerate() {
         let focused = view.focus == Focus::Hunks && index == view.hunk;
-        lines.push(Line::from(vec![
-            Span::styled(
-                if focused { "❯ " } else { "  " },
-                Style::default().fg(theme.marker),
-            ),
-            Span::styled(
-                hunk.header.clone(),
-                Style::default()
-                    .fg(theme.branch_badge)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        lines.push(hunk_header_line(&hunk.header, focused, theme));
         let emphasis = intraline_emphasis(&hunk.lines);
         for (line, flags) in hunk.lines.iter().zip(&emphasis) {
             lines.push(diff_body_line(line, flags, syntax, theme));
@@ -1215,15 +1225,6 @@ fn diff_body_line(
     Line::from(spans)
 }
 
-fn marker_of(line: &str) -> char {
-    line.chars().next().unwrap_or(' ')
-}
-
-fn content_of(line: &str) -> &str {
-    let marker = marker_of(line);
-    &line[marker.len_utf8().min(line.len())..]
-}
-
 fn section_title(title: &str, count: usize, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -1300,19 +1301,102 @@ fn render_working_fullscreen(
         columns[0],
     );
 
+    let mode = if view.split {
+        "side-by-side · [v] unified"
+    } else {
+        "[v] side-by-side"
+    };
     let title = view
         .diff
         .as_ref()
-        .map(|diff| format!(" {} ", diff.new_path))
-        .unwrap_or_else(|| " Diff ".to_string());
+        .map(|diff| format!(" {}   {mode} ", diff.new_path))
+        .unwrap_or_else(|| format!(" Diff   {mode} "));
     let diff_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.label))
         .title(title);
-    frame.render_widget(
-        Paragraph::new(diff_lines(view, theme)).block(diff_block),
-        columns[1],
-    );
+    let diff_content = if view.split {
+        let inner_width = columns[1].width.saturating_sub(2) as usize;
+        split_diff_lines(view, inner_width, theme)
+    } else {
+        diff_lines(view, theme)
+    };
+    frame.render_widget(Paragraph::new(diff_content).block(diff_block), columns[1]);
+}
+
+fn split_diff_lines(view: &WorkingView, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let Some(diff) = view.diff.as_ref() else {
+        return no_diff_lines(theme);
+    };
+
+    let syntax = enrich::highlighter().language(&diff.new_path);
+    let col_width = width.saturating_sub(SPLIT_SEPARATOR.chars().count()) / 2;
+    let mut lines = Vec::new();
+    for hunk in &diff.hunks {
+        lines.push(hunk_header_line(&hunk.header, false, theme));
+        for row in split_rows(&hunk.lines) {
+            let (left_emph, right_emph) = match (&row.left, &row.right) {
+                (Some(left), Some(right)) if marker_of(left) == '-' && marker_of(right) == '+' => {
+                    let spans = word_diff(content_of(left), content_of(right));
+                    (emphasis_removed(&spans), emphasis_added(&spans))
+                }
+                _ => (Vec::new(), Vec::new()),
+            };
+            let left = row
+                .left
+                .as_ref()
+                .map(|line| diff_body_line(line, &left_emph, syntax, theme));
+            let right = row
+                .right
+                .as_ref()
+                .map(|line| diff_body_line(line, &right_emph, syntax, theme));
+            lines.push(compose_split_row(left, right, col_width, theme));
+        }
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
+fn compose_split_row(
+    left: Option<Line<'static>>,
+    right: Option<Line<'static>>,
+    col_width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let left_spans = left.map(|line| line.spans).unwrap_or_default();
+    let (mut spans, left_width) = truncate_spans(left_spans, col_width);
+    if left_width < col_width {
+        spans.push(Span::raw(" ".repeat(col_width - left_width)));
+    }
+    spans.push(Span::styled(
+        SPLIT_SEPARATOR.to_string(),
+        Style::default().fg(theme.label),
+    ));
+    if let Some(right) = right {
+        spans.extend(right.spans);
+    }
+    Line::from(spans)
+}
+
+fn truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> (Vec<Span<'static>>, usize) {
+    let mut out = Vec::new();
+    let mut width = 0;
+    for span in spans {
+        let span_width = span.content.chars().count();
+        if width + span_width <= max_width {
+            width += span_width;
+            out.push(span);
+        } else {
+            let remaining = max_width - width;
+            if remaining > 0 {
+                let clipped: String = span.content.chars().take(remaining).collect();
+                out.push(Span::styled(clipped, span.style));
+                width += remaining;
+            }
+            break;
+        }
+    }
+    (out, width)
 }
 
 fn render_commit_editor(frame: &mut Frame, editor: &CommitEditor, theme: &Theme, area: Rect) {

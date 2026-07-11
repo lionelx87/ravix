@@ -8,6 +8,7 @@ pub enum Focus {
 
 pub struct WorkingView {
     pub fullscreen: bool,
+    pub split: bool,
     pub slide: f32,
     pub target: f32,
     pub selected: usize,
@@ -21,6 +22,7 @@ impl WorkingView {
     pub fn opening() -> Self {
         Self {
             fullscreen: false,
+            split: false,
             slide: 0.0,
             target: 1.0,
             selected: 0,
