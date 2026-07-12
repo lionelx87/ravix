@@ -7,6 +7,7 @@ use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 
 use ravix::app::{Action, App};
+use ravix::enrich;
 use ravix::event::InputMap;
 use ravix::ui::{regions, render};
 use ravix::watcher::RepoWatcher;
@@ -23,6 +24,8 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
     };
+
+    std::thread::spawn(enrich::warm_up);
 
     let mut terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture);

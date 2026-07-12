@@ -78,6 +78,13 @@ pub fn highlighter() -> &'static Highlighter {
     HIGHLIGHTER.get_or_init(Highlighter::new)
 }
 
+pub fn warm_up() {
+    let highlighter = highlighter();
+    if let Some(syntax) = highlighter.language("warm.rs") {
+        let _ = highlighter.highlight(syntax, "fn warm() {}");
+    }
+}
+
 impl Highlighter {
     fn new() -> Self {
         let syntaxes = SyntaxSet::load_defaults_nonewlines();

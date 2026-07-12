@@ -108,7 +108,7 @@ fn on_working_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('b') => Some(Action::ToggleBranches),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Char('u') => Some(Action::Undo),
-        KeyCode::Tab => Some(Action::ToggleFocus),
+        KeyCode::Tab | KeyCode::BackTab => Some(Action::ToggleFocus),
         KeyCode::Enter => Some(Action::OpenPanel),
         KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
@@ -166,6 +166,9 @@ fn on_commit_diff_key(key: KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::PageDown => Some(Action::PageDown),
+        KeyCode::PageUp => Some(Action::PageUp),
+        KeyCode::Tab | KeyCode::BackTab => Some(Action::ToggleFocus),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Enter | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),

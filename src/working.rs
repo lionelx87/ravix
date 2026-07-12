@@ -16,6 +16,8 @@ pub struct WorkingView {
     pub diff: Option<FileDiff>,
     pub staged_side: bool,
     pub hunk: usize,
+    pub diff_scroll: u16,
+    pub hunk_snap: bool,
 }
 
 impl WorkingView {
@@ -30,11 +32,14 @@ impl WorkingView {
             diff: None,
             staged_side: false,
             hunk: 0,
+            diff_scroll: 0,
+            hunk_snap: false,
         }
     }
 
     pub fn move_file(&mut self, delta: isize, len: usize) {
         self.selected = crate::slide::clamp_index(self.selected, delta, len);
+        self.diff_scroll = 0;
     }
 
     pub fn move_hunk(&mut self, delta: isize) {
@@ -45,6 +50,7 @@ impl WorkingView {
         }
         let last = (len - 1) as isize;
         self.hunk = (self.hunk as isize + delta).clamp(0, last) as usize;
+        self.hunk_snap = true;
     }
 
     pub fn reconcile(&mut self, len: usize) {

@@ -142,6 +142,12 @@ pub struct Panel {
     pub file: usize,
     pub diff: Option<FileDiff>,
     pub split: bool,
+    pub diff_scroll: u16,
+    pub diff_focused: bool,
+}
+
+fn shift_scroll(current: u16, delta: isize) -> u16 {
+    (current as isize + delta).max(0) as u16
 }
 
 #[derive(Default)]
@@ -422,6 +428,10 @@ impl App {
         self.panel.as_ref()
     }
 
+    pub fn panel_mut(&mut self) -> Option<&mut Panel> {
+        self.panel.as_mut()
+    }
+
     pub fn help_visible(&self) -> bool {
         self.help_visible
     }
@@ -444,6 +454,10 @@ impl App {
 
     pub fn working(&self) -> Option<&WorkingView> {
         self.working.as_ref()
+    }
+
+    pub fn working_mut(&mut self) -> Option<&mut WorkingView> {
+        self.working.as_mut()
     }
 
     pub fn branch_panel(&self) -> Option<&BranchPanel> {
@@ -646,10 +660,26 @@ impl App {
             Action::SelectPrev => self.move_up(1),
             Action::SelectFirst => self.select_first(),
             Action::SelectLast => self.select_last(),
-            Action::PageDown => self.move_down(self.page as isize),
-            Action::PageUp => self.move_up(self.page as isize),
-            Action::ScrollDown => self.scroll_view(SCROLL_STEP),
-            Action::ScrollUp => self.scroll_view(-SCROLL_STEP),
+            Action::PageDown => {
+                if !self.scroll_diff(self.page as isize) {
+                    self.move_down(self.page as isize);
+                }
+            }
+            Action::PageUp => {
+                if !self.scroll_diff(-(self.page as isize)) {
+                    self.move_up(self.page as isize);
+                }
+            }
+            Action::ScrollDown => {
+                if !self.scroll_diff(SCROLL_STEP) {
+                    self.scroll_view(SCROLL_STEP);
+                }
+            }
+            Action::ScrollUp => {
+                if !self.scroll_diff(-SCROLL_STEP) {
+                    self.scroll_view(-SCROLL_STEP);
+                }
+            }
             Action::ClickRow(visible) => self.click_row(visible),
             Action::PointerDown(visible) => self.pointer_down(visible),
             Action::PointerDrag(visible) => self.pointer_drag(visible),
@@ -731,8 +761,12 @@ impl App {
     }
 
     fn move_down(&mut self, delta: isize) {
-        if self.panel.as_ref().is_some_and(|panel| panel.fullscreen) {
-            self.commit_diff_move(delta);
+        if let Some(panel) = self.panel.as_ref().filter(|panel| panel.fullscreen) {
+            if panel.diff_focused {
+                self.scroll_diff(delta);
+            } else {
+                self.commit_diff_move(delta);
+            }
             return;
         }
         if let Some(palette) = &mut self.palette {
@@ -763,9 +797,15 @@ impl App {
             panel.move_selection(delta);
             return;
         }
-        if self.working.is_some() {
-            self.working_move(delta);
-            return;
+        if let Some(view) = self.working.as_ref() {
+            if view.fullscreen {
+                self.working_move(delta);
+                return;
+            }
+            if view.focus == Focus::Hunks {
+                self.scroll_diff(delta);
+                return;
+            }
         }
         if self.on_wip {
             self.on_wip = false;
@@ -776,8 +816,12 @@ impl App {
     }
 
     fn move_up(&mut self, delta: isize) {
-        if self.panel.as_ref().is_some_and(|panel| panel.fullscreen) {
-            self.commit_diff_move(-delta);
+        if let Some(panel) = self.panel.as_ref().filter(|panel| panel.fullscreen) {
+            if panel.diff_focused {
+                self.scroll_diff(-delta);
+            } else {
+                self.commit_diff_move(-delta);
+            }
             return;
         }
         if let Some(palette) = &mut self.palette {
@@ -808,15 +852,22 @@ impl App {
             panel.move_selection(-delta);
             return;
         }
-        if self.working.is_some() {
-            self.working_move(-delta);
-            return;
+        if let Some(view) = self.working.as_ref() {
+            if view.fullscreen {
+                self.working_move(-delta);
+                return;
+            }
+            if view.focus == Focus::Hunks {
+                self.scroll_diff(-delta);
+                return;
+            }
         }
         if self.on_wip {
             return;
         }
         if self.selected == 0 && self.has_wip() {
             self.on_wip = true;
+            self.sync_peek();
             return;
         }
         self.move_selection(-delta);
@@ -869,6 +920,44 @@ impl App {
         }
         self.selected = index.min(self.last_index());
         self.scroll_into_view();
+        self.sync_peek();
+    }
+
+    fn peek_active(&self) -> bool {
+        self.panel.as_ref().is_some_and(|panel| !panel.fullscreen)
+            || self.working.as_ref().is_some_and(|view| !view.fullscreen)
+    }
+
+    fn sync_peek(&mut self) {
+        if !self.peek_active() {
+            return;
+        }
+        if self.on_wip {
+            self.panel = None;
+            if self.working.is_none() && self.has_wip() {
+                self.working = Some(WorkingView::opening());
+                self.sync_focus_diff();
+            }
+        } else {
+            self.working = None;
+            self.open_panel();
+        }
+    }
+
+    fn scroll_diff(&mut self, delta: isize) -> bool {
+        if let Some(panel) = self.panel.as_mut().filter(|panel| panel.fullscreen) {
+            panel.diff_scroll = shift_scroll(panel.diff_scroll, delta);
+            return true;
+        }
+        if let Some(view) = self
+            .working
+            .as_mut()
+            .filter(|view| view.fullscreen || view.focus == Focus::Hunks)
+        {
+            view.diff_scroll = shift_scroll(view.diff_scroll, delta);
+            return true;
+        }
+        false
     }
 
     fn scroll_view(&mut self, delta: isize) {
@@ -1234,6 +1323,7 @@ impl App {
             view.fullscreen = !view.fullscreen;
         } else if self.on_wip {
             if self.has_wip() {
+                self.panel = None;
                 self.working = Some(WorkingView::opening());
                 self.sync_focus_diff();
             }
@@ -1245,10 +1335,11 @@ impl App {
     }
 
     fn open_panel(&mut self) {
-        let Some(commit) = self.selected_commit() else {
+        let Some(id) = self.selected_commit().map(|commit| commit.id) else {
             return;
         };
-        let changed_files = self.repo.changed_files(commit.id).unwrap_or_default();
+        self.working = None;
+        let changed_files = self.repo.changed_files(id).unwrap_or_default();
         match &mut self.panel {
             Some(panel) => {
                 panel.commit_index = self.selected;
@@ -1258,6 +1349,8 @@ impl App {
                 panel.file = 0;
                 panel.diff = None;
                 panel.split = false;
+                panel.diff_scroll = 0;
+                panel.diff_focused = false;
             }
             None => {
                 self.panel = Some(Panel {
@@ -1269,6 +1362,8 @@ impl App {
                     file: 0,
                     diff: None,
                     split: false,
+                    diff_scroll: 0,
+                    diff_focused: false,
                 });
             }
         }
@@ -1278,6 +1373,8 @@ impl App {
         if let Some(panel) = &mut self.panel {
             panel.fullscreen = true;
             panel.file = 0;
+            panel.diff_scroll = 0;
+            panel.diff_focused = false;
         }
         self.sync_commit_diff();
     }
@@ -1303,6 +1400,7 @@ impl App {
     fn commit_diff_move(&mut self, delta: isize) {
         if let Some(panel) = &mut self.panel {
             panel.file = slide::clamp_index(panel.file, delta, panel.changed_files.len());
+            panel.diff_scroll = 0;
         }
         self.sync_commit_diff();
     }
@@ -1571,9 +1669,19 @@ impl App {
                     {
                         view.focus = Focus::Hunks;
                         view.hunk = 0;
+                        view.diff_scroll = 0;
                     }
                 }
-                Focus::Hunks => view.focus = Focus::Files,
+                Focus::Hunks => {
+                    view.focus = Focus::Files;
+                    view.diff_scroll = 0;
+                }
+            }
+        } else if let Some(panel) = self.panel.as_mut().filter(|panel| panel.fullscreen) {
+            if panel.diff_focused {
+                panel.diff_focused = false;
+            } else if panel.diff.is_some() {
+                panel.diff_focused = true;
             }
         }
     }
@@ -1581,10 +1689,12 @@ impl App {
     fn toggle_diff_view(&mut self) {
         if let Some(view) = &mut self.working {
             view.split = !view.split;
+            view.diff_scroll = 0;
         } else if let Some(panel) = &mut self.panel
             && panel.fullscreen
         {
             panel.split = !panel.split;
+            panel.diff_scroll = 0;
         }
     }
 

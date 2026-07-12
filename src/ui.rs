@@ -145,19 +145,18 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     render_status(frame, app, &theme, status_area);
 
-    if let Some(view) = app.working() {
-        if view.fullscreen {
-            render_working_fullscreen(frame, app, view, &theme, graph_area);
-        } else {
-            render_working_panel(frame, app, view, &theme, graph_area);
-        }
+    match app.working().map(|view| view.fullscreen) {
+        Some(true) => render_working_fullscreen(frame, app, &theme, graph_area),
+        Some(false) => render_working_panel(frame, app, &theme, graph_area),
+        None => {}
     }
-    if let Some(panel) = app.panel() {
-        if panel.fullscreen {
-            render_commit_fullscreen(frame, app, panel, &theme, graph_area);
-        } else {
+    match app.panel().map(|panel| panel.fullscreen) {
+        Some(true) => render_commit_fullscreen(frame, app, &theme, graph_area),
+        Some(false) => {
+            let panel = app.panel().unwrap();
             render_panel(frame, app, panel, &theme, graph_area);
         }
+        None => {}
     }
     if let Some(panel) = app.branch_panel() {
         render_branch_panel(
@@ -245,11 +244,15 @@ fn status_span(status: FileStatus, theme: &Theme) -> Span<'static> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_diff_pane(
     frame: &mut Frame,
     diff: Option<&FileDiff>,
     split: bool,
     focused_hunk: Option<usize>,
+    scroll: &mut u16,
+    snap_to_focus: bool,
+    focused: bool,
     theme: &Theme,
     area: Rect,
 ) {
@@ -261,13 +264,34 @@ fn render_diff_pane(
     let title = diff
         .map(|diff| format!(" {}   {mode} ", diff.new_path))
         .unwrap_or_else(|| format!(" Diff   {mode} "));
+    let border = if focused { theme.marker } else { theme.label };
     let diff_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.label))
+        .border_style(Style::default().fg(border))
         .title(title);
     let inner_width = area.width.saturating_sub(2) as usize;
-    let content = diff_pane_lines(diff, split, focused_hunk, inner_width, theme);
-    frame.render_widget(Paragraph::new(content).block(diff_block), area);
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let window = |scroll: u16| scroll as usize..scroll as usize + inner_height;
+    let (mut content, focus_offset) =
+        diff_pane_lines(diff, split, focused_hunk, inner_width, window(*scroll), theme);
+
+    let mut target = *scroll;
+    if let Some(offset) = focus_offset.filter(|_| snap_to_focus) {
+        let offset = offset as u16;
+        if !(target..target.saturating_add(inner_height as u16)).contains(&offset) {
+            target = offset;
+        }
+    }
+    let max_scroll = content.len().saturating_sub(inner_height) as u16;
+    target = target.min(max_scroll);
+    if target != *scroll {
+        *scroll = target;
+        content = diff_pane_lines(diff, split, focused_hunk, inner_width, window(target), theme).0;
+    }
+    frame.render_widget(
+        Paragraph::new(content).block(diff_block).scroll((*scroll, 0)),
+        area,
+    );
 }
 
 fn fnv1a(text: &str) -> u32 {
@@ -1157,19 +1181,38 @@ fn hunk_header_line(header: &str, focused: bool, theme: &Theme) -> Line<'static>
     ])
 }
 
-fn diff_lines(diff: &FileDiff, focused_hunk: Option<usize>, theme: &Theme) -> Vec<Line<'static>> {
+fn diff_lines(
+    diff: &FileDiff,
+    focused_hunk: Option<usize>,
+    width: usize,
+    visible: std::ops::Range<usize>,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let syntax = enrich::highlighter().language(&diff.new_path);
     let mut lines = Vec::new();
+    let mut focus_offset = None;
     for (index, hunk) in diff.hunks.iter().enumerate() {
         let focused = focused_hunk == Some(index);
+        if focused {
+            focus_offset = Some(lines.len());
+        }
         lines.push(hunk_header_line(&hunk.header, focused, theme));
         let emphasis = intraline_emphasis(&hunk.lines);
         for (line, flags) in hunk.lines.iter().zip(&emphasis) {
-            lines.push(diff_body_line(line, flags, syntax, theme));
+            let pos = lines.len();
+            let (gutter, plain) = diff_line_parts(line, flags, syntax, false, theme);
+            let rows = wrap_diff_body(gutter, plain, width);
+            let on_screen = pos < visible.end && pos + rows.len() > visible.start;
+            if on_screen && syntax.is_some() {
+                let (gutter, content) = diff_line_parts(line, flags, syntax, true, theme);
+                lines.extend(wrap_diff_body(gutter, content, width));
+            } else {
+                lines.extend(rows);
+            }
         }
         lines.push(Line::from(""));
     }
-    lines
+    (lines, focus_offset)
 }
 
 fn intraline_emphasis(lines: &[String]) -> Vec<Vec<bool>> {
@@ -1200,15 +1243,16 @@ fn intraline_emphasis(lines: &[String]) -> Vec<Vec<bool>> {
     emphasis
 }
 
-fn diff_body_line(
+fn diff_line_parts(
     line: &str,
     emphasis: &[bool],
     syntax: Option<&SyntaxReference>,
+    highlight: bool,
     theme: &Theme,
-) -> Line<'static> {
+) -> (Span<'static>, Vec<Span<'static>>) {
     let marker = marker_of(line);
     let content = content_of(line);
-    let (gutter, base_bg, emph_bg) = match marker {
+    let (gutter_color, base_bg, emph_bg) = match marker {
         '+' => (theme.added, Some(theme.add_bg), Some(theme.add_emph_bg)),
         '-' => (
             theme.removed,
@@ -1218,6 +1262,7 @@ fn diff_body_line(
         _ => (theme.meta, None, None),
     };
 
+    let syntax = if highlight { syntax } else { None };
     let highlighted: Vec<(Color, String)> = match syntax {
         Some(syntax) => enrich::highlighter()
             .highlight(syntax, content)
@@ -1232,11 +1277,12 @@ fn diff_body_line(
         None => vec![(theme.summary, content.to_string())],
     };
 
-    let mut spans = vec![Span::styled(
+    let gutter = Span::styled(
         format!("{marker} "),
-        Style::default().fg(gutter).add_modifier(Modifier::BOLD),
-    )];
+        Style::default().fg(gutter_color).add_modifier(Modifier::BOLD),
+    );
 
+    let mut spans = Vec::new();
     let mut char_index = 0;
     for (fg, text) in highlighted {
         let chars: Vec<char> = text.chars().collect();
@@ -1262,7 +1308,92 @@ fn diff_body_line(
         char_index += chars.len();
     }
 
+    (gutter, spans)
+}
+
+fn diff_body_line(
+    line: &str,
+    emphasis: &[bool],
+    syntax: Option<&SyntaxReference>,
+    theme: &Theme,
+) -> Line<'static> {
+    let (gutter, content) = diff_line_parts(line, emphasis, syntax, true, theme);
+    let mut spans = vec![gutter];
+    spans.extend(content);
     Line::from(spans)
+}
+
+fn wrap_diff_body(
+    gutter: Span<'static>,
+    content: Vec<Span<'static>>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let gutter_width = gutter.content.chars().count();
+    let content_width = width.saturating_sub(gutter_width).max(1);
+    let rows = wrap_content_rows(&content, content_width);
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let mut spans = Vec::with_capacity(row.len() + 1);
+            if index == 0 {
+                spans.push(gutter.clone());
+            } else {
+                spans.push(Span::raw(" ".repeat(gutter_width)));
+            }
+            spans.extend(row);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn wrap_content_rows(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(1);
+    let chars: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |ch| (ch, span.style)))
+        .collect();
+    if chars.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let mut rows = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let hard_end = (start + width).min(chars.len());
+        let (row_end, next_start) = if hard_end == chars.len() {
+            (hard_end, hard_end)
+        } else {
+            let break_at = (start..=hard_end).rev().find(|&i| chars[i].0 == ' ');
+            match break_at {
+                Some(i) if i > start => (i, i + 1),
+                _ => (hard_end, hard_end),
+            }
+        };
+        rows.push(row_to_spans(&chars[start..row_end]));
+        start = next_start.max(start + 1);
+    }
+    rows
+}
+
+fn row_to_spans(row: &[(char, Style)]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut current = String::new();
+    let mut current_style: Option<Style> = None;
+    for &(ch, style) in row {
+        if current_style == Some(style) {
+            current.push(ch);
+        } else {
+            if let Some(prev) = current_style {
+                spans.push(Span::styled(std::mem::take(&mut current), prev));
+            }
+            current.push(ch);
+            current_style = Some(style);
+        }
+    }
+    if let Some(style) = current_style {
+        spans.push(Span::styled(current, style));
+    }
+    spans
 }
 
 fn section_title(title: &str, count: usize, theme: &Theme) -> Line<'static> {
@@ -1277,14 +1408,11 @@ fn section_title(title: &str, count: usize, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn render_working_panel(
-    frame: &mut Frame,
-    app: &App,
-    view: &WorkingView,
-    theme: &Theme,
-    area: Rect,
-) {
-    let eased = ease_out_cubic(view.slide);
+fn render_working_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let (eased, diff_focused) = {
+        let view = app.working().unwrap();
+        (ease_out_cubic(view.slide), view.focus == Focus::Hunks)
+    };
     let full_width = ((area.width as f32) * 0.5).max(46.0).min(area.width as f32) as u16;
     let visible = ((full_width as f32) * eased).round() as u16;
     if visible < 6 {
@@ -1299,108 +1427,145 @@ fn render_working_panel(
     };
     frame.render_widget(Clear, rect);
 
+    let border = if diff_focused {
+        theme.marker
+    } else {
+        theme.panel_border
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.panel_border))
+        .border_style(Style::default().fg(border))
         .title(" Uncommitted changes   [Enter] fullscreen ");
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let mut lines = working_file_lines(app, view, theme);
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "── diff ───────────────",
-        Style::default().fg(theme.meta),
-    )));
-    let focused_hunk = (view.focus == Focus::Hunks).then_some(view.hunk);
-    match view.diff.as_ref() {
-        Some(diff) => lines.extend(diff_lines(diff, focused_hunk, theme)),
-        None => lines.extend(no_diff_lines(theme)),
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "[space] stage  [Tab] hunks  [d] discard  [c] commit",
-        Style::default().fg(theme.meta),
-    )));
+    let scroll = {
+        let view = app.working().unwrap();
+        let mut lines = working_file_lines(app, view, theme);
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "── diff ───────────────",
+            Style::default().fg(theme.meta),
+        )));
+        let focused_hunk = (view.focus == Focus::Hunks).then_some(view.hunk);
+        let top = view.diff_scroll as usize;
+        let visible = top..top + inner.height as usize;
+        match view.diff.as_ref() {
+            Some(diff) => {
+                lines.extend(diff_lines(diff, focused_hunk, inner.width as usize, visible, theme).0)
+            }
+            None => lines.extend(no_diff_lines(theme)),
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "[space] stage  [Tab] diff  [d] discard  [c] commit",
+            Style::default().fg(theme.meta),
+        )));
 
-    frame.render_widget(Paragraph::new(lines), inner);
+        let max_scroll = lines.len().saturating_sub(inner.height as usize) as u16;
+        let scroll = view.diff_scroll.min(max_scroll);
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+        scroll
+    };
+
+    if let Some(view) = app.working_mut() {
+        view.diff_scroll = scroll;
+    }
 }
 
-fn render_commit_fullscreen(
-    frame: &mut Frame,
-    app: &App,
-    panel: &Panel,
-    theme: &Theme,
-    area: Rect,
-) {
+fn render_commit_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     frame.render_widget(Clear, area);
     let columns = Layout::horizontal([Constraint::Length(46), Constraint::Min(0)]).split(area);
 
-    let heading = app
-        .commits()
-        .get(panel.commit_index)
-        .map(|commit| format!(" {}   {} ", commit.short_id, commit.summary))
-        .unwrap_or_else(|| " Commit ".to_string());
+    let (heading, file_lines) = {
+        let panel = app.panel().unwrap();
+        let heading = app
+            .commits()
+            .get(panel.commit_index)
+            .map(|commit| format!(" {}   {} ", commit.short_id, commit.summary))
+            .unwrap_or_else(|| " Commit ".to_string());
+        let file_lines: Vec<Line> = panel
+            .changed_files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| {
+                let selected = index == panel.file;
+                Line::from(vec![
+                    Span::styled(
+                        if selected { "❯ " } else { "  " },
+                        Style::default().fg(theme.marker),
+                    ),
+                    status_span(file.status, theme),
+                    Span::styled(
+                        file.path.clone(),
+                        Style::default().fg(if selected { theme.node } else { theme.summary }),
+                    ),
+                ])
+            })
+            .collect();
+        (heading, file_lines)
+    };
+    let diff_focused = app.panel().unwrap().diff_focused;
+    let files_border = if diff_focused {
+        theme.label
+    } else {
+        theme.marker
+    };
     let files_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.panel_border))
+        .border_style(Style::default().fg(files_border))
         .title(heading);
-    let file_lines: Vec<Line> = panel
-        .changed_files
-        .iter()
-        .enumerate()
-        .map(|(index, file)| {
-            let selected = index == panel.file;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "❯ " } else { "  " },
-                    Style::default().fg(theme.marker),
-                ),
-                status_span(file.status, theme),
-                Span::styled(
-                    file.path.clone(),
-                    Style::default().fg(if selected { theme.node } else { theme.summary }),
-                ),
-            ])
-        })
-        .collect();
     frame.render_widget(Paragraph::new(file_lines).block(files_block), columns[0]);
 
+    let panel = app.panel_mut().unwrap();
     render_diff_pane(
         frame,
         panel.diff.as_ref(),
         panel.split,
         None,
+        &mut panel.diff_scroll,
+        false,
+        diff_focused,
         theme,
         columns[1],
     );
 }
 
-fn render_working_fullscreen(
-    frame: &mut Frame,
-    app: &App,
-    view: &WorkingView,
-    theme: &Theme,
-    area: Rect,
-) {
+fn render_working_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     frame.render_widget(Clear, area);
     let columns = Layout::horizontal([Constraint::Length(46), Constraint::Min(0)]).split(area);
 
+    let diff_focused = app.working().unwrap().focus == Focus::Hunks;
+    let files_border = if diff_focused {
+        theme.label
+    } else {
+        theme.marker
+    };
     let files_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.panel_border))
-        .title(" Working directory   [space] stage · [Tab] hunks · [c] commit ");
+        .border_style(Style::default().fg(files_border))
+        .title(" Working directory   [space] stage · [Tab] diff · [c] commit ");
+    let file_lines = {
+        let view = app.working().unwrap();
+        working_file_lines(app, view, theme)
+    };
     frame.render_widget(
-        Paragraph::new(working_file_lines(app, view, theme)).block(files_block),
+        Paragraph::new(file_lines).block(files_block),
         columns[0],
     );
 
+    let view = app.working_mut().unwrap();
     let focused_hunk = (view.focus == Focus::Hunks).then_some(view.hunk);
+    let snap = view.hunk_snap;
+    view.hunk_snap = false;
     render_diff_pane(
         frame,
         view.diff.as_ref(),
         view.split,
         focused_hunk,
+        &mut view.diff_scroll,
+        snap,
+        diff_focused,
         theme,
         columns[1],
     );
@@ -1411,24 +1576,35 @@ fn diff_pane_lines(
     split: bool,
     focused_hunk: Option<usize>,
     width: usize,
+    visible: std::ops::Range<usize>,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Option<usize>) {
     let Some(diff) = diff else {
-        return no_diff_lines(theme);
+        return (no_diff_lines(theme), None);
     };
     if split {
-        split_diff_lines(diff, width, theme)
+        split_diff_lines(diff, focused_hunk, width, theme)
     } else {
-        diff_lines(diff, focused_hunk, theme)
+        diff_lines(diff, focused_hunk, width, visible, theme)
     }
 }
 
-fn split_diff_lines(diff: &FileDiff, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+fn split_diff_lines(
+    diff: &FileDiff,
+    focused_hunk: Option<usize>,
+    width: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let syntax = enrich::highlighter().language(&diff.new_path);
     let col_width = width.saturating_sub(SPLIT_SEPARATOR.chars().count()) / 2;
     let mut lines = Vec::new();
-    for hunk in &diff.hunks {
-        lines.push(hunk_header_line(&hunk.header, false, theme));
+    let mut focus_offset = None;
+    for (index, hunk) in diff.hunks.iter().enumerate() {
+        let focused = focused_hunk == Some(index);
+        if focused {
+            focus_offset = Some(lines.len());
+        }
+        lines.push(hunk_header_line(&hunk.header, focused, theme));
         for row in split_rows(&hunk.lines) {
             let (left_emph, right_emph) = match (&row.left, &row.right) {
                 (Some(left), Some(right)) if marker_of(left) == '-' && marker_of(right) == '+' => {
@@ -1449,7 +1625,7 @@ fn split_diff_lines(diff: &FileDiff, width: usize, theme: &Theme) -> Vec<Line<'s
         }
         lines.push(Line::from(""));
     }
-    lines
+    (lines, focus_offset)
 }
 
 fn compose_split_row(
@@ -1745,4 +1921,95 @@ fn relative_time(now: i64, then: i64) -> String {
 fn ease_out_cubic(t: f32) -> f32 {
     let clamped = t.clamp(0.0, 1.0);
     1.0 - (1.0 - clamped).powi(3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn text_of(rows: &[Vec<Span<'static>>]) -> Vec<String> {
+        rows.iter().map(|row| row_text(row)).collect()
+    }
+
+    #[test]
+    fn short_content_is_a_single_row() {
+        let spans = vec![Span::raw("hello world")];
+        let rows = wrap_content_rows(&spans, 40);
+        assert_eq!(text_of(&rows), vec!["hello world".to_string()]);
+    }
+
+    #[test]
+    fn long_content_wraps_at_word_boundaries() {
+        let spans = vec![Span::raw("the quick brown fox jumps")];
+        let rows = wrap_content_rows(&spans, 10);
+        assert_eq!(
+            text_of(&rows),
+            vec![
+                "the quick".to_string(),
+                "brown fox".to_string(),
+                "jumps".to_string(),
+            ],
+            "wrapping breaks on spaces and drops the breaking space"
+        );
+    }
+
+    #[test]
+    fn a_word_longer_than_the_width_is_hard_broken() {
+        let spans = vec![Span::raw("supercalifragilistic")];
+        let rows = wrap_content_rows(&spans, 8);
+        assert_eq!(
+            text_of(&rows),
+            vec![
+                "supercal".to_string(),
+                "ifragili".to_string(),
+                "stic".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wrapping_preserves_all_visible_characters_without_the_break_spaces() {
+        let spans = vec![Span::raw("alpha beta gamma delta")];
+        let rows = wrap_content_rows(&spans, 7);
+        let joined: String = text_of(&rows).join(" ");
+        assert_eq!(joined, "alpha beta gamma delta");
+    }
+
+    #[test]
+    fn span_styles_survive_wrapping() {
+        let styled = Style::default().fg(Color::Red);
+        let spans = vec![
+            Span::styled("aaaa ", styled),
+            Span::raw("bbbb cccc"),
+        ];
+        let rows = wrap_content_rows(&spans, 5);
+        assert_eq!(rows[0][0].style, styled, "the first row keeps its color");
+    }
+
+    #[test]
+    fn wrapped_body_uses_the_marker_gutter_only_on_the_first_row() {
+        let gutter = Span::styled("+ ", Style::default().fg(Color::Green));
+        let content = vec![Span::raw("one two three four five")];
+        let lines = wrap_diff_body(gutter, content, 9);
+        assert!(lines.len() > 1, "a long body wraps into several rows");
+        assert_eq!(lines[0].spans[0].content.as_ref(), "+ ");
+        for line in &lines[1..] {
+            assert_eq!(
+                line.spans[0].content.as_ref(),
+                "  ",
+                "continuation rows use a blank hanging-indent gutter"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_content_still_yields_one_row() {
+        let rows = wrap_content_rows(&[], 10);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_empty());
+    }
 }
