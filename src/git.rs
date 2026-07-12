@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
+use std::sync::Mutex;
 
 use git2::{BranchType, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions};
 
@@ -124,12 +125,14 @@ pub struct RepoMeta {
 
 pub struct Repo {
     inner: Repository,
+    changed_files_cache: Mutex<HashMap<Oid, Vec<FileChange>>>,
 }
 
 impl Repo {
     pub fn discover(path: impl AsRef<Path>) -> Result<Self, git2::Error> {
         Ok(Self {
             inner: Repository::discover(path)?,
+            changed_files_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -260,34 +263,35 @@ impl Repo {
         })
     }
 
-    pub fn commits(
-        &self,
-        skip: usize,
-        limit: usize,
-        visibility: &Visibility,
-    ) -> Result<Vec<CommitInfo>, git2::Error> {
+    pub fn commit_oids(&self, visibility: &Visibility) -> Result<Vec<Oid>, git2::Error> {
         let mut revwalk = self.inner.revwalk()?;
         revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
         for tip in self.visible_tips(visibility)? {
             revwalk.push(tip)?;
         }
-
-        let mut commits = Vec::new();
-        for oid in revwalk.skip(skip).take(limit) {
-            let oid = oid?;
-            let commit = self.inner.find_commit(oid)?;
-            let author = commit.author();
-            commits.push(CommitInfo {
-                id: oid,
-                short_id: shorten(oid),
-                summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
-                author_name: author.name().unwrap_or("").to_string(),
-                author_email: author.email().unwrap_or("").to_string(),
-                time: commit.time().seconds(),
-                parents: commit.parent_ids().collect(),
-            });
+        let mut oids = Vec::new();
+        for oid in revwalk {
+            oids.push(oid?);
         }
-        Ok(commits)
+        Ok(oids)
+    }
+
+    pub fn hydrate(&self, oids: &[Oid]) -> Vec<CommitInfo> {
+        oids.iter()
+            .filter_map(|&oid| {
+                let commit = self.inner.find_commit(oid).ok()?;
+                let author = commit.author();
+                Some(CommitInfo {
+                    id: oid,
+                    short_id: shorten(oid),
+                    summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
+                    author_name: author.name().unwrap_or("").to_string(),
+                    author_email: author.email().unwrap_or("").to_string(),
+                    time: commit.time().seconds(),
+                    parents: commit.parent_ids().collect(),
+                })
+            })
+            .collect()
     }
 
     pub fn snapshot_blob(&self, path: &str) -> Option<Oid> {
@@ -307,6 +311,18 @@ impl Repo {
     }
 
     pub fn changed_files(&self, id: Oid) -> Result<Vec<FileChange>, git2::Error> {
+        if let Some(cached) = self.changed_files_cache.lock().unwrap().get(&id) {
+            return Ok(cached.clone());
+        }
+        let changes = self.compute_changed_files(id)?;
+        self.changed_files_cache
+            .lock()
+            .unwrap()
+            .insert(id, changes.clone());
+        Ok(changes)
+    }
+
+    fn compute_changed_files(&self, id: Oid) -> Result<Vec<FileChange>, git2::Error> {
         let commit = self.inner.find_commit(id)?;
         let tree = commit.tree()?;
         let parent_tree = match commit.parents().next() {

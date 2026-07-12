@@ -25,8 +25,35 @@ struct Lane<Id> {
     key: Id,
 }
 
+pub struct GraphLayout<Id> {
+    lanes: Vec<Option<Lane<Id>>>,
+}
+
+impl<Id: Clone + PartialEq> Default for GraphLayout<Id> {
+    fn default() -> Self {
+        Self { lanes: Vec::new() }
+    }
+}
+
+impl<Id: Clone + PartialEq> GraphLayout<Id> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn extend(&mut self, commits: &[GraphCommit<Id>]) -> Vec<GraphRow<Id>> {
+        lay_out_into(&mut self.lanes, commits)
+    }
+}
+
 pub fn lay_out<Id: Clone + PartialEq>(commits: &[GraphCommit<Id>]) -> Vec<GraphRow<Id>> {
     let mut lanes: Vec<Option<Lane<Id>>> = Vec::new();
+    lay_out_into(&mut lanes, commits)
+}
+
+fn lay_out_into<Id: Clone + PartialEq>(
+    lanes: &mut Vec<Option<Lane<Id>>>,
+    commits: &[GraphCommit<Id>],
+) -> Vec<GraphRow<Id>> {
     let mut rows = Vec::with_capacity(commits.len());
 
     for commit in commits {
@@ -39,7 +66,7 @@ pub fn lay_out<Id: Clone + PartialEq>(commits: &[GraphCommit<Id>]) -> Vec<GraphR
 
         let node_column = match merging.first() {
             Some(&first) => first,
-            None => free_lane(&mut lanes),
+            None => free_lane(lanes),
         };
 
         let node_key = lanes[node_column]
@@ -65,7 +92,7 @@ pub fn lay_out<Id: Clone + PartialEq>(commits: &[GraphCommit<Id>]) -> Vec<GraphR
 
         let mut opened = Vec::new();
         for parent in parents {
-            let slot = free_lane(&mut lanes);
+            let slot = free_lane(lanes);
             lanes[slot] = Some(Lane {
                 expected: parent.clone(),
                 key: parent.clone(),

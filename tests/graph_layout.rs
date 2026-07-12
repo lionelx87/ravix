@@ -1,4 +1,4 @@
-use ravix::graph::{GraphCommit, lay_out};
+use ravix::graph::{GraphCommit, GraphLayout, lay_out};
 
 fn commit(id: &str, parents: &[&str]) -> GraphCommit<String> {
     GraphCommit {
@@ -13,6 +13,30 @@ fn columns(rows: &[ravix::graph::GraphRow<String>]) -> Vec<usize> {
 
 fn glyphs(rows: &[ravix::graph::GraphRow<String>]) -> Vec<&str> {
     rows.iter().map(|r| r.glyphs.as_str()).collect()
+}
+
+#[test]
+fn incremental_layout_matches_a_single_pass() {
+    let commits = [
+        commit("a", &["b", "d"]),
+        commit("b", &["c"]),
+        commit("d", &["e"]),
+        commit("c", &["f"]),
+        commit("e", &["f"]),
+        commit("f", &[]),
+    ];
+
+    let one_shot = lay_out(&commits);
+
+    for split in 0..=commits.len() {
+        let mut layout = GraphLayout::new();
+        let mut incremental = layout.extend(&commits[..split]);
+        incremental.extend(layout.extend(&commits[split..]));
+        assert_eq!(
+            incremental, one_shot,
+            "laying out in two chunks split at {split} must match one pass"
+        );
+    }
 }
 
 #[test]

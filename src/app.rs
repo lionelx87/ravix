@@ -12,7 +12,7 @@ use crate::focus::{self, FocusSet};
 use crate::git::{
     BadgeKind, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus,
 };
-use crate::graph::{GraphCommit, GraphRow, lay_out};
+use crate::graph::{GraphCommit, GraphLayout, GraphRow};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
@@ -276,6 +276,8 @@ pub struct App {
     meta: RepoMeta,
     commits: Vec<CommitInfo>,
     rows: Vec<GraphRow<Oid>>,
+    graph_layout: GraphLayout<Oid>,
+    commit_oids: Vec<Oid>,
     exhausted: bool,
     load_page: usize,
     selected: usize,
@@ -331,9 +333,12 @@ impl App {
         let meta = repo.meta()?;
         let load_page = load_page.max(1);
         let visibility = Visibility::default();
-        let commits = repo.commits(0, load_page, &visibility)?;
-        let exhausted = commits.len() < load_page;
-        let rows = layout_rows(&commits);
+        let commit_oids = repo.commit_oids(&visibility)?;
+        let take = load_page.min(commit_oids.len());
+        let commits = repo.hydrate(&commit_oids[..take]);
+        let exhausted = commits.len() >= commit_oids.len();
+        let mut graph_layout = GraphLayout::new();
+        let rows = graph_layout.extend(&graph_commits(&commits));
         let status = repo.working_status().unwrap_or_default();
         let mut app = Self {
             repo,
@@ -341,6 +346,8 @@ impl App {
             meta,
             commits,
             rows,
+            graph_layout,
+            commit_oids,
             exhausted,
             load_page,
             selected: 0,
@@ -2675,9 +2682,11 @@ impl App {
         if let Ok(meta) = self.repo.meta() {
             self.meta = meta;
         }
-        if let Ok(commits) = self.repo.commits(0, self.load_page, &self.visibility) {
-            self.exhausted = commits.len() < self.load_page;
-            self.commits = commits;
+        if let Ok(oids) = self.repo.commit_oids(&self.visibility) {
+            let keep = self.commits.len().max(self.load_page).min(oids.len());
+            self.commit_oids = oids;
+            self.commits = self.repo.hydrate(&self.commit_oids[..keep]);
+            self.exhausted = self.commits.len() >= self.commit_oids.len();
             self.rebuild_rows();
         }
 
@@ -2725,21 +2734,22 @@ impl App {
     }
 
     fn load_more(&mut self) {
-        match self
-            .repo
-            .commits(self.commits.len(), self.load_page, &self.visibility)
-        {
-            Ok(mut more) => {
-                if more.len() < self.load_page {
-                    self.exhausted = true;
-                }
-                if more.is_empty() {
-                    return;
-                }
-                self.commits.append(&mut more);
-                self.rebuild_rows();
-            }
-            Err(_) => self.exhausted = true,
+        let start = self.commits.len();
+        let end = (start + self.load_page).min(self.commit_oids.len());
+        if start >= end {
+            self.exhausted = true;
+            return;
+        }
+        let mut more = self.repo.hydrate(&self.commit_oids[start..end]);
+        if more.is_empty() {
+            self.exhausted = true;
+            return;
+        }
+        let new_rows = self.graph_layout.extend(&graph_commits(&more));
+        self.commits.append(&mut more);
+        self.rows.extend(new_rows);
+        if self.commits.len() >= self.commit_oids.len() {
+            self.exhausted = true;
         }
     }
 
@@ -2750,7 +2760,8 @@ impl App {
     }
 
     fn rebuild_rows(&mut self) {
-        self.rows = layout_rows(&self.commits);
+        self.graph_layout = GraphLayout::new();
+        self.rows = self.graph_layout.extend(&graph_commits(&self.commits));
     }
 
     fn tick(&mut self, dt: Duration) {
@@ -2859,13 +2870,12 @@ fn join_summary(prediction: &MergePrediction, is_branch: bool, incoming: usize) 
     }
 }
 
-fn layout_rows(commits: &[CommitInfo]) -> Vec<GraphRow<Oid>> {
-    let graph_commits: Vec<GraphCommit<Oid>> = commits
+fn graph_commits(commits: &[CommitInfo]) -> Vec<GraphCommit<Oid>> {
+    commits
         .iter()
         .map(|commit| GraphCommit {
             id: commit.id,
             parents: commit.parents.clone(),
         })
-        .collect();
-    lay_out(&graph_commits)
+        .collect()
 }
