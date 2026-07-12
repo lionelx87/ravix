@@ -42,6 +42,8 @@ pub enum Action {
     PageUp,
     ScrollDown,
     ScrollUp,
+    ScrollDiffLeft,
+    ScrollDiffRight,
     ClickRow(usize),
     PointerDown(usize),
     PointerDrag(usize),
@@ -143,6 +145,7 @@ pub struct Panel {
     pub diff: Option<FileDiff>,
     pub split: bool,
     pub diff_scroll: u16,
+    pub diff_hscroll: u16,
     pub diff_focused: bool,
 }
 
@@ -687,6 +690,8 @@ impl App {
                     self.scroll_view(-SCROLL_STEP);
                 }
             }
+            Action::ScrollDiffLeft => self.scroll_diff_horizontal(-SCROLL_STEP),
+            Action::ScrollDiffRight => self.scroll_diff_horizontal(SCROLL_STEP),
             Action::ClickRow(visible) => self.click_row(visible),
             Action::PointerDown(visible) => self.pointer_down(visible),
             Action::PointerDrag(visible) => self.pointer_drag(visible),
@@ -965,6 +970,22 @@ impl App {
             return true;
         }
         false
+    }
+
+    fn scroll_diff_horizontal(&mut self, delta: isize) {
+        if let Some(panel) = self
+            .panel
+            .as_mut()
+            .filter(|panel| panel.fullscreen && panel.split)
+        {
+            panel.diff_hscroll = shift_scroll(panel.diff_hscroll, delta);
+        } else if let Some(view) = self
+            .working
+            .as_mut()
+            .filter(|view| view.fullscreen && view.split)
+        {
+            view.diff_hscroll = shift_scroll(view.diff_hscroll, delta);
+        }
     }
 
     fn scroll_view(&mut self, delta: isize) {
@@ -1370,6 +1391,7 @@ impl App {
                     diff: None,
                     split: false,
                     diff_scroll: 0,
+                    diff_hscroll: 0,
                     diff_focused: false,
                 });
             }
@@ -1408,6 +1430,7 @@ impl App {
         if let Some(panel) = &mut self.panel {
             panel.file = slide::clamp_index(panel.file, delta, panel.changed_files.len());
             panel.diff_scroll = 0;
+            panel.diff_hscroll = 0;
         }
         self.sync_commit_diff();
     }
@@ -1697,11 +1720,13 @@ impl App {
         if let Some(view) = &mut self.working {
             view.split = !view.split;
             view.diff_scroll = 0;
+            view.diff_hscroll = 0;
         } else if let Some(panel) = &mut self.panel
             && panel.fullscreen
         {
             panel.split = !panel.split;
             panel.diff_scroll = 0;
+            panel.diff_hscroll = 0;
         }
     }
 

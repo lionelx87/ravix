@@ -251,6 +251,7 @@ fn render_diff_pane(
     split: bool,
     focused_hunk: Option<usize>,
     scroll: &mut u16,
+    hscroll: &mut u16,
     snap_to_focus: bool,
     focused: bool,
     theme: &Theme,
@@ -271,9 +272,21 @@ fn render_diff_pane(
         .title(title);
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
+
+    if split {
+        let col_width = inner_width.saturating_sub(SPLIT_SEPARATOR.chars().count()) / 2;
+        let overflow = diff
+            .map(max_content_width)
+            .unwrap_or(0)
+            .saturating_sub(col_width) as u16;
+        *hscroll = (*hscroll).min(overflow);
+    } else {
+        *hscroll = 0;
+    }
+    let offset = *hscroll as usize;
     let window = |scroll: u16| scroll as usize..scroll as usize + inner_height;
     let (mut content, focus_offset) =
-        diff_pane_lines(diff, split, focused_hunk, inner_width, window(*scroll), theme);
+        diff_pane_lines(diff, split, focused_hunk, inner_width, window(*scroll), offset, theme);
 
     let mut target = *scroll;
     if let Some(offset) = focus_offset.filter(|_| snap_to_focus) {
@@ -286,7 +299,8 @@ fn render_diff_pane(
     target = target.min(max_scroll);
     if target != *scroll {
         *scroll = target;
-        content = diff_pane_lines(diff, split, focused_hunk, inner_width, window(target), theme).0;
+        content =
+            diff_pane_lines(diff, split, focused_hunk, inner_width, window(target), offset, theme).0;
     }
     frame.render_widget(
         Paragraph::new(content).block(diff_block).scroll((*scroll, 0)),
@@ -1524,6 +1538,7 @@ fn render_commit_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, are
         panel.split,
         None,
         &mut panel.diff_scroll,
+        &mut panel.diff_hscroll,
         false,
         diff_focused,
         theme,
@@ -1564,6 +1579,7 @@ fn render_working_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, ar
         view.split,
         focused_hunk,
         &mut view.diff_scroll,
+        &mut view.diff_hscroll,
         snap,
         diff_focused,
         theme,
@@ -1571,19 +1587,30 @@ fn render_working_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, ar
     );
 }
 
+fn max_content_width(diff: &FileDiff) -> usize {
+    diff.hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .map(|line| content_of(line).chars().count() + 2)
+        .max()
+        .unwrap_or(0)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn diff_pane_lines(
     diff: Option<&FileDiff>,
     split: bool,
     focused_hunk: Option<usize>,
     width: usize,
     visible: std::ops::Range<usize>,
+    hscroll: usize,
     theme: &Theme,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let Some(diff) = diff else {
         return (no_diff_lines(theme), None);
     };
     if split {
-        split_diff_lines(diff, focused_hunk, width, theme)
+        split_diff_lines(diff, focused_hunk, width, hscroll, theme)
     } else {
         diff_lines(diff, focused_hunk, width, visible, theme)
     }
@@ -1593,6 +1620,7 @@ fn split_diff_lines(
     diff: &FileDiff,
     focused_hunk: Option<usize>,
     width: usize,
+    hscroll: usize,
     theme: &Theme,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let syntax = enrich::highlighter().language(&diff.new_path);
@@ -1621,7 +1649,7 @@ fn split_diff_lines(
                 .right
                 .as_ref()
                 .map(|line| diff_body_line(line, &right_emph, syntax, theme));
-            lines.push(compose_split_row(left, right, col_width, theme));
+            lines.push(compose_split_row(left, right, col_width, hscroll, theme));
         }
         lines.push(Line::from(""));
     }
@@ -1632,10 +1660,11 @@ fn compose_split_row(
     left: Option<Line<'static>>,
     right: Option<Line<'static>>,
     col_width: usize,
+    hscroll: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let left_spans = left.map(|line| line.spans).unwrap_or_default();
-    let (mut spans, left_width) = truncate_spans(left_spans, col_width);
+    let (mut spans, left_width) = slice_spans(left_spans, hscroll, col_width);
     if left_width < col_width {
         spans.push(Span::raw(" ".repeat(col_width - left_width)));
     }
@@ -1644,26 +1673,40 @@ fn compose_split_row(
         Style::default().fg(theme.label),
     ));
     if let Some(right) = right {
-        spans.extend(right.spans);
+        let (right_spans, _) = slice_spans(right.spans, hscroll, col_width);
+        spans.extend(right_spans);
     }
     Line::from(spans)
 }
 
-fn truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> (Vec<Span<'static>>, usize) {
+fn slice_spans(
+    spans: Vec<Span<'static>>,
+    offset: usize,
+    max_width: usize,
+) -> (Vec<Span<'static>>, usize) {
     let mut out = Vec::new();
+    let mut skipped = 0;
     let mut width = 0;
     for span in spans {
-        let span_width = span.content.chars().count();
-        if width + span_width <= max_width {
-            width += span_width;
-            out.push(span);
-        } else {
-            let remaining = max_width - width;
-            if remaining > 0 {
-                let clipped: String = span.content.chars().take(remaining).collect();
-                out.push(Span::styled(clipped, span.style));
-                width += remaining;
-            }
+        let chars: Vec<char> = span.content.chars().collect();
+        let mut start = 0;
+        if skipped < offset {
+            let to_skip = (offset - skipped).min(chars.len());
+            skipped += to_skip;
+            start = to_skip;
+        }
+        if start >= chars.len() {
+            continue;
+        }
+        let remaining = max_width.saturating_sub(width);
+        if remaining == 0 {
+            break;
+        }
+        let take = (chars.len() - start).min(remaining);
+        let clipped: String = chars[start..start + take].iter().collect();
+        width += take;
+        out.push(Span::styled(clipped, span.style));
+        if width >= max_width {
             break;
         }
     }
