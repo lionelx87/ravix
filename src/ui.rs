@@ -1130,7 +1130,11 @@ fn render_wip_row(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     }
 }
 
-fn working_file_lines(app: &App, view: &WorkingView, theme: &Theme) -> Vec<Line<'static>> {
+fn working_file_lines(
+    app: &App,
+    view: &WorkingView,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let status = app.status();
     let sections = [
         ("Unstaged", &status.unstaged, theme.removed),
@@ -1139,6 +1143,7 @@ fn working_file_lines(app: &App, view: &WorkingView, theme: &Theme) -> Vec<Line<
     ];
 
     let mut lines = Vec::new();
+    let mut selected_row = None;
     let mut index = 0usize;
     for (title, files, color) in sections {
         if files.is_empty() {
@@ -1147,6 +1152,9 @@ fn working_file_lines(app: &App, view: &WorkingView, theme: &Theme) -> Vec<Line<
         lines.push(section_title(title, files.len(), theme));
         for file in files {
             let selected = index == view.selected;
+            if selected {
+                selected_row = Some(lines.len());
+            }
             lines.push(Line::from(vec![
                 Span::styled(
                     if selected { "❯ " } else { "  " },
@@ -1170,7 +1178,7 @@ fn working_file_lines(app: &App, view: &WorkingView, theme: &Theme) -> Vec<Line<
             Style::default().fg(theme.meta),
         )));
     }
-    lines
+    (lines, selected_row)
 }
 
 fn no_diff_lines(theme: &Theme) -> Vec<Line<'static>> {
@@ -1455,7 +1463,7 @@ fn render_working_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: R
 
     let scroll = {
         let view = app.working().unwrap();
-        let mut lines = working_file_lines(app, view, theme);
+        let mut lines = working_file_lines(app, view, theme).0;
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "── diff ───────────────",
@@ -1529,7 +1537,17 @@ fn render_commit_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, are
         .borders(Borders::ALL)
         .border_style(Style::default().fg(files_border))
         .title(heading);
-    frame.render_widget(Paragraph::new(file_lines).block(files_block), columns[0]);
+    let file_count = file_lines.len();
+    let list_height = columns[0].height.saturating_sub(2) as usize;
+    let panel = app.panel_mut().unwrap();
+    panel.files_scroll = scroll_into_view(panel.files_scroll, panel.file, list_height, file_count);
+    let files_scroll = panel.files_scroll;
+    frame.render_widget(
+        Paragraph::new(file_lines)
+            .block(files_block)
+            .scroll((files_scroll, 0)),
+        columns[0],
+    );
 
     let panel = app.panel_mut().unwrap();
     render_diff_pane(
@@ -1546,6 +1564,16 @@ fn render_commit_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, are
     );
 }
 
+fn scroll_into_view(offset: u16, selected: usize, height: usize, total: usize) -> u16 {
+    let mut offset = offset as usize;
+    if selected < offset {
+        offset = selected;
+    } else if height > 0 && selected >= offset + height {
+        offset = selected + 1 - height;
+    }
+    offset.min(total.saturating_sub(height)) as u16
+}
+
 fn render_working_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     frame.render_widget(Clear, area);
     let columns = Layout::horizontal([Constraint::Length(46), Constraint::Min(0)]).split(area);
@@ -1560,12 +1588,21 @@ fn render_working_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, ar
         .borders(Borders::ALL)
         .border_style(Style::default().fg(files_border))
         .title(" Working directory   [space] stage · [Tab] diff · [c] commit ");
-    let file_lines = {
+    let (file_lines, selected_row) = {
         let view = app.working().unwrap();
         working_file_lines(app, view, theme)
     };
+    let file_count = file_lines.len();
+    let list_height = columns[0].height.saturating_sub(2) as usize;
+    let view = app.working_mut().unwrap();
+    if let Some(row) = selected_row {
+        view.files_scroll = scroll_into_view(view.files_scroll, row, list_height, file_count);
+    }
+    let files_scroll = view.files_scroll;
     frame.render_widget(
-        Paragraph::new(file_lines).block(files_block),
+        Paragraph::new(file_lines)
+            .block(files_block)
+            .scroll((files_scroll, 0)),
         columns[0],
     );
 

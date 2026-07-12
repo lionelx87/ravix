@@ -65,7 +65,8 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    if let Some(action) = input.on_mouse(mouse, graph_area) {
+                    let context = app.input_context();
+                    if let Some(action) = input.on_mouse(mouse, graph_area, context) {
                         app.update(action);
                     }
                 }

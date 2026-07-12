@@ -18,6 +18,7 @@ pub struct WorkingView {
     pub hunk: usize,
     pub diff_scroll: u16,
     pub diff_hscroll: u16,
+    pub files_scroll: u16,
     pub hunk_snap: bool,
 }
 
@@ -35,6 +36,7 @@ impl WorkingView {
             hunk: 0,
             diff_scroll: 0,
             diff_hscroll: 0,
+            files_scroll: 0,
             hunk_snap: false,
         }
     }

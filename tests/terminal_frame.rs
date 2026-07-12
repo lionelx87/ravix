@@ -2327,7 +2327,7 @@ fn mouse(app: &mut App, input: &mut InputMap, kind: MouseEventKind, row: u16) {
         width: 100,
         height: 27,
     };
-    if let Some(action) = input.on_mouse(event, graph_area) {
+    if let Some(action) = input.on_mouse(event, graph_area, app.input_context()) {
         app.update(action);
     }
 }

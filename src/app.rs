@@ -42,6 +42,8 @@ pub enum Action {
     PageUp,
     ScrollDown,
     ScrollUp,
+    ScrollFilesDown,
+    ScrollFilesUp,
     ScrollDiffLeft,
     ScrollDiffRight,
     ClickRow(usize),
@@ -146,6 +148,7 @@ pub struct Panel {
     pub split: bool,
     pub diff_scroll: u16,
     pub diff_hscroll: u16,
+    pub files_scroll: u16,
     pub diff_focused: bool,
 }
 
@@ -690,6 +693,8 @@ impl App {
                     self.scroll_view(-SCROLL_STEP);
                 }
             }
+            Action::ScrollFilesDown => self.scroll_files(1),
+            Action::ScrollFilesUp => self.scroll_files(-1),
             Action::ScrollDiffLeft => self.scroll_diff_horizontal(-SCROLL_STEP),
             Action::ScrollDiffRight => self.scroll_diff_horizontal(SCROLL_STEP),
             Action::ClickRow(visible) => self.click_row(visible),
@@ -970,6 +975,18 @@ impl App {
             return true;
         }
         false
+    }
+
+    fn scroll_files(&mut self, delta: isize) {
+        if self.panel.as_ref().is_some_and(|panel| panel.fullscreen) {
+            self.commit_diff_move(delta);
+        } else if self
+            .working
+            .as_ref()
+            .is_some_and(|view| view.fullscreen && view.focus == Focus::Files)
+        {
+            self.working_move(delta);
+        }
     }
 
     fn scroll_diff_horizontal(&mut self, delta: isize) {
@@ -1392,6 +1409,7 @@ impl App {
                     split: false,
                     diff_scroll: 0,
                     diff_hscroll: 0,
+                    files_scroll: 0,
                     diff_focused: false,
                 });
             }

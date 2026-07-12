@@ -5,6 +5,8 @@ use ratatui::layout::Rect;
 
 use crate::app::{Action, InputContext};
 
+const FILE_PANE_WIDTH: u16 = 46;
+
 #[derive(Default)]
 pub struct InputMap {
     pending_g: bool,
@@ -79,10 +81,19 @@ impl InputMap {
         }
     }
 
-    pub fn on_mouse(&mut self, mouse: MouseEvent, graph_area: Rect) -> Option<Action> {
+    pub fn on_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        graph_area: Rect,
+        context: InputContext,
+    ) -> Option<Action> {
         let row = || (mouse.row - graph_area.y) as usize;
         let in_graph = contains(graph_area, mouse.column, mouse.row);
+        let over_file_list =
+            context == InputContext::CommitDiff && mouse.column < graph_area.x + FILE_PANE_WIDTH;
         match mouse.kind {
+            MouseEventKind::ScrollDown if over_file_list => Some(Action::ScrollFilesDown),
+            MouseEventKind::ScrollUp if over_file_list => Some(Action::ScrollFilesUp),
             MouseEventKind::ScrollDown => Some(Action::ScrollDown),
             MouseEventKind::ScrollUp => Some(Action::ScrollUp),
             MouseEventKind::Down(MouseButton::Left) if in_graph => Some(Action::PointerDown(row())),
