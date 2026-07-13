@@ -370,7 +370,7 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
         }
         let commit = &commits[index];
         let graph_row = &rows[index];
-        let is_selected = index == selected;
+        let is_selected = index == selected && !app.on_wip();
         let y = area.y + row as u16;
 
         let mut spans = Vec::new();
