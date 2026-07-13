@@ -196,13 +196,35 @@ struct RemoteJob {
 }
 
 enum ConfirmKind {
-    Discard { path: String, untracked: bool },
-    DiscardHunk { path: String, patch: String },
-    DeleteBranch { name: String, oid: Option<String> },
-    ForceDeleteBranch { name: String, oid: Option<String> },
+    Discard {
+        path: String,
+        untracked: bool,
+    },
+    DiscardHunk {
+        path: String,
+        patch: String,
+    },
+    DeleteBranch {
+        name: String,
+        oid: Option<String>,
+        upstream: Option<String>,
+    },
+    ForceDeleteBranch {
+        name: String,
+        oid: Option<String>,
+        upstream: Option<String>,
+    },
+    DeleteRemoteBranch {
+        remote: String,
+        remote_branch: String,
+    },
     ForcePush,
-    DropStash { index: usize },
-    DeleteFocus { name: String },
+    DropStash {
+        index: usize,
+    },
+    DeleteFocus {
+        name: String,
+    },
 }
 
 pub struct Confirm {
@@ -1613,21 +1635,35 @@ impl App {
                 let result = self.cli.discard_hunk(&patch);
                 self.finish_discard(result, path, snapshot);
             }
-            ConfirmKind::DeleteBranch { name, oid } => match self.cli.delete_branch(&name) {
-                Ok(()) => self.finish_branch_delete(name, oid),
+            ConfirmKind::DeleteBranch {
+                name,
+                oid,
+                upstream,
+            } => match self.cli.delete_branch(&name) {
+                Ok(()) => self.finish_branch_delete(name, oid, upstream),
                 Err(_) => {
                     self.confirm = Some(Confirm {
                         message: format!("'{name}' is not fully merged. Force delete? (y/n)"),
-                        kind: ConfirmKind::ForceDeleteBranch { name, oid },
+                        kind: ConfirmKind::ForceDeleteBranch {
+                            name,
+                            oid,
+                            upstream,
+                        },
                     });
                 }
             },
-            ConfirmKind::ForceDeleteBranch { name, oid } => {
-                match self.cli.force_delete_branch(&name) {
-                    Ok(()) => self.finish_branch_delete(name, oid),
-                    Err(error) => self.fail(error.to_string()),
-                }
-            }
+            ConfirmKind::ForceDeleteBranch {
+                name,
+                oid,
+                upstream,
+            } => match self.cli.force_delete_branch(&name) {
+                Ok(()) => self.finish_branch_delete(name, oid, upstream),
+                Err(error) => self.fail(error.to_string()),
+            },
+            ConfirmKind::DeleteRemoteBranch {
+                remote,
+                remote_branch,
+            } => self.spawn_delete_remote(remote, remote_branch),
             ConfirmKind::ForcePush => {
                 self.spawn_push(|cli| cli.push_force_with_lease());
             }
@@ -2131,6 +2167,14 @@ impl App {
         let Some(entry) = self.branch.as_ref().and_then(BranchPanel::focused) else {
             return;
         };
+        if entry.remote.is_some() {
+            let remote_ref = entry.name.clone();
+            let local = split_remote_ref(&remote_ref)
+                .map(|(_, branch)| branch)
+                .unwrap_or_else(|| remote_ref.clone());
+            self.perform_checkout_track(local, remote_ref);
+            return;
+        }
         if entry.is_head {
             self.close_branch_panel();
             return;
@@ -2173,6 +2217,21 @@ impl App {
         } else {
             self.cli.switch_branch(&target)
         };
+        self.finish_checkout(result, target, previous);
+    }
+
+    fn perform_checkout_track(&mut self, local: String, remote_ref: String) {
+        let previous = self.repo.head_ref();
+        let result = self.cli.switch_create_track(&local, &remote_ref);
+        self.finish_checkout(result, local, previous);
+    }
+
+    fn finish_checkout(
+        &mut self,
+        result: Result<(), MutationError>,
+        target: String,
+        previous: Option<String>,
+    ) {
         match result {
             Ok(()) => {
                 if let Some(previous) = previous.filter(|previous| *previous != target) {
@@ -2616,25 +2675,68 @@ impl App {
         let Some(entry) = self.branch.as_ref().and_then(BranchPanel::focused) else {
             return;
         };
-        if entry.is_head {
+        let name = entry.name.clone();
+        let is_head = entry.is_head;
+        let is_remote = entry.remote.is_some();
+        let upstream = entry.upstream.clone();
+
+        if is_remote {
+            if let Some((remote, remote_branch)) = split_remote_ref(&name) {
+                self.confirm = Some(Confirm {
+                    message: format!("Delete remote {name}? (y/n)"),
+                    kind: ConfirmKind::DeleteRemoteBranch {
+                        remote,
+                        remote_branch,
+                    },
+                });
+            }
+            return;
+        }
+        if is_head {
             self.alert = Some(format!(
-                "'{}' is the current branch — checkout another first",
-                entry.name
+                "'{name}' is the current branch — checkout another first"
             ));
             return;
         }
-        let name = entry.name.clone();
         let oid = self.repo.branch_tip(&name);
         self.confirm = Some(Confirm {
             message: format!("Delete branch {name}? (y/n)"),
-            kind: ConfirmKind::DeleteBranch { name, oid },
+            kind: ConfirmKind::DeleteBranch {
+                name,
+                oid,
+                upstream,
+            },
         });
     }
 
-    fn finish_branch_delete(&mut self, name: String, oid: Option<String>) {
+    fn finish_branch_delete(
+        &mut self,
+        name: String,
+        oid: Option<String>,
+        upstream: Option<String>,
+    ) {
         self.last_action = oid.map(|oid| UndoableAction::DeletedBranch { name, oid });
         self.notice = None;
         self.reload();
+        if let Some(upstream) = upstream
+            && let Some((remote, remote_branch)) = split_remote_ref(&upstream)
+        {
+            self.confirm = Some(Confirm {
+                message: format!("Delete remote {upstream} too? (y/n)"),
+                kind: ConfirmKind::DeleteRemoteBranch {
+                    remote,
+                    remote_branch,
+                },
+            });
+        }
+    }
+
+    fn spawn_delete_remote(&mut self, remote: String, remote_branch: String) {
+        self.spawn_remote(
+            "deleting remote",
+            OnComplete::Notice("Deleted remote branch"),
+            move |cli| cli.delete_remote_branch(&remote, &remote_branch),
+        );
     }
 
     fn refresh_branch_entries(&mut self) {
@@ -2861,6 +2963,12 @@ impl App {
 
 fn short_oid(oid: &str) -> String {
     oid.chars().take(7).collect()
+}
+
+fn split_remote_ref(reference: &str) -> Option<(String, String)> {
+    reference
+        .split_once('/')
+        .map(|(remote, branch)| (remote.to_string(), branch.to_string()))
 }
 
 fn merge_note(prediction: &MergePrediction) -> String {

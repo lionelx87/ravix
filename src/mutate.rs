@@ -107,6 +107,14 @@ impl GitCli {
         self.run(&["branch", "-D", name], None)
     }
 
+    pub fn delete_remote_branch(&self, remote: &str, branch: &str) -> Result<(), MutationError> {
+        self.run(&["push", remote, "--delete", branch], None)
+    }
+
+    pub fn switch_create_track(&self, name: &str, remote_ref: &str) -> Result<(), MutationError> {
+        self.run(&["switch", "-c", name, "--track", remote_ref], None)
+    }
+
     pub fn create_branch_at(&self, name: &str, oid: &str) -> Result<(), MutationError> {
         self.run(&["branch", name, oid], None)
     }

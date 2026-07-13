@@ -6,6 +6,17 @@ fn plain(name: &str) -> BranchInput {
         upstream: None,
         ahead: 0,
         behind: 0,
+        remote: None,
+    }
+}
+
+fn remote(name: &str, remote: &str) -> BranchInput {
+    BranchInput {
+        name: name.to_string(),
+        upstream: None,
+        ahead: 0,
+        behind: 0,
+        remote: Some(remote.to_string()),
     }
 }
 
@@ -46,6 +57,7 @@ fn upstream_and_ahead_behind_pass_through_to_the_entry() {
         upstream: Some("origin/main".to_string()),
         ahead: 2,
         behind: 3,
+        remote: None,
     }];
 
     let list = branch_list(&branches, Some("main"));
@@ -58,6 +70,26 @@ fn upstream_and_ahead_behind_pass_through_to_the_entry() {
             upstream: Some("origin/main".to_string()),
             ahead: 2,
             behind: 3,
+            remote: None,
         }
+    );
+}
+
+#[test]
+fn remote_branches_follow_locals_and_keep_their_remote() {
+    let branches = [
+        plain("main"),
+        remote("origin/orphan", "origin"),
+        plain("feature"),
+    ];
+
+    let list = branch_list(&branches, Some("main"));
+
+    let names: Vec<&str> = list.iter().map(|entry| entry.name.as_str()).collect();
+    assert_eq!(names, ["main", "feature", "origin/orphan"]);
+    assert_eq!(list[2].remote.as_deref(), Some("origin"));
+    assert!(
+        list.iter().take(2).all(|entry| entry.remote.is_none()),
+        "locals stay ahead of remotes"
     );
 }

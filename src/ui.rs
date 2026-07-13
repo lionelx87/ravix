@@ -723,8 +723,18 @@ fn render_branch_panel(
             } else {
                 ("  ", theme.marker)
             };
-            let mut name_style =
-                Style::default().fg(if selected { theme.node } else { theme.summary });
+            let is_remote = entry.remote.is_some();
+            let base_color = if selected {
+                theme.node
+            } else if is_remote {
+                theme.meta
+            } else {
+                theme.summary
+            };
+            let mut name_style = Style::default().fg(base_color);
+            if is_remote {
+                name_style = name_style.add_modifier(Modifier::ITALIC);
+            }
             if hidden {
                 name_style = name_style.add_modifier(Modifier::DIM);
             }

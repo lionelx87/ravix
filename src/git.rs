@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
@@ -226,11 +226,13 @@ impl Repo {
 
     pub fn branches(&self) -> Result<Vec<BranchInput>, git2::Error> {
         let mut out = Vec::new();
+        let mut local_names = HashSet::new();
         for branch in self.inner.branches(Some(BranchType::Local))? {
             let (branch, _) = branch?;
             let Some(name) = branch.name()?.map(str::to_string) else {
                 continue;
             };
+            local_names.insert(name.clone());
             let local_oid = branch.get().target();
             let (upstream, ahead, behind) = match branch.upstream() {
                 Ok(upstream) => {
@@ -250,6 +252,26 @@ impl Repo {
                 upstream,
                 ahead,
                 behind,
+                remote: None,
+            });
+        }
+        for branch in self.inner.branches(Some(BranchType::Remote))? {
+            let (branch, _) = branch?;
+            let Some(name) = branch.name()?.map(str::to_string) else {
+                continue;
+            };
+            let Some((remote, short)) = name.split_once('/') else {
+                continue;
+            };
+            if short == "HEAD" || local_names.contains(short) {
+                continue;
+            }
+            out.push(BranchInput {
+                name: name.clone(),
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                remote: Some(remote.to_string()),
             });
         }
         Ok(out)

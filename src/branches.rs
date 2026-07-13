@@ -4,6 +4,7 @@ pub struct BranchInput {
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
+    pub remote: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub struct BranchEntry {
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
+    pub remote: Option<String>,
 }
 
 pub fn branch_list(branches: &[BranchInput], head: Option<&str>) -> Vec<BranchEntry> {
@@ -24,10 +26,16 @@ pub fn branch_list(branches: &[BranchInput], head: Option<&str>) -> Vec<BranchEn
             upstream: branch.upstream.clone(),
             ahead: branch.ahead,
             behind: branch.behind,
+            remote: branch.remote.clone(),
         })
         .collect();
 
-    entries.sort_by(|a, b| b.is_head.cmp(&a.is_head).then_with(|| a.name.cmp(&b.name)));
+    entries.sort_by(|a, b| {
+        b.is_head
+            .cmp(&a.is_head)
+            .then_with(|| a.remote.is_some().cmp(&b.remote.is_some()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     entries
 }
 
