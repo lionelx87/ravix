@@ -485,6 +485,10 @@ impl Repo {
             self.inner
                 .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut options))?
         } else {
+            options
+                .include_untracked(true)
+                .show_untracked_content(true)
+                .recurse_untracked_dirs(true);
             self.inner.diff_index_to_workdir(None, Some(&mut options))?
         };
 

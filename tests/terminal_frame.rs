@@ -598,6 +598,29 @@ fn opening_the_wip_panel_lists_the_changed_files() {
     assert!(screen.contains("notes.txt"), "file missing:\n{screen}");
 }
 
+#[test]
+fn focusing_an_untracked_file_shows_its_content_in_the_diff_pane() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_working(&mut app, &mut input);
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    let screen = dump(&draw(&mut app, 100, 28));
+
+    assert!(
+        screen.contains("todo"),
+        "the untracked file's content renders as an all-added diff:\n{screen}"
+    );
+    assert!(
+        !screen.contains("No textual diff"),
+        "the empty-diff fallback should not show for a readable untracked file:\n{screen}"
+    );
+}
+
 fn any_row_has_both(screen: &str, left: &str, right: &str) -> bool {
     screen.lines().any(|line| {
         line.find(left)
