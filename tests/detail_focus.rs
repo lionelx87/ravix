@@ -54,11 +54,17 @@ fn tab_focuses_the_diff_and_arrows_scroll_instead_of_changing_file() {
     let mut app = App::open(dir.path()).unwrap();
 
     enter_commit_fullscreen(&mut app);
-    assert!(!app.panel().unwrap().diff_focused, "starts on the file list");
+    assert!(
+        !app.panel().unwrap().diff_focused,
+        "starts on the file list"
+    );
     let file_before = app.panel().unwrap().file;
 
     app.update(Action::ToggleFocus);
-    assert!(app.panel().unwrap().diff_focused, "Tab focuses the diff pane");
+    assert!(
+        app.panel().unwrap().diff_focused,
+        "Tab focuses the diff pane"
+    );
 
     app.update(Action::SelectNext);
     assert!(
@@ -104,12 +110,18 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
 fn shift_tab_is_wired_to_toggle_focus_in_the_diff_contexts() {
     let mut input = InputMap::default();
     assert_eq!(
-        input.on_key(key(KeyCode::BackTab, KeyModifiers::SHIFT), InputContext::CommitDiff),
+        input.on_key(
+            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            InputContext::CommitDiff
+        ),
         Some(Action::ToggleFocus),
         "Shift-Tab toggles focus in the commit diff"
     );
     assert_eq!(
-        input.on_key(key(KeyCode::BackTab, KeyModifiers::SHIFT), InputContext::Working),
+        input.on_key(
+            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            InputContext::Working
+        ),
         Some(Action::ToggleFocus),
         "Shift-Tab toggles focus in the working view"
     );

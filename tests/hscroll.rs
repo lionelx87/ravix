@@ -31,7 +31,12 @@ fn wide_line_repo(dir: &TempDir) {
     let repo = Repository::init_opts(dir.path(), &opts).unwrap();
     let root = commit(&repo, None, "a.txt", "alpha\nvalue\nomega\n");
     let long = format!("value = {} TAILMARKER", "x".repeat(90));
-    commit(&repo, Some(root), "a.txt", &format!("alpha\n{long}\nomega\n"));
+    commit(
+        &repo,
+        Some(root),
+        "a.txt",
+        &format!("alpha\n{long}\nomega\n"),
+    );
     repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
         .unwrap();
 }

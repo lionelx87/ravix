@@ -106,17 +106,29 @@ fn wheel_over_the_file_list_moves_the_file_cursor() {
     let area = Rect::new(0, 0, 160, 40);
 
     assert_eq!(
-        input.on_mouse(wheel(MouseEventKind::ScrollDown, 5), area, InputContext::CommitDiff),
+        input.on_mouse(
+            wheel(MouseEventKind::ScrollDown, 5),
+            area,
+            InputContext::CommitDiff
+        ),
         Some(Action::ScrollFilesDown),
         "the wheel over the left file-list pane scrolls the files"
     );
     assert_eq!(
-        input.on_mouse(wheel(MouseEventKind::ScrollDown, 100), area, InputContext::CommitDiff),
+        input.on_mouse(
+            wheel(MouseEventKind::ScrollDown, 100),
+            area,
+            InputContext::CommitDiff
+        ),
         Some(Action::ScrollDown),
         "the wheel over the diff pane scrolls the diff"
     );
     assert_eq!(
-        input.on_mouse(wheel(MouseEventKind::ScrollDown, 5), area, InputContext::Graph),
+        input.on_mouse(
+            wheel(MouseEventKind::ScrollDown, 5),
+            area,
+            InputContext::Graph
+        ),
         Some(Action::ScrollDown),
         "outside the fullscreen commit diff the wheel keeps its graph behavior"
     );

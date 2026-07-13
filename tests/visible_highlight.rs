@@ -24,8 +24,15 @@ fn commit(repo: &Repository, base: Option<Oid>, path: &str, body: &str) -> Oid {
         .map(|oid| repo.find_commit(oid).unwrap())
         .collect();
     let refs: Vec<_> = parents.iter().collect();
-    repo.commit(Some("HEAD"), &signature, &signature, "add rust", &tree, &refs)
-        .unwrap()
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "add rust",
+        &tree,
+        &refs,
+    )
+    .unwrap()
 }
 
 fn rust_repo(dir: &TempDir) {
@@ -35,7 +42,9 @@ fn rust_repo(dir: &TempDir) {
     let root = commit(&repo, None, "seed.txt", "seed\n");
     let mut body = String::new();
     for n in 0..120 {
-        body.push_str(&format!("pub fn function_{n}(value: usize) -> usize {{ value + {n} }}\n"));
+        body.push_str(&format!(
+            "pub fn function_{n}(value: usize) -> usize {{ value + {n} }}\n"
+        ));
     }
     commit(&repo, Some(root), "lib.rs", &body);
     repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))

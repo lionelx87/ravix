@@ -285,8 +285,15 @@ fn render_diff_pane(
     }
     let offset = *hscroll as usize;
     let window = |scroll: u16| scroll as usize..scroll as usize + inner_height;
-    let (mut content, focus_offset) =
-        diff_pane_lines(diff, split, focused_hunk, inner_width, window(*scroll), offset, theme);
+    let (mut content, focus_offset) = diff_pane_lines(
+        diff,
+        split,
+        focused_hunk,
+        inner_width,
+        window(*scroll),
+        offset,
+        theme,
+    );
 
     let mut target = *scroll;
     if let Some(offset) = focus_offset.filter(|_| snap_to_focus) {
@@ -299,11 +306,21 @@ fn render_diff_pane(
     target = target.min(max_scroll);
     if target != *scroll {
         *scroll = target;
-        content =
-            diff_pane_lines(diff, split, focused_hunk, inner_width, window(target), offset, theme).0;
+        content = diff_pane_lines(
+            diff,
+            split,
+            focused_hunk,
+            inner_width,
+            window(target),
+            offset,
+            theme,
+        )
+        .0;
     }
     frame.render_widget(
-        Paragraph::new(content).block(diff_block).scroll((*scroll, 0)),
+        Paragraph::new(content)
+            .block(diff_block)
+            .scroll((*scroll, 0)),
         area,
     );
 }
@@ -1301,7 +1318,9 @@ fn diff_line_parts(
 
     let gutter = Span::styled(
         format!("{marker} "),
-        Style::default().fg(gutter_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(gutter_color)
+            .add_modifier(Modifier::BOLD),
     );
 
     let mut spans = Vec::new();
@@ -2062,10 +2081,7 @@ mod tests {
     #[test]
     fn span_styles_survive_wrapping() {
         let styled = Style::default().fg(Color::Red);
-        let spans = vec![
-            Span::styled("aaaa ", styled),
-            Span::raw("bbbb cccc"),
-        ];
+        let spans = vec![Span::styled("aaaa ", styled), Span::raw("bbbb cccc")];
         let rows = wrap_content_rows(&spans, 5);
         assert_eq!(rows[0][0].style, styled, "the first row keeps its color");
     }

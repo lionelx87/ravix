@@ -31,9 +31,7 @@ fn long_wip_repo(dir: &TempDir) {
     run(&["add", "-A"]);
     run(&["commit", "-q", "-m", "seed"]);
 
-    let edited: String = (0..60)
-        .map(|n| format!("CHANGED line {n}\n"))
-        .collect();
+    let edited: String = (0..60).map(|n| format!("CHANGED line {n}\n")).collect();
     std::fs::write(path.join("app.txt"), edited).unwrap();
 }
 
@@ -49,7 +47,10 @@ fn focusing_the_peek_diff_lets_down_scroll_instead_of_changing_commit() {
     let mut app = App::open(dir.path()).unwrap();
 
     open_wip_peek(&mut app);
-    assert!(app.on_wip() && app.working().is_some(), "the WIP peek is open");
+    assert!(
+        app.on_wip() && app.working().is_some(),
+        "the WIP peek is open"
+    );
     assert_eq!(app.working().unwrap().focus, Focus::Files);
 
     app.update(Action::ToggleFocus);

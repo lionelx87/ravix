@@ -153,7 +153,10 @@ fn toggling_to_side_by_side_resets_the_scroll_so_it_stays_navigable() {
     for _ in 0..6 {
         app.update(Action::ScrollDown);
     }
-    assert!(app.panel().unwrap().diff_scroll > 0, "scrolled down in unified");
+    assert!(
+        app.panel().unwrap().diff_scroll > 0,
+        "scrolled down in unified"
+    );
 
     app.update(Action::ToggleDiffView);
     assert_eq!(
