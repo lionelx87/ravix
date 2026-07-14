@@ -72,7 +72,7 @@ const BRANCH: &[(&str, &str)] = &[
     ("d", "delete branch"),
     ("M", "join into HEAD"),
     ("Space", "hide / show in the graph"),
-    ("o", "solo (hide all others)"),
+    ("o", "solo (again to show all)"),
     ("p", "pin (survives solo)"),
     ("/", "fuzzy filter the list"),
 ];

@@ -592,7 +592,7 @@ fn render_branch_panel(
             empty: "no matching branches",
             hints: &[
                 "↵ checkout · n new · d delete · M join",
-                "Space hide · o solo · p pin · / filter",
+                "Space hide · o solo/all · p pin · / filter",
             ],
             fraction: 0.4,
             min_width: 40.0,
