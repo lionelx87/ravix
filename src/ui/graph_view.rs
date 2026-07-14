@@ -20,6 +20,7 @@ const RAIL_RULE: Color = Color::Rgb(62, 68, 84);
 const HEAD_ROW_BG: Color = Color::Rgb(13, 74, 80);
 const LOCAL_ICON: char = '\u{f0322}';
 const REMOTE_ICON: char = '\u{f015f}';
+const DETACHED_ICON: char = '\u{f05b}';
 const SHA_WIDTH: usize = 8;
 const AGE_WIDTH: usize = 5;
 const AUTHOR_WIDTH: usize = 14;
@@ -258,7 +259,12 @@ fn rail_cell(
     };
     let pill = fitted_pill(reference, rail_width.saturating_sub(display_width(&extra)));
     let pad = rail_width.saturating_sub(display_width(&pill) + display_width(&extra));
-    let mut pill_style = if is_head {
+    let mut pill_style = if matches!(reference.kind, BadgeKind::Head) {
+        Style::default()
+            .fg(Color::Rgb(20, 24, 32))
+            .bg(theme.wip)
+            .add_modifier(Modifier::BOLD)
+    } else if is_head {
         Style::default()
             .fg(theme.summary)
             .bg(HEAD_ROW_BG)
@@ -352,6 +358,17 @@ fn merged_refs(list: &[RefBadge]) -> Vec<MergedRef> {
         .map(|badge| badge.label.clone())
         .collect();
     let mut merged = Vec::new();
+    if let Some(head) = list
+        .iter()
+        .find(|badge| matches!(badge.kind, BadgeKind::Head))
+    {
+        merged.push(MergedRef {
+            label: head.label.clone(),
+            kind: BadgeKind::Head,
+            local: false,
+            remote: false,
+        });
+    }
     for badge in list.iter().filter(|badge| {
         matches!(
             badge.kind,
@@ -388,11 +405,14 @@ fn pill_text(reference: &MergedRef) -> String {
 
 fn pill_text_with(label: &str, reference: &MergedRef) -> String {
     let mut text = String::from(" ");
-    if matches!(reference.kind, BadgeKind::CurrentBranch) {
+    if matches!(reference.kind, BadgeKind::CurrentBranch | BadgeKind::Head) {
         text.push_str("✓ ");
     }
     text.push_str(label);
     text.push(' ');
+    if matches!(reference.kind, BadgeKind::Head) {
+        text.push(DETACHED_ICON);
+    }
     if reference.local {
         text.push(LOCAL_ICON);
     }
@@ -498,6 +518,23 @@ mod tests {
         let text = pill_text(&refs[0]);
         assert!(!text.contains(LOCAL_ICON));
         assert!(text.contains(REMOTE_ICON));
+    }
+
+    #[test]
+    fn a_detached_head_badge_becomes_the_first_pill_with_the_target_icon() {
+        let refs = merged_refs(&[
+            badge("HEAD", BadgeKind::Head),
+            badge("release/32", BadgeKind::LocalBranch),
+        ]);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].label, "HEAD");
+        let text = pill_text(&refs[0]);
+        assert!(text.contains('✓'), "the pill marks where you stand: {text}");
+        assert!(
+            text.contains(DETACHED_ICON),
+            "the pill carries the target icon: {text}"
+        );
+        assert!(!text.contains(LOCAL_ICON) && !text.contains(REMOTE_ICON));
     }
 
     #[test]
