@@ -223,7 +223,9 @@ fn dump(buffer: &Buffer) -> String {
 
 fn marker_row(buffer: &Buffer) -> Option<u16> {
     let area = buffer.area();
-    (0..area.height).find(|&y| buffer.cell((0, y)).unwrap().symbol() == "❯")
+    let panel_side = area.width / 2;
+    (0..area.height)
+        .find(|&y| (0..panel_side).any(|x| buffer.cell((x, y)).unwrap().symbol() == "❯"))
 }
 
 fn panel_marker_row(buffer: &Buffer) -> Option<u16> {
@@ -315,7 +317,7 @@ fn selection_starts_on_the_first_row() {
 
     let buffer = draw(&mut app, 80, 20);
 
-    assert_eq!(marker_row(&buffer), Some(0));
+    assert_eq!(marker_row(&buffer), Some(1));
 }
 
 #[test]
@@ -328,7 +330,7 @@ fn j_moves_the_selection_marker_down() {
     press(&mut app, &mut input, KeyCode::Char('j'));
     let buffer = draw(&mut app, 80, 20);
 
-    assert_eq!(marker_row(&buffer), Some(1));
+    assert_eq!(marker_row(&buffer), Some(2));
 }
 
 #[test]
@@ -341,7 +343,7 @@ fn capital_g_jumps_to_the_last_commit() {
     press(&mut app, &mut input, KeyCode::Char('G'));
     let buffer = draw(&mut app, 80, 20);
 
-    assert_eq!(marker_row(&buffer), Some(2));
+    assert_eq!(marker_row(&buffer), Some(3));
     assert_eq!(app.selected(), 2);
 }
 
@@ -357,7 +359,7 @@ fn gg_prefix_jumps_back_to_the_first_commit() {
     press(&mut app, &mut input, KeyCode::Char('g'));
     let buffer = draw(&mut app, 80, 20);
 
-    assert_eq!(marker_row(&buffer), Some(0));
+    assert_eq!(marker_row(&buffer), Some(1));
 }
 
 #[test]
@@ -408,14 +410,22 @@ fn esc_closes_the_detail_panel() {
 }
 
 #[test]
-fn head_badge_marks_the_checked_out_commit() {
+fn the_checked_out_commit_row_is_highlighted_in_teal() {
     let dir = TempDir::new().unwrap();
     fixture_repo(dir.path());
     let mut app = app_for(&dir);
 
-    let screen = dump(&draw(&mut app, 80, 20));
+    let buffer = draw(&mut app, 80, 20);
+    let screen = dump(&buffer);
 
-    assert!(screen.contains("HEAD"), "HEAD badge missing:\n{screen}");
+    let area = buffer.area();
+    let highlighted = (0..area.height).any(|y| {
+        (0..area.width).any(|x| buffer.cell((x, y)).unwrap().bg == Color::Rgb(13, 74, 80))
+    });
+    assert!(
+        highlighted,
+        "the checked-out commit row carries the teal highlight:\n{screen}"
+    );
 }
 
 #[test]
@@ -1654,7 +1664,7 @@ fn a_detached_checkout_reports_it() {
 }
 
 #[test]
-fn the_current_branch_shows_fused_with_head_on_the_graph() {
+fn the_current_branch_shows_checked_in_the_ref_rail() {
     let dir = TempDir::new().unwrap();
     fixture_repo(dir.path());
     let mut app = App::open(dir.path()).unwrap();
@@ -1662,8 +1672,8 @@ fn the_current_branch_shows_fused_with_head_on_the_graph() {
     let screen = dump(&draw(&mut app, 80, 20));
 
     assert!(
-        screen.contains("HEAD → main"),
-        "the checked-out branch should read as HEAD → main:\n{screen}"
+        screen.contains("✓ main"),
+        "the checked-out branch pill should read as ✓ main:\n{screen}"
     );
 }
 
@@ -2368,7 +2378,7 @@ fn dropping_a_branch_onto_head_opens_the_join_menu() {
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
 
-    drag_row_onto(&mut app, &mut input, 1, 0);
+    drag_row_onto(&mut app, &mut input, 2, 1);
 
     assert_eq!(
         app.meta().head_branch.as_deref(),
@@ -2389,7 +2399,7 @@ fn dropping_onto_another_branch_checks_it_out_first() {
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
 
-    drag_row_onto(&mut app, &mut input, 0, 1);
+    drag_row_onto(&mut app, &mut input, 1, 2);
 
     assert_eq!(
         app.meta().head_branch.as_deref(),
@@ -2410,7 +2420,7 @@ fn undo_reverts_the_integration_a_drop_produced() {
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
 
-    drag_row_onto(&mut app, &mut input, 1, 0);
+    drag_row_onto(&mut app, &mut input, 2, 1);
     assert!(
         app.join_menu().is_some(),
         "the drop should have opened the join menu"
@@ -2444,13 +2454,13 @@ fn releasing_on_the_same_row_selects_instead_of_dropping() {
         &mut app,
         &mut input,
         MouseEventKind::Down(MouseButton::Left),
-        1,
+        2,
     );
     mouse(
         &mut app,
         &mut input,
         MouseEventKind::Up(MouseButton::Left),
-        1,
+        2,
     );
 
     assert!(
@@ -2481,33 +2491,33 @@ fn pointer_targeting_accounts_for_the_wip_row() {
         &mut app,
         &mut input,
         MouseEventKind::Down(MouseButton::Left),
-        1,
+        2,
     );
     mouse(
         &mut app,
         &mut input,
         MouseEventKind::Up(MouseButton::Left),
-        1,
+        2,
     );
     assert_eq!(
         app.selected(),
         0,
-        "visible row 1 (below the WIP row) is the first commit"
+        "visible row 2 (below the WIP row and the header) is the first commit"
     );
 
     mouse(
         &mut app,
         &mut input,
         MouseEventKind::Down(MouseButton::Left),
-        2,
+        3,
     );
     mouse(
         &mut app,
         &mut input,
         MouseEventKind::Up(MouseButton::Left),
-        2,
+        3,
     );
-    assert_eq!(app.selected(), 1, "visible row 2 is the second commit");
+    assert_eq!(app.selected(), 1, "visible row 3 is the second commit");
 }
 
 #[test]
@@ -2517,7 +2527,7 @@ fn dragging_from_a_branchless_commit_does_nothing() {
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
 
-    drag_row_onto(&mut app, &mut input, 2, 0);
+    drag_row_onto(&mut app, &mut input, 3, 1);
 
     assert!(
         app.join_menu().is_none(),
@@ -2536,13 +2546,13 @@ fn the_drag_shows_a_ghost_over_the_target_row() {
         &mut app,
         &mut input,
         MouseEventKind::Down(MouseButton::Left),
-        1,
+        2,
     );
     mouse(
         &mut app,
         &mut input,
         MouseEventKind::Drag(MouseButton::Left),
-        0,
+        1,
     );
     let screen = dump(&draw(&mut app, 100, 28));
 
@@ -2559,9 +2569,9 @@ fn a_drop_whose_checkout_git_refuses_cancels_the_drop() {
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
 
-    // A WIP row sits at visible row 0 (dirty tree); feature is row 1, main (HEAD) row 2.
+    // A WIP row sits at visible row 0 and the header at row 1; feature is row 2, main (HEAD) row 3.
     assert!(app.has_wip());
-    drag_row_onto(&mut app, &mut input, 2, 1);
+    drag_row_onto(&mut app, &mut input, 3, 2);
 
     assert!(
         app.join_menu().is_none(),

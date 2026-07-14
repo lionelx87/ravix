@@ -18,6 +18,7 @@ notify = "8.2.0"
 ratatui = "0.30.2"
 similar = "3.1.1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

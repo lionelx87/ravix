@@ -1035,11 +1035,11 @@ impl App {
     }
 
     fn row_to_index(&self, visible: usize) -> Option<usize> {
-        let wip = self.has_wip() as usize;
-        if visible < wip {
+        let header_rows = self.has_wip() as usize + 1;
+        if visible < header_rows {
             return None;
         }
-        let index = self.offset + (visible - wip);
+        let index = self.offset + (visible - header_rows);
         (index < self.commits.len()).then_some(index)
     }
 

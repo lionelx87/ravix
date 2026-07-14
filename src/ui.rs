@@ -25,6 +25,8 @@ use crate::stash::StashPanel;
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
+mod graph_view;
+
 const SELECTION_MARKER: &str = "❯ ";
 const SPLIT_SEPARATOR: &str = " │ ";
 
@@ -128,11 +130,17 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
         width: graph_area.width,
         height: graph_area.height.saturating_sub(wip_rows),
     };
-    app.set_viewport(commit_area.height as usize);
+    app.set_viewport(commit_area.height.saturating_sub(1) as usize);
 
     render_graph(frame, app, &theme, commit_area, now);
     if let Some(menu) = app.join_menu() {
-        render_ghost_preview(frame, menu, &theme, commit_area);
+        let rows_area = Rect {
+            x: commit_area.x,
+            y: commit_area.y + 1,
+            width: commit_area.width,
+            height: commit_area.height.saturating_sub(1),
+        };
+        render_ghost_preview(frame, menu, &theme, rows_area);
     }
     if app.has_wip() {
         let wip_area = Rect {
@@ -348,136 +356,12 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
     if area.height == 0 {
         return;
     }
-    let commits = app.commits();
-    let rows = app.rows();
-    let offset = app.offset();
-    let selected = app.selected();
-
-    if commits.is_empty() {
+    if app.commits().is_empty() {
         let empty = Paragraph::new("No commits to show").style(Style::default().fg(theme.meta));
         frame.render_widget(empty, area);
         return;
     }
-
-    let badges = &app.meta().badges;
-    let drag = app.drag();
-    let buffer = frame.buffer_mut();
-
-    for row in 0..area.height as usize {
-        let index = offset + row;
-        if index >= commits.len() {
-            break;
-        }
-        let commit = &commits[index];
-        let graph_row = &rows[index];
-        let is_selected = index == selected && !app.on_wip();
-        let y = area.y + row as u16;
-
-        let mut spans = Vec::new();
-        spans.push(Span::styled(
-            if is_selected { SELECTION_MARKER } else { "  " },
-            Style::default().fg(theme.marker),
-        ));
-
-        for (column, glyph) in graph_row.glyphs.chars().enumerate() {
-            let key = if glyph == '●' {
-                Some(&graph_row.node_key)
-            } else {
-                graph_row.lane_keys.get(column / 2).and_then(Option::as_ref)
-            };
-            let color = key
-                .map(|key| lane_color(key, badges, theme))
-                .unwrap_or(theme.node);
-            spans.push(Span::styled(glyph.to_string(), Style::default().fg(color)));
-        }
-        spans.push(Span::raw("  "));
-
-        let celebration = app
-            .celebration()
-            .filter(|celebration| commit.id.to_string() == celebration.oid);
-        let celebrating = celebration.is_some();
-
-        if let Some(commit_badges) = badges.get(&commit.id) {
-            for badge in commit_badges {
-                let text = match badge.kind {
-                    BadgeKind::CurrentBranch => format!(" HEAD → {} ", badge.label),
-                    _ => format!(" {} ", badge.label),
-                };
-                let mut style = theme.badge_style(badge.kind);
-                let is_head = matches!(badge.kind, BadgeKind::CurrentBranch | BadgeKind::Head);
-                if is_head && celebrating {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-                spans.push(Span::styled(text, style));
-                spans.push(Span::raw(" "));
-            }
-        }
-
-        if let Some(burst) = celebration.filter(|celebration| celebration.sparkle) {
-            spans.push(Span::styled(
-                sparkle_burst(burst.progress),
-                Style::default().fg(theme.node).add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        spans.push(Span::styled(
-            commit.short_id.clone(),
-            Style::default().fg(theme.short_id),
-        ));
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            commit.summary.clone(),
-            Style::default().fg(theme.summary),
-        ));
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!(
-                "{} · {}",
-                commit.author_name,
-                relative_time(now, commit.time)
-            ),
-            Style::default().fg(theme.meta),
-        ));
-
-        if let Some((source, _, hover)) = drag
-            && index == hover
-        {
-            spans.push(Span::styled(
-                format!("   ⟵ drop {source}"),
-                Style::default()
-                    .fg(theme.head_badge)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        buffer.set_line(area.x, y, &Line::from(spans), area.width);
-
-        let highlight = Rect {
-            x: area.x,
-            y,
-            width: area.width,
-            height: 1,
-        };
-        if is_selected {
-            buffer.set_style(
-                highlight,
-                Style::default()
-                    .bg(theme.selection_bg)
-                    .add_modifier(Modifier::BOLD),
-            );
-        }
-        if drag.is_some_and(|(_, source_row, _)| source_row == index) {
-            buffer.set_style(
-                highlight,
-                Style::default()
-                    .bg(theme.selection_bg)
-                    .add_modifier(Modifier::DIM),
-            );
-        }
-        if drag.is_some_and(|(_, _, hover)| hover == index) {
-            buffer.set_style(highlight, Style::default().bg(theme.add_emph_bg));
-        }
-    }
+    graph_view::render(frame, app, theme, area, now);
 }
 
 fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
