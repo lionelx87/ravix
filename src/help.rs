@@ -54,7 +54,7 @@ const GRAPH: &[(&str, &str)] = &[
     ("j / k", "select next / previous commit"),
     ("gg / G", "jump to first / last"),
     ("Enter", "open commit detail panel"),
-    ("Space", "checkout the selected commit"),
+    ("Space", "checkout commit (detached HEAD if no branch)"),
     ("M", "join: merge / cherry-pick / rebase"),
     ("f / p / P", "fetch / pull / push"),
     ("s / S", "stash changes / stash list"),
