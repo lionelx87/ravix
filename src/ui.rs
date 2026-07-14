@@ -988,7 +988,14 @@ fn render_help(frame: &mut Frame, context: InputContext, theme: &Theme, area: Re
     lines.push(Line::from(""));
     lines.push(help_line(universal.0, universal.1));
 
-    let width = 46u16.min(area.width);
+    let content_width = page
+        .bindings
+        .iter()
+        .chain(std::iter::once(&universal))
+        .map(|(keys, description)| 1 + keys.chars().count().max(12) + description.chars().count())
+        .max()
+        .unwrap_or(44);
+    let width = (content_width as u16 + 3).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,

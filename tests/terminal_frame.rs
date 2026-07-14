@@ -504,6 +504,10 @@ fn question_mark_toggles_the_help_overlay() {
 
     assert!(screen.contains("Help"), "help title missing:\n{screen}");
     assert!(screen.contains("quit"), "help binding missing:\n{screen}");
+    assert!(
+        screen.contains("(detached HEAD if no branch)"),
+        "the overlay is wide enough for its longest description:\n{screen}"
+    );
 }
 
 fn dirty_repo(dir: &Path) {
