@@ -206,10 +206,7 @@ fn rail_cell(
     } else {
         String::new()
     };
-    let pill = clip(
-        &pill_text(reference),
-        rail_width.saturating_sub(display_width(&extra)),
-    );
+    let pill = fitted_pill(reference, rail_width.saturating_sub(display_width(&extra)));
     let pad = rail_width.saturating_sub(display_width(&pill) + display_width(&extra));
     let mut pill_style = if is_head {
         Style::default()
@@ -336,11 +333,15 @@ fn merged_refs(list: &[RefBadge]) -> Vec<MergedRef> {
 }
 
 fn pill_text(reference: &MergedRef) -> String {
+    pill_text_with(&reference.label, reference)
+}
+
+fn pill_text_with(label: &str, reference: &MergedRef) -> String {
     let mut text = String::from(" ");
     if matches!(reference.kind, BadgeKind::CurrentBranch) {
         text.push_str("✓ ");
     }
-    text.push_str(&reference.label);
+    text.push_str(label);
     text.push(' ');
     if reference.local {
         text.push(LOCAL_ICON);
@@ -353,6 +354,16 @@ fn pill_text(reference: &MergedRef) -> String {
     }
     text.push(' ');
     text
+}
+
+fn fitted_pill(reference: &MergedRef, max_width: usize) -> String {
+    let natural = pill_text(reference);
+    if display_width(&natural) <= max_width {
+        return natural;
+    }
+    let overhead = display_width(&natural) - display_width(&reference.label);
+    let label = clip(&reference.label, max_width.saturating_sub(overhead));
+    pill_text_with(&label, reference)
 }
 
 fn display_width(text: &str) -> usize {
@@ -437,6 +448,28 @@ mod tests {
         let text = pill_text(&refs[0]);
         assert!(!text.contains(LOCAL_ICON));
         assert!(text.contains(REMOTE_ICON));
+    }
+
+    #[test]
+    fn a_long_branch_name_is_clipped_before_the_icons() {
+        let refs = merged_refs(&[
+            badge("bugfix/MB2C-5916-google-types", BadgeKind::LocalBranch),
+            badge("origin/bugfix/MB2C-5916-google-types", BadgeKind::Upstream),
+        ]);
+        let pill = fitted_pill(&refs[0], 20);
+        assert_eq!(display_width(&pill), 20);
+        assert!(pill.contains('…'), "the name carries the ellipsis: {pill}");
+        assert!(
+            pill.ends_with(&format!("{LOCAL_ICON} {REMOTE_ICON} ")),
+            "the icons survive the clipping: {pill}"
+        );
+    }
+
+    #[test]
+    fn a_short_branch_name_keeps_its_natural_pill() {
+        let refs = merged_refs(&[badge("main", BadgeKind::LocalBranch)]);
+        let pill = fitted_pill(&refs[0], 20);
+        assert_eq!(pill, format!(" main {LOCAL_ICON} "));
     }
 
     #[test]
