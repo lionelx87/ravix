@@ -1664,6 +1664,36 @@ fn a_detached_checkout_reports_it() {
 }
 
 #[test]
+fn selecting_a_commit_with_extra_refs_expands_them_below_the_rail() {
+    let dir = TempDir::new().unwrap();
+    two_commit_repo(dir.path());
+    git_run(dir.path(), &["branch", "twin"]);
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    let selected = dump(&draw(&mut app, 80, 20));
+    assert!(
+        selected.contains("+1"),
+        "the extra ref shows as a +1 counter:\n{selected}"
+    );
+    assert!(
+        selected.contains("twin"),
+        "the extra ref expands below the rail while its commit is selected:\n{selected}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    let moved = dump(&draw(&mut app, 80, 20));
+    assert!(
+        moved.contains("+1"),
+        "the +1 counter stays when the selection moves away:\n{moved}"
+    );
+    assert!(
+        !moved.contains("twin"),
+        "the expansion collapses when the selection moves away:\n{moved}"
+    );
+}
+
+#[test]
 fn the_current_branch_shows_checked_in_the_ref_rail() {
     let dir = TempDir::new().unwrap();
     fixture_repo(dir.path());

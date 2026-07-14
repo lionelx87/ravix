@@ -15,6 +15,7 @@ use crate::graph::GraphRow;
 use super::{SELECTION_MARKER, Theme, lane_color, relative_time, sparkle_burst};
 
 const ZEBRA_BG: Color = Color::Rgb(26, 30, 40);
+const EXPANDED_REFS_BG: Color = Color::Rgb(36, 44, 58);
 const RAIL_RULE: Color = Color::Rgb(62, 68, 84);
 const HEAD_ROW_BG: Color = Color::Rgb(13, 74, 80);
 const LOCAL_ICON: char = '\u{f0322}';
@@ -157,6 +158,55 @@ pub(super) fn render(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, no
         ));
 
         buffer.set_line(area.x, y, &Line::from(spans), area.width);
+    }
+
+    if !app.on_wip() {
+        render_expanded_refs(buffer, app, theme, area, rail_width);
+    }
+}
+
+fn render_expanded_refs(
+    buffer: &mut ratatui::buffer::Buffer,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    rail_width: usize,
+) {
+    let commits = app.commits();
+    let offset = app.offset();
+    let selected = app.selected();
+    let visible_rows = area.height as usize - 1;
+    if selected < offset || selected >= offset + visible_rows {
+        return;
+    }
+    let Some(list) = app.meta().badges.get(&commits[selected].id) else {
+        return;
+    };
+    let refs = merged_refs(list);
+    if refs.len() < 2 {
+        return;
+    }
+
+    let selected_y = area.y + 1 + (selected - offset) as u16;
+    for (position, reference) in refs[1..].iter().enumerate() {
+        let y = selected_y + 1 + position as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        let cell = Rect {
+            x: area.x,
+            y,
+            width: rail_width as u16,
+            height: 1,
+        };
+        buffer.set_style(cell, Style::default().bg(EXPANDED_REFS_BG));
+        let pill = fitted_pill(reference, rail_width);
+        let pad = rail_width.saturating_sub(display_width(&pill));
+        let spans = vec![
+            Span::raw(" ".repeat(pad)),
+            Span::styled(pill, theme.badge_style(reference.kind)),
+        ];
+        buffer.set_line(area.x, y, &Line::from(spans), rail_width as u16);
     }
 }
 
