@@ -172,6 +172,7 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
             panel,
             app.visibility(),
             app.branch_filter_query(),
+            app.branch_filter_editing(),
             &theme,
             graph_area,
         );
@@ -575,12 +576,25 @@ fn render_branch_panel(
     panel: &BranchPanel,
     visibility: &Visibility,
     filter: Option<&str>,
+    filter_editing: bool,
     theme: &Theme,
     area: Rect,
 ) {
     let title = match filter {
-        Some(query) => format!(" Branches   /{query}▏"),
+        Some(query) if filter_editing => format!(" Branches   /{query}▏"),
+        Some(query) => format!(" Branches   /{query} "),
         None => " Branches ".to_string(),
+    };
+    let hints: &[&str] = if filter_editing {
+        &[
+            "↑/↓ move · ↵ apply filter (keys act on matches)",
+            "Esc cancel filter",
+        ]
+    } else {
+        &[
+            "↵ checkout · n new · d delete · M join",
+            "Space hide · o solo/all · p pin · / filter",
+        ]
     };
     render_slide_list(
         frame,
@@ -590,10 +604,7 @@ fn render_branch_panel(
         SlideList {
             title: &title,
             empty: "no matching branches",
-            hints: &[
-                "↵ checkout · n new · d delete · M join",
-                "Space hide · o solo/all · p pin · / filter",
-            ],
+            hints,
             fraction: 0.4,
             min_width: 40.0,
         },

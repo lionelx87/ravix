@@ -221,6 +221,8 @@ fn on_branch_filter_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Enter => Some(Action::BranchFilterSubmit),
         KeyCode::Backspace => Some(Action::BranchFilterBackspace),
         KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
         KeyCode::Char(character) if !ctrl => Some(Action::BranchFilterInput(character)),
         _ => None,
     }

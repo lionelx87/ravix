@@ -1203,6 +1203,59 @@ fn slash_filters_the_branch_list_to_matches() {
 }
 
 #[test]
+fn a_submitted_filter_keeps_branch_actions_available() {
+    let dir = TempDir::new().unwrap();
+    three_branch_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    for ch in "alp".chars() {
+        press(&mut app, &mut input, KeyCode::Char(ch));
+    }
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Char('o'));
+    press(&mut app, &mut input, KeyCode::Esc);
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    let after = dump(&draw(&mut app, 100, 24));
+    assert!(
+        after.contains("Alpha work"),
+        "the soloed filtered branch keeps its commit:\n{after}"
+    );
+    assert!(
+        !after.contains("Beta work"),
+        "solo applied from the filtered list hides the other branch:\n{after}"
+    );
+}
+
+#[test]
+fn arrow_keys_move_the_selection_while_typing_a_filter() {
+    let dir = TempDir::new().unwrap();
+    three_branch_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    press(&mut app, &mut input, KeyCode::Char('a'));
+    let before = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker while editing");
+
+    press(&mut app, &mut input, KeyCode::Down);
+    let after = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker after Down");
+
+    assert_eq!(
+        after,
+        before + 1,
+        "Down moves the selection through the matches while the filter is being typed"
+    );
+}
+
+#[test]
 fn esc_clears_a_submitted_filter_and_restores_the_full_list() {
     let dir = TempDir::new().unwrap();
     fixture_repo(dir.path());

@@ -74,7 +74,7 @@ const BRANCH: &[(&str, &str)] = &[
     ("Space", "hide / show in the graph"),
     ("o", "solo (again to show all)"),
     ("p", "pin (survives solo)"),
-    ("/", "fuzzy filter the list"),
+    ("/", "fuzzy filter (↵ applies, keys act on matches)"),
 ];
 
 const WORKING: &[(&str, &str)] = &[

@@ -509,6 +509,12 @@ impl App {
             .map(|filter| filter.query.as_str())
     }
 
+    pub fn branch_filter_editing(&self) -> bool {
+        self.branch_filter
+            .as_ref()
+            .is_some_and(|filter| filter.editing)
+    }
+
     pub fn focus_panel(&self) -> Option<&FocusPanel> {
         self.focus_panel.as_ref()
     }
