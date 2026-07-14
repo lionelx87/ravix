@@ -1568,6 +1568,38 @@ fn deleting_the_current_branch_is_blocked() {
 }
 
 #[test]
+fn hiding_a_merged_branch_removes_its_pill_but_keeps_the_commit() {
+    let dir = TempDir::new().unwrap();
+    delete_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    let before = dump(&draw(&mut app, 100, 24));
+    assert!(
+        before.contains("stale"),
+        "the merged branch pill shows while visible:\n{before}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+
+    let after = dump(&draw(&mut app, 100, 24));
+    assert!(
+        after.contains("one"),
+        "the merged commit stays — it belongs to main's history:\n{after}"
+    );
+    assert!(
+        !after.contains("stale"),
+        "the hidden branch's pill is gone from the rail:\n{after}"
+    );
+}
+
+#[test]
 fn undo_recreates_a_deleted_branch() {
     let dir = TempDir::new().unwrap();
     delete_repo(dir.path());

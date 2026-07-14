@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::App;
 use crate::git::{BadgeKind, RefBadge};
 use crate::graph::GraphRow;
+use crate::visibility::Visibility;
 
 use super::{SELECTION_MARKER, Theme, lane_color, relative_time, sparkle_burst};
 
@@ -47,7 +48,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, no
         .max()
         .unwrap_or(2)
         .clamp(2, GRAPH_MAX);
-    let rail_width = rail_width(commits.iter().map(|commit| commit.id), badges);
+    let rail_width = rail_width(app);
     let marker_width = SELECTION_MARKER.chars().count();
     let fixed = rail_width
         + RAIL_SEPARATOR.chars().count()
@@ -122,7 +123,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, no
 
         let mut spans = Vec::new();
         spans.extend(rail_cell(
-            commit_badges,
+            &rail_refs(app, &commit.id),
             rail_width,
             is_head,
             celebration.is_some(),
@@ -180,10 +181,7 @@ fn render_expanded_refs(
     if selected < offset || selected >= offset + visible_rows {
         return;
     }
-    let Some(list) = app.meta().badges.get(&commits[selected].id) else {
-        return;
-    };
-    let refs = merged_refs(list);
+    let refs = rail_refs(app, &commits[selected].id);
     if refs.len() < 2 {
         return;
     }
@@ -224,11 +222,39 @@ fn header(rail_width: usize, graph_width: usize, message_width: usize) -> String
     header
 }
 
-fn rail_width(commits: impl Iterator<Item = Oid>, badges: &HashMap<Oid, Vec<RefBadge>>) -> usize {
-    commits
-        .filter_map(|oid| badges.get(&oid))
-        .filter_map(|list| {
-            let refs = merged_refs(list);
+fn rail_refs(app: &App, oid: &Oid) -> Vec<MergedRef> {
+    let Some(list) = app.meta().badges.get(oid) else {
+        return Vec::new();
+    };
+    let visibility = app.visibility();
+    let head_branch = app.meta().head_branch.as_deref();
+    let visible: Vec<RefBadge> = list
+        .iter()
+        .filter(|badge| badge_is_visible(badge, visibility, head_branch))
+        .cloned()
+        .collect();
+    merged_refs(&visible)
+}
+
+fn badge_is_visible(badge: &RefBadge, visibility: &Visibility, head_branch: Option<&str>) -> bool {
+    match badge.kind {
+        BadgeKind::Head | BadgeKind::CurrentBranch => true,
+        BadgeKind::LocalBranch => visibility.is_visible(&badge.label, false),
+        BadgeKind::Upstream => {
+            let local = badge
+                .label
+                .split_once('/')
+                .map_or(badge.label.as_str(), |(_, rest)| rest);
+            visibility.is_visible(local, head_branch == Some(local))
+        }
+    }
+}
+
+fn rail_width(app: &App) -> usize {
+    app.commits()
+        .iter()
+        .filter_map(|commit| {
+            let refs = rail_refs(app, &commit.id);
             let first = display_width(&pill_text(refs.first()?));
             let extra = if refs.len() > 1 { 3 } else { 0 };
             Some(first + extra)
@@ -239,15 +265,12 @@ fn rail_width(commits: impl Iterator<Item = Oid>, badges: &HashMap<Oid, Vec<RefB
 }
 
 fn rail_cell(
-    commit_badges: Option<&Vec<RefBadge>>,
+    refs: &[MergedRef],
     rail_width: usize,
     is_head: bool,
     celebrating: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let refs = commit_badges
-        .map(|list| merged_refs(list))
-        .unwrap_or_default();
     let Some(reference) = refs.first() else {
         return vec![Span::raw(" ".repeat(rail_width))];
     };
@@ -518,6 +541,30 @@ mod tests {
         let text = pill_text(&refs[0]);
         assert!(!text.contains(LOCAL_ICON));
         assert!(text.contains(REMOTE_ICON));
+    }
+
+    #[test]
+    fn hidden_branch_badges_are_filtered_along_with_their_upstreams() {
+        let mut visibility = Visibility::default();
+        visibility.toggle("stale");
+
+        let hidden_local = badge("stale", BadgeKind::LocalBranch);
+        let hidden_upstream = badge("origin/stale", BadgeKind::Upstream);
+        let current = badge("main", BadgeKind::CurrentBranch);
+        let current_upstream = badge("origin/main", BadgeKind::Upstream);
+
+        assert!(!badge_is_visible(&hidden_local, &visibility, Some("main")));
+        assert!(!badge_is_visible(
+            &hidden_upstream,
+            &visibility,
+            Some("main")
+        ));
+        assert!(badge_is_visible(&current, &visibility, Some("main")));
+        assert!(badge_is_visible(
+            &current_upstream,
+            &visibility,
+            Some("main")
+        ));
     }
 
     #[test]
