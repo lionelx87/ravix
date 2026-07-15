@@ -392,12 +392,17 @@ fn merged_refs(list: &[RefBadge]) -> Vec<MergedRef> {
             remote: false,
         });
     }
-    for badge in list.iter().filter(|badge| {
-        matches!(
-            badge.kind,
-            BadgeKind::CurrentBranch | BadgeKind::LocalBranch
-        )
-    }) {
+    let mut branches: Vec<&RefBadge> = list
+        .iter()
+        .filter(|badge| {
+            matches!(
+                badge.kind,
+                BadgeKind::CurrentBranch | BadgeKind::LocalBranch
+            )
+        })
+        .collect();
+    branches.sort_by_key(|badge| !matches!(badge.kind, BadgeKind::CurrentBranch));
+    for badge in branches {
         let paired = upstreams
             .iter()
             .position(|upstream| upstream.ends_with(&format!("/{}", badge.label)));
@@ -565,6 +570,18 @@ mod tests {
             &visibility,
             Some("main")
         ));
+    }
+
+    #[test]
+    fn the_current_branch_becomes_the_first_pill_over_other_locals() {
+        let refs = merged_refs(&[
+            badge("develop", BadgeKind::LocalBranch),
+            badge("origin/develop", BadgeKind::Upstream),
+            badge("feature/CP-9365", BadgeKind::CurrentBranch),
+        ]);
+        assert_eq!(refs[0].label, "feature/CP-9365");
+        assert!(matches!(refs[0].kind, BadgeKind::CurrentBranch));
+        assert_eq!(refs[1].label, "develop");
     }
 
     #[test]
