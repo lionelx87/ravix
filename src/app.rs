@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use git2::Oid;
 
-use crate::askpass::{AskpassConfig, AskpassRequest, AskpassServer, PromptKind, parse_askpass_prompt};
+use crate::askpass::{
+    AskpassConfig, AskpassRequest, AskpassServer, CredentialCache, PromptKind, parse_askpass_prompt,
+};
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
 use crate::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
@@ -369,6 +371,7 @@ pub struct App {
     askpass_sock: Option<PathBuf>,
     askpass_requests: Option<mpsc::Receiver<AskpassRequest>>,
     askpass_cancelled: bool,
+    credentials: CredentialCache,
     password: Option<PasswordPrompt>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
@@ -443,6 +446,7 @@ impl App {
             askpass_sock: None,
             askpass_requests: None,
             askpass_cancelled: false,
+            credentials: CredentialCache::default(),
             password: None,
             branch_create: None,
             commit: None,
@@ -1481,6 +1485,10 @@ impl App {
             return;
         };
         let prompt = parse_askpass_prompt(request.prompt());
+        if let Some(value) = self.credentials.get(&prompt.host, prompt.kind) {
+            request.answer(value.to_string());
+            return;
+        }
         self.password = Some(PasswordPrompt {
             kind: prompt.kind,
             host: prompt.host,
@@ -1505,6 +1513,8 @@ impl App {
         let Some(prompt) = self.password.take() else {
             return;
         };
+        self.credentials
+            .store(&prompt.host, prompt.kind, prompt.input.clone());
         prompt.request.answer(prompt.input);
     }
 

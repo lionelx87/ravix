@@ -13,10 +13,27 @@ pub struct AskpassConfig {
     pub socket: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PromptKind {
     Username,
     Password,
+}
+
+#[derive(Default)]
+pub struct CredentialCache {
+    entries: std::collections::HashMap<(String, PromptKind), String>,
+}
+
+impl CredentialCache {
+    pub fn get(&self, host: &str, kind: PromptKind) -> Option<&str> {
+        self.entries
+            .get(&(host.to_string(), kind))
+            .map(String::as_str)
+    }
+
+    pub fn store(&mut self, host: &str, kind: PromptKind, value: String) {
+        self.entries.insert((host.to_string(), kind), value);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
