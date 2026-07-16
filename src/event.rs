@@ -37,6 +37,7 @@ impl InputMap {
             InputContext::Conflict => on_conflict_key(key),
             InputContext::Stash => on_stash_key(key),
             InputContext::Palette => on_palette_key(key),
+            InputContext::Password => on_password_key(key),
         }
     }
 
@@ -137,6 +138,17 @@ fn on_commit_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Backspace => Some(Action::CommitBackspace),
         KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char(character) if !ctrl => Some(Action::CommitInput(character)),
+        _ => None,
+    }
+}
+
+fn on_password_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::PasswordSubmit),
+        KeyCode::Backspace => Some(Action::PasswordBackspace),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char(character) if !ctrl => Some(Action::PasswordInput(character)),
         _ => None,
     }
 }

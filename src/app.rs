@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use git2::Oid;
 
+use crate::askpass::{AskpassConfig, AskpassRequest, AskpassServer, PromptKind, parse_askpass_prompt};
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
 use crate::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
@@ -110,6 +111,9 @@ pub enum Action {
     PaletteInput(char),
     PaletteBackspace,
     PaletteSubmit,
+    PasswordInput(char),
+    PasswordBackspace,
+    PasswordSubmit,
     CycleCelebrations,
     Undo,
     Reload,
@@ -135,6 +139,7 @@ pub enum InputContext {
     Conflict,
     Stash,
     Palette,
+    Password,
 }
 
 pub struct Panel {
@@ -237,6 +242,38 @@ struct Notice {
     error: bool,
 }
 
+pub struct PasswordPrompt {
+    kind: PromptKind,
+    host: String,
+    input: String,
+    request: AskpassRequest,
+}
+
+impl PasswordPrompt {
+    pub fn masked(&self) -> bool {
+        self.kind == PromptKind::Password
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self.kind {
+            PromptKind::Username => "Username",
+            PromptKind::Password => "Password",
+        }
+    }
+
+    pub fn shown(&self) -> String {
+        if self.masked() {
+            "•".repeat(self.input.chars().count())
+        } else {
+            self.input.clone()
+        }
+    }
+}
+
 const COMMANDS: &[(&str, &str, Action)] = &[
     ("Fetch", "f", Action::Fetch),
     ("Pull", "p", Action::Pull),
@@ -329,6 +366,10 @@ pub struct App {
     drag: Option<DragState>,
     stash: Option<StashPanel>,
     remote: Option<RemoteJob>,
+    askpass_sock: Option<PathBuf>,
+    askpass_requests: Option<mpsc::Receiver<AskpassRequest>>,
+    askpass_cancelled: bool,
+    password: Option<PasswordPrompt>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
     confirm: Option<Confirm>,
@@ -399,6 +440,10 @@ impl App {
             drag: None,
             stash: None,
             remote: None,
+            askpass_sock: None,
+            askpass_requests: None,
+            askpass_cancelled: false,
+            password: None,
             branch_create: None,
             commit: None,
             confirm: None,
@@ -550,6 +595,10 @@ impl App {
         self.palette.as_ref()
     }
 
+    pub fn password_prompt(&self) -> Option<&PasswordPrompt> {
+        self.password.as_ref()
+    }
+
     pub fn drag(&self) -> Option<(&str, usize, usize)> {
         let drag = self.drag.as_ref()?;
         let source = drag.source_branch.as_deref()?;
@@ -630,7 +679,9 @@ impl App {
     }
 
     pub fn input_context(&self) -> InputContext {
-        if self.alert.is_some() {
+        if self.password.is_some() {
+            InputContext::Password
+        } else if self.alert.is_some() {
             InputContext::Alert
         } else if self.palette.is_some() {
             InputContext::Palette
@@ -742,6 +793,9 @@ impl App {
             Action::CommitInput(character) => self.commit_input(character),
             Action::CommitBackspace => self.commit_backspace(),
             Action::CommitSubmit => self.commit_submit(),
+            Action::PasswordInput(character) => self.password_input(character),
+            Action::PasswordBackspace => self.password_backspace(),
+            Action::PasswordSubmit => self.password_submit(),
             Action::ConfirmYes => self.confirm_yes(),
             Action::ConfirmNo => self.confirm = None,
             Action::ToggleBranches => self.toggle_branches(),
@@ -1335,9 +1389,13 @@ impl App {
             .workdir()
             .unwrap_or_else(|| self.repo.git_dir())
             .to_path_buf();
+        let askpass = self.askpass_config();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let cli = GitCli::new(workdir);
+            let mut cli = GitCli::new(workdir);
+            if let Some(config) = askpass {
+                cli = cli.with_askpass(config);
+            }
             let _ = tx.send(op(&cli));
         });
         self.remote = Some(RemoteJob {
@@ -1356,6 +1414,7 @@ impl App {
             Ok(result) => {
                 let on_complete = job.on_complete;
                 self.remote = None;
+                let cancelled = std::mem::take(&mut self.askpass_cancelled);
                 match result {
                     Ok(()) => {
                         self.reload();
@@ -1370,7 +1429,10 @@ impl App {
                     }
                     Err(error) => {
                         let text = error.to_string();
-                        if matches!(on_complete, OnComplete::Push) && is_non_fast_forward(&text) {
+                        if cancelled {
+                            self.info("Authentication cancelled".to_string());
+                        } else if matches!(on_complete, OnComplete::Push) && is_non_fast_forward(&text)
+                        {
                             self.confirm = Some(Confirm {
                                 message:
                                     "Push rejected — remote has moved. Force-with-lease? (y/n)"
@@ -1389,6 +1451,69 @@ impl App {
                 self.fail("Remote operation failed".to_string());
             }
         }
+    }
+
+    fn askpass_config(&mut self) -> Option<AskpassConfig> {
+        let socket = self.ensure_askpass()?;
+        let helper = std::env::current_exe().ok()?;
+        Some(AskpassConfig { helper, socket })
+    }
+
+    fn ensure_askpass(&mut self) -> Option<PathBuf> {
+        if let Some(socket) = &self.askpass_sock {
+            return Some(socket.clone());
+        }
+        let server = AskpassServer::bind().ok()?;
+        let socket = server.path().to_path_buf();
+        self.askpass_sock = Some(socket.clone());
+        self.askpass_requests = Some(server.into_requests());
+        Some(socket)
+    }
+
+    pub fn poll_askpass(&mut self) {
+        if self.password.is_some() {
+            return;
+        }
+        let Some(requests) = &self.askpass_requests else {
+            return;
+        };
+        let Ok(request) = requests.try_recv() else {
+            return;
+        };
+        let prompt = parse_askpass_prompt(request.prompt());
+        self.password = Some(PasswordPrompt {
+            kind: prompt.kind,
+            host: prompt.host,
+            input: String::new(),
+            request,
+        });
+    }
+
+    fn password_input(&mut self, character: char) {
+        if let Some(prompt) = &mut self.password {
+            prompt.input.push(character);
+        }
+    }
+
+    fn password_backspace(&mut self) {
+        if let Some(prompt) = &mut self.password {
+            prompt.input.pop();
+        }
+    }
+
+    fn password_submit(&mut self) {
+        let Some(prompt) = self.password.take() else {
+            return;
+        };
+        prompt.request.answer(prompt.input);
+    }
+
+    fn password_cancel(&mut self) {
+        let Some(prompt) = self.password.take() else {
+            return;
+        };
+        prompt.request.answer(String::new());
+        self.askpass_cancelled = true;
     }
 
     fn open_or_expand(&mut self) {
@@ -1482,7 +1607,9 @@ impl App {
     }
 
     fn dismiss(&mut self) {
-        if self.focus_name.is_some() {
+        if self.password.is_some() {
+            self.password_cancel();
+        } else if self.focus_name.is_some() {
             self.focus_name = None;
         } else if self.branch_filter.is_some() {
             self.branch_filter = None;

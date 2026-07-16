@@ -17,6 +17,10 @@ const FRAME_POLL: Duration = Duration::from_millis(16);
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
 fn main() -> io::Result<()> {
+    if let Some(prompt) = ravix::askpass::helper_prompt() {
+        std::process::exit(i32::from(ravix::askpass::run_helper(&prompt).is_err()));
+    }
+
     let app = match App::open(".") {
         Ok(app) => app,
         Err(error) => {
@@ -88,6 +92,7 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         }
 
         app.poll_remote();
+        app.poll_askpass();
 
         if watcher.as_ref().is_some_and(RepoWatcher::changed) {
             app.update(Action::Reload);

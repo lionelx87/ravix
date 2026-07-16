@@ -1,4 +1,5 @@
 pub mod app;
+pub mod askpass;
 pub mod branches;
 pub mod celebrate;
 pub mod conflict;

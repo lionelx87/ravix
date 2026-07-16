@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::askpass::AskpassConfig;
 use crate::join::MergeTreeResult;
 use crate::stash::{StashEntry, parse_stash_list};
 
@@ -23,13 +24,20 @@ impl fmt::Display for MutationError {
 
 pub struct GitCli {
     workdir: PathBuf,
+    askpass: Option<AskpassConfig>,
 }
 
 impl GitCli {
     pub fn new(workdir: impl AsRef<Path>) -> Self {
         Self {
             workdir: workdir.as_ref().to_path_buf(),
+            askpass: None,
         }
+    }
+
+    pub fn with_askpass(mut self, config: AskpassConfig) -> Self {
+        self.askpass = Some(config);
+        self
     }
 
     pub fn stage_file(&self, path: &str) -> Result<(), MutationError> {
@@ -243,7 +251,13 @@ impl GitCli {
         command
             .current_dir(&self.workdir)
             .env("GIT_TERMINAL_PROMPT", "0")
-            .args(args)
+            .args(args);
+        if let Some(config) = &self.askpass {
+            command
+                .env("GIT_ASKPASS", &config.helper)
+                .env(crate::askpass::SOCK_ENV, &config.socket);
+        }
+        command
             .stdin(if stdin.is_some() {
                 Stdio::piped()
             } else {

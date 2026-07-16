@@ -11,7 +11,7 @@ use syntect::parsing::SyntaxReference;
 
 use crate::app::{
     App, BranchCreate, CommitEditor, Confirm, FocusPanel, InputContext, Palette, Panel,
-    SubmodulePanel,
+    PasswordPrompt, SubmodulePanel,
 };
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
@@ -212,6 +212,9 @@ pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
     }
     if app.help_visible() {
         render_help(frame, app.input_context(), &theme, area);
+    }
+    if let Some(prompt) = app.password_prompt() {
+        render_password_prompt(frame, prompt, &theme, area);
     }
 }
 
@@ -1699,6 +1702,34 @@ fn render_commit_editor(frame: &mut Frame, editor: &CommitEditor, theme: &Theme,
         Span::styled("█", Style::default().fg(theme.branch_badge)),
     ]);
     frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_password_prompt(frame: &mut Frame, prompt: &PasswordPrompt, theme: &Theme, area: Rect) {
+    let width = 60u16.min(area.width);
+    let height = 5u16.min(area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.warn))
+        .title(" Authentication required   [Enter] submit · [Esc] cancel ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let host = Line::from(Span::styled(
+        prompt.host().to_string(),
+        Style::default().fg(theme.meta),
+    ));
+    let field = Line::from(vec![
+        Span::styled(
+            format!("{}: ", prompt.label()),
+            Style::default().fg(theme.summary),
+        ),
+        Span::styled(prompt.shown(), Style::default().fg(theme.node)),
+        Span::styled("█", Style::default().fg(theme.branch_badge)),
+    ]);
+    frame.render_widget(Paragraph::new(vec![host, field]), inner);
 }
 
 fn render_focus_panel(frame: &mut Frame, panel: &FocusPanel, theme: &Theme, area: Rect) {
