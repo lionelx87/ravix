@@ -34,6 +34,10 @@ impl CredentialCache {
     pub fn store(&mut self, host: &str, kind: PromptKind, value: String) {
         self.entries.insert((host.to_string(), kind), value);
     }
+
+    pub fn invalidate(&mut self, host: &str) {
+        self.entries.retain(|(entry_host, _), _| entry_host != host);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

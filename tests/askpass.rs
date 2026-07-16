@@ -4,6 +4,7 @@ use std::thread;
 use ravix::askpass::{
     CredentialCache, PromptKind, handle_connection, parse_askpass_prompt, request_credential,
 };
+use ravix::remote::is_auth_failure;
 use tempfile::tempdir;
 
 #[test]
@@ -75,6 +76,44 @@ fn the_cache_key_separates_hosts_and_kinds() {
         Some("pass")
     );
     assert_eq!(cache.get("https://github.com", PromptKind::Password), None);
+}
+
+#[test]
+fn invalidating_a_host_forgets_all_its_kinds_but_leaves_other_hosts() {
+    let mut cache = CredentialCache::default();
+    cache.store("https://dev.azure.com", PromptKind::Username, "user".to_string());
+    cache.store("https://dev.azure.com", PromptKind::Password, "pass".to_string());
+    cache.store("https://github.com", PromptKind::Password, "ghp".to_string());
+
+    cache.invalidate("https://dev.azure.com");
+
+    assert_eq!(cache.get("https://dev.azure.com", PromptKind::Username), None);
+    assert_eq!(cache.get("https://dev.azure.com", PromptKind::Password), None);
+    assert_eq!(
+        cache.get("https://github.com", PromptKind::Password),
+        Some("ghp")
+    );
+}
+
+#[test]
+fn authentication_failures_are_recognised() {
+    assert!(is_auth_failure(
+        "fatal: Authentication failed for 'https://dev.azure.com/org/_git/repo'"
+    ));
+    assert!(is_auth_failure("remote: Invalid username or password"));
+    assert!(is_auth_failure(
+        "fatal: could not read Password for 'https://x': terminal prompts disabled"
+    ));
+}
+
+#[test]
+fn unrelated_failures_are_not_authentication_failures() {
+    assert!(!is_auth_failure(
+        "fatal: unable to access '...': Could not resolve host: dev.azure.com"
+    ));
+    assert!(!is_auth_failure(
+        " ! [rejected] main -> main (non-fast-forward)"
+    ));
 }
 
 #[test]

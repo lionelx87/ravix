@@ -29,6 +29,15 @@ pub fn is_non_fast_forward(error: &str) -> bool {
         || error.contains("Updates were rejected")
 }
 
+pub fn is_auth_failure(error: &str) -> bool {
+    error.contains("Authentication failed")
+        || error.contains("Invalid username or password")
+        || error.contains("could not read Username")
+        || error.contains("could not read Password")
+        || error.contains("terminal prompts disabled")
+        || error.contains("403 Forbidden")
+}
+
 pub fn push_state(tracking: Option<(usize, usize)>) -> PushState {
     let Some((ahead, behind)) = tracking else {
         return PushState::NoUpstream;

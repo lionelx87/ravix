@@ -19,7 +19,9 @@ use crate::graph::{GraphCommit, GraphLayout, GraphRow};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
-use crate::remote::{PullAction, PushState, is_non_fast_forward, pull_action, push_state};
+use crate::remote::{
+    PullAction, PushState, is_auth_failure, is_non_fast_forward, pull_action, push_state,
+};
 use crate::slide::{self, SlidePanel, advance};
 use crate::staging::{FileDiff, build_patch};
 use crate::stash::StashPanel;
@@ -372,6 +374,7 @@ pub struct App {
     askpass_requests: Option<mpsc::Receiver<AskpassRequest>>,
     askpass_cancelled: bool,
     credentials: CredentialCache,
+    askpass_used: Vec<String>,
     password: Option<PasswordPrompt>,
     branch_create: Option<BranchCreate>,
     commit: Option<CommitEditor>,
@@ -447,6 +450,7 @@ impl App {
             askpass_requests: None,
             askpass_cancelled: false,
             credentials: CredentialCache::default(),
+            askpass_used: Vec::new(),
             password: None,
             branch_create: None,
             commit: None,
@@ -1394,6 +1398,7 @@ impl App {
             .unwrap_or_else(|| self.repo.git_dir())
             .to_path_buf();
         let askpass = self.askpass_config();
+        self.askpass_used.clear();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut cli = GitCli::new(workdir);
@@ -1435,6 +1440,9 @@ impl App {
                         let text = error.to_string();
                         if cancelled {
                             self.info("Authentication cancelled".to_string());
+                        } else if is_auth_failure(&text) {
+                            self.forget_used_credentials();
+                            self.fail(text);
                         } else if matches!(on_complete, OnComplete::Push) && is_non_fast_forward(&text)
                         {
                             self.confirm = Some(Confirm {
@@ -1485,6 +1493,7 @@ impl App {
             return;
         };
         let prompt = parse_askpass_prompt(request.prompt());
+        self.record_used_host(&prompt.host);
         if let Some(value) = self.credentials.get(&prompt.host, prompt.kind) {
             request.answer(value.to_string());
             return;
@@ -1495,6 +1504,18 @@ impl App {
             input: String::new(),
             request,
         });
+    }
+
+    fn record_used_host(&mut self, host: &str) {
+        if !self.askpass_used.iter().any(|used| used == host) {
+            self.askpass_used.push(host.to_string());
+        }
+    }
+
+    fn forget_used_credentials(&mut self) {
+        for host in std::mem::take(&mut self.askpass_used) {
+            self.credentials.invalidate(&host);
+        }
     }
 
     fn password_input(&mut self, character: char) {
