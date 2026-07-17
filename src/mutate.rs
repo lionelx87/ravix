@@ -68,7 +68,7 @@ impl GitCli {
     }
 
     pub fn discard_file(&self, path: &str) -> Result<(), MutationError> {
-        self.run(&["restore", "--", path], None)
+        self.run(&["restore", "--recurse-submodules", "--", path], None)
     }
 
     pub fn discard_hunk(&self, patch: &str) -> Result<(), MutationError> {
