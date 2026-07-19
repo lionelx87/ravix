@@ -67,6 +67,14 @@ impl GitCli {
         )
     }
 
+    pub fn submodule_init(&self, path: &str) -> Result<(), MutationError> {
+        self.run(&["submodule", "update", "--init", "--", path], None)
+    }
+
+    pub fn submodule_update(&self, path: &str) -> Result<(), MutationError> {
+        self.run(&["submodule", "update", "--checkout", "--", path], None)
+    }
+
     pub fn discard_file(&self, path: &str) -> Result<(), MutationError> {
         self.run(&["restore", "--recurse-submodules", "--", path], None)
     }

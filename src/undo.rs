@@ -15,6 +15,7 @@ pub enum UndoableAction {
     CherryPicked { previous: String },
     Rebased { previous: String },
     Stashed,
+    SubmoduleUpdated { path: String, previous: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub enum InversePlan {
     RestoreBranch { name: String, oid: String },
     ResetKeep(String),
     StashPop,
+    CheckoutInSubmodule { path: String, oid: String },
 }
 
 pub fn invert(action: &UndoableAction) -> InversePlan {
@@ -60,5 +62,9 @@ pub fn invert(action: &UndoableAction) -> InversePlan {
         UndoableAction::CherryPicked { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::Rebased { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::Stashed => InversePlan::StashPop,
+        UndoableAction::SubmoduleUpdated { path, previous } => InversePlan::CheckoutInSubmodule {
+            path: path.clone(),
+            oid: previous.clone(),
+        },
     }
 }

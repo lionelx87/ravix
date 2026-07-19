@@ -125,6 +125,8 @@ const FOCUS: &[(&str, &str)] = &[
 const SUBMODULE: &[(&str, &str)] = &[
     ("j / k", "select a submodule"),
     ("Enter", "enter the submodule"),
+    ("i", "initialize the submodule"),
+    ("u", "update the submodule to the recorded commit"),
     ("> / Esc", "close (use < in the graph to exit a submodule)"),
 ];
 

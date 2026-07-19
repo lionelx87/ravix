@@ -8,7 +8,7 @@ use git2::{BranchType, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions}
 use crate::branches::BranchInput;
 use crate::conflict::OpKind;
 use crate::staging::{FileDiff, Hunk};
-use crate::submodule::Submodule;
+use crate::submodule::{Submodule, SyncState};
 use crate::visibility::Visibility;
 
 #[derive(Debug, Clone)]
@@ -194,6 +194,10 @@ impl Repo {
 
     pub fn head_oid(&self) -> Option<String> {
         self.inner.head().ok()?.target().map(|oid| oid.to_string())
+    }
+
+    pub fn head_short_id(&self) -> Option<String> {
+        self.inner.head().ok()?.target().map(shorten)
     }
 
     pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
@@ -588,16 +592,63 @@ impl Repo {
     pub fn submodules(&self) -> Vec<Submodule> {
         self.inner
             .submodules()
-            .map(|subs| {
-                subs.iter()
-                    .map(|sub| Submodule {
-                        name: sub.name().unwrap_or_default().to_string(),
-                        path: sub.path().to_string_lossy().into_owned(),
-                        initialized: sub.open().is_ok(),
-                    })
-                    .collect()
-            })
+            .map(|subs| subs.iter().map(|sub| self.submodule_status(sub)).collect())
             .unwrap_or_default()
+    }
+
+    fn submodule_status(&self, sub: &git2::Submodule) -> Submodule {
+        let recorded_oid = sub.index_id().or_else(|| sub.head_id());
+        let mut status = Submodule {
+            name: sub.name().unwrap_or_default().to_string(),
+            path: sub.path().to_string_lossy().into_owned(),
+            url: sub.url().ok().flatten().map(str::to_string),
+            branch: None,
+            checked_out: None,
+            recorded: recorded_oid.map(|oid| oid.to_string()),
+            sync: SyncState::Uninitialized,
+            dirty: 0,
+            untracked: 0,
+            last_commit: None,
+        };
+
+        let Ok(repo) = sub.open() else {
+            return status;
+        };
+
+        let head = repo.head().ok();
+        status.branch = head.as_ref().and_then(|head| {
+            head.is_branch()
+                .then(|| head.shorthand().ok().map(str::to_string))
+                .flatten()
+        });
+        let head_commit = head.as_ref().and_then(|head| head.peel_to_commit().ok());
+        status.checked_out = head_commit.as_ref().map(|commit| commit.id().to_string());
+        status.last_commit = head_commit
+            .as_ref()
+            .and_then(|commit| commit.summary().ok().flatten().map(str::to_string));
+
+        status.sync = match (recorded_oid, head_commit.as_ref().map(git2::Commit::id)) {
+            (Some(recorded), Some(checked_out)) if recorded != checked_out => SyncState::Drifted,
+            (Some(_), None) => SyncState::Drifted,
+            _ => SyncState::Synced,
+        };
+
+        let mut options = StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false);
+        if let Ok(statuses) = repo.statuses(Some(&mut options)) {
+            for entry in statuses.iter() {
+                if entry.status().is_wt_new() {
+                    status.untracked += 1;
+                } else {
+                    status.dirty += 1;
+                }
+            }
+        }
+
+        status
     }
 
     fn visible_tips(&self, visibility: &Visibility) -> Result<Vec<Oid>, git2::Error> {

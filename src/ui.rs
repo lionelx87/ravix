@@ -10,7 +10,8 @@ use git2::Oid;
 use syntect::parsing::SyntaxReference;
 
 use crate::app::{
-    App, BranchCreate, CommitEditor, Confirm, FocusPanel, InputContext, Palette, Panel,
+    App, BranchCreate, CommitEditor, Confirm, FocusPanel, InputContext, NavDirection, Palette,
+    Panel,
     PasswordPrompt, SubmodulePanel,
 };
 use crate::branches::BranchPanel;
@@ -22,6 +23,7 @@ use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
 use crate::staging::{FileDiff, content_of, marker_of, split_rows};
 use crate::stash::StashPanel;
+use crate::submodule::{Submodule, SyncState};
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
@@ -119,9 +121,67 @@ pub fn regions(area: Rect) -> (Rect, Rect) {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, now: i64) {
-    let theme = Theme::default();
     let area = frame.area();
-    let (graph_area, status_area) = regions(area);
+    let Some(mut transition) = app.take_nav_transition() else {
+        render_app(frame, app, now, area);
+        return;
+    };
+
+    let eased = ease_out_cubic(transition.progress.clamp(0.0, 1.0));
+    let fraction = match transition.direction {
+        NavDirection::Push => eased,
+        NavDirection::Pop => 1.0 - eased,
+    };
+    let overlay = overlay_rect(area, fraction);
+    match transition.direction {
+        NavDirection::Push => {
+            render_app(frame, &mut transition.outgoing, now, area);
+            if let Some(rect) = overlay {
+                frame.render_widget(Clear, rect);
+                render_app(frame, app, now, rect);
+            }
+        }
+        NavDirection::Pop => {
+            render_app(frame, app, now, area);
+            if let Some(rect) = overlay {
+                frame.render_widget(Clear, rect);
+                render_app(frame, &mut transition.outgoing, now, rect);
+            }
+        }
+    }
+    app.restore_nav_transition(transition);
+}
+
+fn overlay_rect(area: Rect, fraction: f32) -> Option<Rect> {
+    let width = (f32::from(area.width) * fraction.clamp(0.0, 1.0)).round() as u16;
+    if width == 0 {
+        return None;
+    }
+    Some(Rect {
+        x: area.right() - width,
+        width,
+        ..area
+    })
+}
+
+fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
+    let theme = Theme::default();
+    let (mut graph_area, status_area) = regions(area);
+
+    if let Some(path) = app.breadcrumb()
+        && graph_area.height > 1
+    {
+        let bar_area = Rect {
+            height: 1,
+            ..graph_area
+        };
+        graph_area = Rect {
+            y: graph_area.y + 1,
+            height: graph_area.height - 1,
+            ..graph_area
+        };
+        render_submodule_bar(frame, app, &path, &theme, bar_area);
+    }
 
     let wip_rows = u16::from(app.has_wip());
     let commit_area = Rect {
@@ -368,12 +428,69 @@ fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i6
     graph_view::render(frame, app, theme, area, now);
 }
 
+fn render_submodule_bar(frame: &mut Frame, app: &App, path: &str, theme: &Theme, area: Rect) {
+    let branch = app
+        .meta()
+        .head_branch
+        .clone()
+        .unwrap_or_else(|| "detached".to_string());
+    let mut spans = vec![
+        Span::styled(" ⌂ ", Style::default().fg(theme.marker)),
+        Span::styled(
+            path.to_string(),
+            Style::default()
+                .fg(theme.node)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  ⎇ {branch}"), Style::default().fg(theme.head_badge)),
+    ];
+    if let Some(short_id) = app.head_short_id() {
+        spans.push(Span::styled(
+            format!(" @{short_id}"),
+            Style::default().fg(theme.short_id),
+        ));
+    }
+    match app.parent_sync() {
+        Some(SyncState::Drifted) => spans.push(Span::styled(
+            "  ◆ drifted",
+            Style::default().fg(theme.warn),
+        )),
+        Some(SyncState::Synced) => spans.push(Span::styled(
+            "  ● in sync",
+            Style::default().fg(theme.added),
+        )),
+        _ => {}
+    }
+    let status = app.status();
+    let modified = status.staged.len() + status.unstaged.len();
+    if modified > 0 {
+        spans.push(Span::styled(
+            format!("  ±{modified}"),
+            Style::default().fg(theme.wip),
+        ));
+    }
+    if !status.untracked.is_empty() {
+        spans.push(Span::styled(
+            format!("  ?{}", status.untracked.len()),
+            Style::default().fg(theme.wip),
+        ));
+    }
+    spans.push(Span::styled(
+        "   < back to parent",
+        Style::default().fg(theme.meta),
+    ));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.status_bg)),
+        area,
+    );
+}
+
 fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let meta = app.meta();
     let branch = meta.head_branch.as_deref().unwrap_or("detached HEAD");
     let position = format!("{}/{}", app.selected() + 1, app.commits().len().max(1));
 
-    let heading = app.breadcrumb().unwrap_or_else(|| meta.name.clone());
+    let heading = meta.name.clone();
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(heading, Style::default().add_modifier(Modifier::BOLD)),
@@ -1769,40 +1886,219 @@ fn render_focus_panel(frame: &mut Frame, panel: &FocusPanel, theme: &Theme, area
 }
 
 fn render_submodule_panel(frame: &mut Frame, panel: &SubmodulePanel, theme: &Theme, area: Rect) {
-    render_slide_list(
-        frame,
-        panel,
-        theme,
-        area,
-        SlideList {
-            title: " Submodules ",
-            empty: "no submodules",
-            hints: &["Enter enter · < exit to parent"],
-            fraction: 0.4,
-            min_width: 34.0,
-        },
-        |sub, selected| {
-            let mut name_style =
-                Style::default().fg(if selected { theme.node } else { theme.summary });
-            if !sub.initialized {
-                name_style = name_style.add_modifier(Modifier::DIM);
-            }
-            let mut spans = vec![
+    let Some(rect) = slide_rect(area, panel.slide, 0.45, 56.0) else {
+        return;
+    };
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Submodules ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    if panel.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "no submodules",
+                Style::default().fg(theme.meta),
+            ))),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line> = panel
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, sub)| submodule_row(sub, index == panel.selected, theme))
+        .collect();
+
+    lines.push(Line::default());
+    let synced = count_sync(panel, SyncState::Synced);
+    let drifted = count_sync(panel, SyncState::Drifted);
+    let uninit = count_sync(panel, SyncState::Uninitialized);
+    lines.push(Line::from(vec![
+        Span::styled(format!(" ● {synced} synced"), Style::default().fg(theme.added)),
+        Span::styled(format!("  ◆ {drifted} drifted"), Style::default().fg(theme.warn)),
+        Span::styled(format!("  ○ {uninit} uninit"), Style::default().fg(theme.meta)),
+    ]));
+
+    let list_height = (lines.len() as u16).min(inner.height);
+    frame.render_widget(Paragraph::new(lines), inner);
+
+    if let Some(sub) = panel.focused()
+        && inner.height > list_height + 2
+    {
+        let detail_area = Rect {
+            y: inner.y + list_height + 1,
+            height: inner.height - list_height - 1,
+            ..inner
+        };
+        frame.render_widget(
+            Paragraph::new(submodule_detail(sub, theme)),
+            detail_area,
+        );
+    }
+}
+
+fn submodule_glyph(sub: &Submodule, theme: &Theme) -> (&'static str, Color) {
+    match sub.sync {
+        SyncState::Uninitialized => ("○", theme.meta),
+        SyncState::Drifted => ("◆", theme.warn),
+        SyncState::Synced if sub.is_dirty() => ("●", theme.wip),
+        SyncState::Synced => ("●", theme.added),
+    }
+}
+
+fn short_oid(oid: &str) -> &str {
+    &oid[..oid.len().min(7)]
+}
+
+fn submodule_markers(sub: &Submodule, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if sub.sync == SyncState::Drifted
+        && let (Some(recorded), Some(checked_out)) = (&sub.recorded, &sub.checked_out)
+    {
+        spans.push(Span::styled(
+            format!(" {}≠{}", short_oid(recorded), short_oid(checked_out)),
+            Style::default().fg(theme.warn),
+        ));
+    }
+    if sub.dirty > 0 {
+        spans.push(Span::styled(
+            format!(" ±{}", sub.dirty),
+            Style::default().fg(theme.wip),
+        ));
+    }
+    if sub.untracked > 0 {
+        spans.push(Span::styled(
+            format!(" ?{}", sub.untracked),
+            Style::default().fg(theme.wip),
+        ));
+    }
+    spans
+}
+
+fn submodule_row(sub: &Submodule, selected: bool, theme: &Theme) -> Line<'static> {
+    let (glyph, glyph_color) = submodule_glyph(sub, theme);
+    let mut name_style = Style::default().fg(if selected { theme.node } else { theme.summary });
+    if !sub.initialized() {
+        name_style = name_style.add_modifier(Modifier::DIM);
+    } else if selected {
+        name_style = name_style.add_modifier(Modifier::BOLD);
+    }
+    let mut spans = vec![
+        Span::styled(
+            if selected { "❯ " } else { "  " },
+            Style::default().fg(theme.marker),
+        ),
+        Span::styled(glyph, Style::default().fg(glyph_color)),
+        Span::raw(" "),
+        Span::styled(sub.name.clone(), name_style),
+    ];
+    if sub.initialized() {
+        if let Some(branch) = &sub.branch {
+            spans.push(Span::styled(
+                format!("  {branch}"),
+                Style::default().fg(theme.head_badge),
+            ));
+        } else {
+            spans.push(Span::styled("  detached", Style::default().fg(theme.meta)));
+        }
+        if let Some(checked_out) = &sub.checked_out {
+            spans.push(Span::styled(
+                format!(" @{}", short_oid(checked_out)),
+                Style::default().fg(theme.short_id),
+            ));
+        }
+        spans.extend(submodule_markers(sub, theme));
+    } else {
+        spans.push(Span::styled(
+            "  (uninitialized)",
+            Style::default().fg(theme.meta),
+        ));
+    }
+    let mut line = Line::from(spans);
+    if selected {
+        line = line.style(Style::default().bg(theme.selection_bg));
+    }
+    line
+}
+
+fn submodule_detail(sub: &Submodule, theme: &Theme) -> Vec<Line<'static>> {
+    let label = Style::default().fg(theme.label);
+    let value = Style::default().fg(theme.summary);
+    let mut lines = vec![Line::from(Span::styled(
+        format!("─ {} ", sub.name),
+        Style::default().fg(theme.meta),
+    ))];
+    if let Some(url) = &sub.url {
+        lines.push(Line::from(vec![
+            Span::styled(" url       ", label),
+            Span::styled(url.clone(), value),
+        ]));
+    }
+    let mut ids = vec![Span::styled(" recorded  ", label)];
+    if let Some(recorded) = &sub.recorded {
+        ids.push(Span::styled(
+            short_oid(recorded).to_string(),
+            Style::default().fg(theme.short_id),
+        ));
+    }
+    if let Some(checked_out) = &sub.checked_out {
+        ids.push(Span::styled("   checked ", label));
+        ids.push(Span::styled(
+            short_oid(checked_out).to_string(),
+            Style::default().fg(theme.short_id),
+        ));
+        ids.push(match sub.sync {
+            SyncState::Drifted => Span::styled("  ◆ drifted", Style::default().fg(theme.warn)),
+            _ => Span::styled("  ● in sync", Style::default().fg(theme.added)),
+        });
+    }
+    lines.push(Line::from(ids));
+    if sub.initialized() {
+        lines.push(Line::from(vec![
+            Span::styled(" worktree  ", label),
+            if sub.is_dirty() {
                 Span::styled(
-                    if selected { "❯ " } else { "  " },
-                    Style::default().fg(theme.marker),
-                ),
-                Span::styled(sub.name.clone(), name_style),
-            ];
-            if !sub.initialized {
-                spans.push(Span::styled(
-                    "  (uninitialized)",
-                    Style::default().fg(theme.meta),
-                ));
-            }
-            Line::from(spans)
-        },
-    );
+                    format!("±{} modified · ?{} untracked", sub.dirty, sub.untracked),
+                    Style::default().fg(theme.wip),
+                )
+            } else {
+                Span::styled("clean", Style::default().fg(theme.added))
+            },
+        ]));
+        if let Some(last_commit) = &sub.last_commit {
+            lines.push(Line::from(vec![
+                Span::styled(" last      ", label),
+                Span::styled(last_commit.clone(), value),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            " ○ Not initialized — i clones and checks it out",
+            Style::default().fg(theme.wip),
+        )));
+    }
+    lines.push(Line::default());
+    let actions = match sub.sync {
+        SyncState::Uninitialized => "i init",
+        SyncState::Drifted => "Enter enter · u update to recorded",
+        SyncState::Synced => "Enter enter",
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {actions}"), Style::default().fg(theme.marker)),
+        Span::styled(" · < exit to parent", label),
+    ]));
+    lines
+}
+
+fn count_sync(panel: &SubmodulePanel, sync: SyncState) -> usize {
+    panel.entries.iter().filter(|sub| sub.sync == sync).count()
 }
 
 fn render_focus_name(frame: &mut Frame, name: &str, theme: &Theme, area: Rect) {

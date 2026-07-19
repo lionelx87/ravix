@@ -1074,7 +1074,7 @@ fn entering_a_submodule_switches_the_graph_and_shows_a_breadcrumb() {
     let mut app = App::open(&parent).unwrap();
     let mut input = InputMap::default();
 
-    let before = dump(&draw(&mut app, 100, 24));
+    let before = dump(&draw(&mut app, 120, 24));
     assert!(
         before.contains("Parent work"),
         "parent graph shown:\n{before}"
@@ -1082,7 +1082,7 @@ fn entering_a_submodule_switches_the_graph_and_shows_a_breadcrumb() {
 
     press(&mut app, &mut input, KeyCode::Char('>'));
     settle(&mut app);
-    let panel = panel_region(&draw(&mut app, 100, 24));
+    let panel = panel_region(&draw(&mut app, 120, 24));
     assert!(
         panel.contains("vendored"),
         "the submodule is listed in the panel:\n{panel}"
@@ -1090,7 +1090,7 @@ fn entering_a_submodule_switches_the_graph_and_shows_a_breadcrumb() {
 
     press(&mut app, &mut input, KeyCode::Enter);
     settle(&mut app);
-    let inside = dump(&draw(&mut app, 100, 24));
+    let inside = dump(&draw(&mut app, 120, 24));
     assert!(
         inside.contains("Submodule work"),
         "the graph switches to the submodule:\n{inside}"
@@ -1106,7 +1106,7 @@ fn entering_a_submodule_switches_the_graph_and_shows_a_breadcrumb() {
 
     press(&mut app, &mut input, KeyCode::Char('<'));
     settle(&mut app);
-    let back = dump(&draw(&mut app, 100, 24));
+    let back = dump(&draw(&mut app, 120, 24));
     assert!(
         back.contains("Parent work"),
         "exiting returns to the parent:\n{back}"

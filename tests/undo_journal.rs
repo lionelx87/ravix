@@ -120,3 +120,17 @@ fn a_rebase_inverts_to_resetting_the_branch_back_to_its_pre_rebase_tip() {
 fn a_stash_save_inverts_to_popping_it_back() {
     assert_eq!(invert(&UndoableAction::Stashed), InversePlan::StashPop);
 }
+
+#[test]
+fn updating_a_submodule_inverts_to_a_checkout_inside_it() {
+    assert_eq!(
+        invert(&UndoableAction::SubmoduleUpdated {
+            path: "modules/sub".into(),
+            previous: "abc1234".into(),
+        }),
+        InversePlan::CheckoutInSubmodule {
+            path: "modules/sub".into(),
+            oid: "abc1234".into(),
+        }
+    );
+}

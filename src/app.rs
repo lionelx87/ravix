@@ -25,7 +25,7 @@ use crate::remote::{
 use crate::slide::{self, SlidePanel, advance};
 use crate::staging::{FileDiff, build_patch};
 use crate::stash::StashPanel;
-use crate::submodule::{Submodule, breadcrumb_label};
+use crate::submodule::{Submodule, SyncState, breadcrumb_label};
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
@@ -34,6 +34,7 @@ const LOAD_PAGE: usize = 500;
 const LOAD_MARGIN: usize = 64;
 const SCROLL_STEP: isize = 3;
 const PANEL_ANIMATION: Duration = Duration::from_millis(160);
+const NAV_TRANSITION: Duration = Duration::from_millis(220);
 const CELEBRATION_DURATION: Duration = Duration::from_millis(350);
 const DEFAULT_PAGE: usize = 10;
 
@@ -108,6 +109,8 @@ pub enum Action {
     ToggleSubmodulePanel,
     EnterSubmodule,
     ExitSubmodule,
+    InitSubmodule,
+    UpdateSubmodule,
     BranchNameInput(char),
     BranchNameBackspace,
     BranchNameSubmit,
@@ -183,6 +186,18 @@ struct BranchFilter {
 
 pub type FocusPanel = SlidePanel<FocusSet>;
 pub type SubmodulePanel = SlidePanel<Submodule>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavDirection {
+    Push,
+    Pop,
+}
+
+pub struct NavTransition {
+    pub outgoing: Box<App>,
+    pub direction: NavDirection,
+    pub progress: f32,
+}
 
 pub struct DragState {
     down: usize,
@@ -363,6 +378,8 @@ pub struct App {
     focus_sets: Vec<FocusSet>,
     focus_name: Option<String>,
     submodule_panel: Option<SubmodulePanel>,
+    nav_transition: Option<NavTransition>,
+    parent_sync: Option<SyncState>,
     breadcrumb: Vec<PathBuf>,
     join: Option<JoinMenu>,
     conflict: Option<ConflictBrowser>,
@@ -439,6 +456,8 @@ impl App {
             focus_sets: Vec::new(),
             focus_name: None,
             submodule_panel: None,
+            nav_transition: None,
+            parent_sync: None,
             breadcrumb: Vec::new(),
             join: None,
             conflict: None,
@@ -578,6 +597,26 @@ impl App {
 
     pub fn submodule_panel(&self) -> Option<&SubmodulePanel> {
         self.submodule_panel.as_ref()
+    }
+
+    pub fn nav_transition(&self) -> Option<&NavTransition> {
+        self.nav_transition.as_ref()
+    }
+
+    pub fn take_nav_transition(&mut self) -> Option<NavTransition> {
+        self.nav_transition.take()
+    }
+
+    pub fn restore_nav_transition(&mut self, transition: NavTransition) {
+        self.nav_transition = Some(transition);
+    }
+
+    pub fn head_short_id(&self) -> Option<String> {
+        self.repo.head_short_id()
+    }
+
+    pub fn parent_sync(&self) -> Option<SyncState> {
+        self.parent_sync
     }
 
     pub fn breadcrumb(&self) -> Option<String> {
@@ -746,6 +785,7 @@ impl App {
             || slide::is_animating(&self.submodule_panel)
             || self.celebration.is_some()
             || self.remote.is_some()
+            || self.nav_transition.is_some()
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -852,6 +892,8 @@ impl App {
             Action::ToggleSubmodulePanel => self.toggle_submodule_panel(),
             Action::EnterSubmodule => self.enter_submodule(),
             Action::ExitSubmodule => self.exit_submodule(),
+            Action::InitSubmodule => self.init_submodule(),
+            Action::UpdateSubmodule => self.update_submodule(),
             Action::BranchNameInput(character) => self.branch_name_input(character),
             Action::BranchNameBackspace => self.branch_name_backspace(),
             Action::BranchNameSubmit => self.branch_name_submit(),
@@ -2049,6 +2091,12 @@ impl App {
                 "Undid integration".to_string(),
             ),
             InversePlan::StashPop => (self.cli.stash_pop(0).is_ok(), "Undid stash".to_string()),
+            InversePlan::CheckoutInSubmodule { path, oid } => (
+                GitCli::new(PathBuf::from(&path))
+                    .checkout_detached(&oid)
+                    .is_ok(),
+                "Undid submodule update".to_string(),
+            ),
         };
         if ok {
             self.info(description);
@@ -2294,7 +2342,7 @@ impl App {
         else {
             return;
         };
-        if !sub.initialized {
+        if !sub.initialized() {
             self.info(format!("Submodule '{}' is not initialized", sub.name));
             return;
         }
@@ -2305,10 +2353,103 @@ impl App {
         match App::open(&sub_workdir) {
             Ok(mut app) => {
                 app.breadcrumb = breadcrumb;
-                app.intensity = self.intensity;
-                *self = app;
+                self.swap_with_transition(app, NavDirection::Push);
             }
             Err(_) => self.fail(format!("Could not open submodule '{}'", sub.name)),
+        }
+    }
+
+    fn swap_with_transition(&mut self, mut app: App, direction: NavDirection) {
+        app.intensity = self.intensity;
+        app.refresh_parent_sync();
+        let outgoing = std::mem::replace(self, app);
+        self.nav_transition = Some(NavTransition {
+            outgoing: Box::new(outgoing),
+            direction,
+            progress: 0.0,
+        });
+    }
+
+    fn refresh_parent_sync(&mut self) {
+        self.parent_sync = self.breadcrumb.last().and_then(|parent| {
+            let repo = Repo::discover(parent).ok()?;
+            let workdir = self.current_workdir().canonicalize().ok()?;
+            repo.submodules()
+                .into_iter()
+                .find(|sub| {
+                    parent
+                        .join(&sub.path)
+                        .canonicalize()
+                        .is_ok_and(|path| path == workdir)
+                })
+                .map(|sub| sub.sync)
+        });
+    }
+
+    fn init_submodule(&mut self) {
+        let Some(sub) = self
+            .submodule_panel
+            .as_ref()
+            .and_then(SubmodulePanel::focused)
+            .cloned()
+        else {
+            return;
+        };
+        if sub.initialized() {
+            self.info(format!("Submodule '{}' is already initialized", sub.name));
+            return;
+        }
+        let result = self.cli.submodule_init(&sub.path);
+        let succeeded = result.is_ok();
+        self.after_mutation(result);
+        if succeeded {
+            self.info(format!("Initialized submodule '{}'", sub.name));
+        }
+        self.refresh_submodule_panel();
+    }
+
+    fn update_submodule(&mut self) {
+        let Some(sub) = self
+            .submodule_panel
+            .as_ref()
+            .and_then(SubmodulePanel::focused)
+            .cloned()
+        else {
+            return;
+        };
+        if sub.sync != SyncState::Drifted {
+            self.info(format!(
+                "Submodule '{}' is already at the recorded commit",
+                sub.name
+            ));
+            return;
+        }
+        let previous = sub.checked_out.clone().unwrap_or_default();
+        let result = self.cli.submodule_update(&sub.path);
+        let succeeded = result.is_ok();
+        self.after_mutation_recording(
+            result,
+            UndoableAction::SubmoduleUpdated {
+                path: self
+                    .current_workdir()
+                    .join(&sub.path)
+                    .to_string_lossy()
+                    .into_owned(),
+                previous,
+            },
+        );
+        if succeeded {
+            self.info(format!(
+                "Updated submodule '{}' to the recorded commit",
+                sub.name
+            ));
+        }
+        self.refresh_submodule_panel();
+    }
+
+    fn refresh_submodule_panel(&mut self) {
+        if let Some(panel) = &mut self.submodule_panel {
+            panel.refresh(self.repo.submodules());
         }
     }
 
@@ -2320,8 +2461,7 @@ impl App {
         match App::open(&parent) {
             Ok(mut app) => {
                 app.breadcrumb = breadcrumb;
-                app.intensity = self.intensity;
-                *self = app;
+                self.swap_with_transition(app, NavDirection::Pop);
             }
             Err(_) => self.fail("Could not return to the parent repository".to_string()),
         }
@@ -3014,6 +3154,8 @@ impl App {
         self.scroll_into_view();
         self.refresh_status();
         self.refresh_branch_entries();
+        self.refresh_submodule_panel();
+        self.refresh_parent_sync();
         self.detect_conflict();
     }
 
@@ -3109,6 +3251,12 @@ impl App {
         }
         if let Some(job) = &mut self.remote {
             job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(transition) = &mut self.nav_transition {
+            transition.progress += dt.as_secs_f32() / NAV_TRANSITION.as_secs_f32();
+            if transition.progress >= 1.0 {
+                self.nav_transition = None;
+            }
         }
     }
 

@@ -209,6 +209,8 @@ fn on_submodule_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
         KeyCode::Enter => Some(Action::EnterSubmodule),
+        KeyCode::Char('i') => Some(Action::InitSubmodule),
+        KeyCode::Char('u') => Some(Action::UpdateSubmodule),
         KeyCode::Char('>') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
