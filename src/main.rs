@@ -39,17 +39,47 @@ fn main() -> io::Result<()> {
     result
 }
 
+struct PerfLog {
+    out: Option<std::io::BufWriter<std::fs::File>>,
+    started: Instant,
+}
+
+impl PerfLog {
+    fn from_env() -> Self {
+        let out = std::env::var("RAVIX_PERF_LOG")
+            .ok()
+            .and_then(|path| std::fs::File::create(path).ok())
+            .map(std::io::BufWriter::new);
+        Self {
+            out,
+            started: Instant::now(),
+        }
+    }
+
+    fn record(&mut self, label: &str, duration: Duration) {
+        use std::io::Write;
+        if let Some(out) = &mut self.out {
+            let at = self.started.elapsed().as_millis();
+            let _ = writeln!(out, "{at},{label},{}", duration.as_micros());
+            let _ = out.flush();
+        }
+    }
+}
+
 fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     let mut input = InputMap::default();
     let watcher = RepoWatcher::new(&app.git_dir(), WATCH_DEBOUNCE).ok();
     let mut last_tick = Instant::now();
     let mut graph_area = Rect::default();
+    let mut perf = PerfLog::from_env();
 
     loop {
+        let draw_started = Instant::now();
         terminal.draw(|frame| {
             graph_area = regions(frame.area()).0;
             render(frame, &mut app, now_seconds());
         })?;
+        perf.record("draw", draw_started.elapsed());
 
         if app.should_quit() {
             return Ok(());
@@ -65,13 +95,17 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
             match event::read()? {
                 Event::Key(key) => {
                     if let Some(action) = input.on_key(key, app.input_context()) {
+                        let update_started = Instant::now();
                         app.update(action);
+                        perf.record("key", update_started.elapsed());
                     }
                 }
                 Event::Mouse(mouse) => {
                     let context = app.input_context();
                     if let Some(action) = input.on_mouse(mouse, graph_area, context) {
+                        let update_started = Instant::now();
                         app.update(action);
+                        perf.record("mouse", update_started.elapsed());
                     }
                 }
                 _ => {}
@@ -95,7 +129,9 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         app.poll_askpass();
 
         if watcher.as_ref().is_some_and(RepoWatcher::changed) {
+            let reload_started = Instant::now();
             app.update(Action::Reload);
+            perf.record("reload", reload_started.elapsed());
         }
     }
 }
