@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use git2::Oid;
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::App;
+use crate::app::{App, GraphDims};
 use crate::git::{BadgeKind, RefBadge};
 use crate::graph::GraphRow;
 use crate::visibility::Visibility;
@@ -31,10 +31,21 @@ const GRAPH_MAX: usize = 24;
 const COLUMN_GAP: usize = 2;
 const RAIL_SEPARATOR: &str = " ┊ ";
 
-pub(super) fn render(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i64) {
+pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, now: i64) {
     if area.height < 2 {
         return;
     }
+    let dims = match app.graph_dims() {
+        Some(dims) => dims,
+        None => {
+            let dims = GraphDims {
+                rail: rail_width(app),
+                graph: graph_width(app.rows()),
+            };
+            app.set_graph_dims(dims);
+            dims
+        }
+    };
     let commits = app.commits();
     let rows = app.rows();
     let offset = app.offset();
@@ -42,13 +53,8 @@ pub(super) fn render(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, no
     let badges = &app.meta().badges;
     let drag = app.drag();
 
-    let graph_width = rows
-        .iter()
-        .map(|row| row.glyphs.chars().count())
-        .max()
-        .unwrap_or(2)
-        .clamp(2, GRAPH_MAX);
-    let rail_width = rail_width(app);
+    let graph_width = dims.graph;
+    let rail_width = dims.rail;
     let marker_width = SELECTION_MARKER.chars().count();
     let fixed = rail_width
         + RAIL_SEPARATOR.chars().count()
@@ -248,6 +254,14 @@ fn badge_is_visible(badge: &RefBadge, visibility: &Visibility, head_branch: Opti
             visibility.is_visible(local, head_branch == Some(local))
         }
     }
+}
+
+fn graph_width(rows: &[GraphRow<Oid>]) -> usize {
+    rows.iter()
+        .map(|row| row.glyphs.chars().count())
+        .max()
+        .unwrap_or(2)
+        .clamp(2, GRAPH_MAX)
 }
 
 fn rail_width(app: &App) -> usize {

@@ -354,12 +354,19 @@ impl Palette {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct GraphDims {
+    pub rail: usize,
+    pub graph: usize,
+}
+
 pub struct App {
     repo: Repo,
     cli: GitCli,
     meta: RepoMeta,
     commits: Vec<CommitInfo>,
     rows: Vec<GraphRow<Oid>>,
+    graph_dims: Option<GraphDims>,
     graph_layout: GraphLayout<Oid>,
     commit_oids: Vec<Oid>,
     exhausted: bool,
@@ -438,6 +445,7 @@ impl App {
             meta,
             commits,
             rows,
+            graph_dims: None,
             graph_layout,
             commit_oids,
             exhausted,
@@ -517,6 +525,14 @@ impl App {
 
     pub fn rows(&self) -> &[GraphRow<Oid>] {
         &self.rows
+    }
+
+    pub fn graph_dims(&self) -> Option<GraphDims> {
+        self.graph_dims
+    }
+
+    pub fn set_graph_dims(&mut self, dims: GraphDims) {
+        self.graph_dims = Some(dims);
     }
 
     pub fn commits(&self) -> &[CommitInfo] {
@@ -3127,6 +3143,7 @@ impl App {
     }
 
     fn reload(&mut self) {
+        self.graph_dims = None;
         let selected_id = self.commits.get(self.selected).map(|commit| commit.id);
         if let Ok(meta) = self.repo.meta() {
             self.meta = meta;
@@ -3199,6 +3216,7 @@ impl App {
         let new_rows = self.graph_layout.extend(&graph_commits(&more));
         self.commits.append(&mut more);
         self.rows.extend(new_rows);
+        self.graph_dims = None;
         if self.commits.len() >= self.commit_oids.len() {
             self.exhausted = true;
         }

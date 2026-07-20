@@ -416,7 +416,7 @@ fn sparkle_burst(progress: f32) -> &'static str {
     }
 }
 
-fn render_graph(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i64) {
+fn render_graph(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, now: i64) {
     if area.height == 0 {
         return;
     }
@@ -661,13 +661,20 @@ fn render_slide_list<T>(
         (inner, None)
     };
 
+    let visible = rows_area.height as usize;
+    let first = panel
+        .selected
+        .saturating_sub(visible / 2)
+        .min(panel.entries.len().saturating_sub(visible));
     let mut lines: Vec<Line> = panel
         .entries
         .iter()
         .enumerate()
+        .skip(first)
+        .take(visible)
         .map(|(index, entry)| row(entry, index == panel.selected))
         .collect();
-    if lines.is_empty() {
+    if panel.entries.is_empty() {
         lines.push(Line::from(Span::styled(
             list.empty,
             Style::default().fg(theme.meta),

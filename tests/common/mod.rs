@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -21,6 +22,31 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
         .args(args)
         .output()
         .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+pub fn git_stdin(dir: &Path, args: &[&str], input: &str) -> String {
+    let mut child = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "git {:?} failed: {}",
@@ -65,6 +91,42 @@ pub fn submodule_fixture(root: &Path) -> PathBuf {
     );
     git(&main, &["commit", "-qm", "add submodule"]);
     main
+}
+
+pub fn perf_fixture(root: &Path, commits: usize, branches: usize) -> PathBuf {
+    let repo = root.join("perf");
+    std::fs::create_dir(&repo).unwrap();
+    init_repo(&repo);
+
+    let mut stream = String::new();
+    for index in 0..commits {
+        let mark = index + 1;
+        let message = format!("commit {mark}");
+        let content = format!("content {mark}\n");
+        stream.push_str("commit refs/heads/main\n");
+        stream.push_str(&format!("mark :{mark}\n"));
+        stream.push_str(&format!("author test <test@example.com> {mark} +0000\n"));
+        stream.push_str(&format!("committer test <test@example.com> {mark} +0000\n"));
+        stream.push_str(&format!("data {}\n{message}\n", message.len()));
+        if index > 0 {
+            stream.push_str(&format!("from :{index}\n"));
+        }
+        stream.push_str("M 100644 inline file.txt\n");
+        stream.push_str(&format!("data {}\n{content}\n", content.len()));
+    }
+    stream.push_str("done\n");
+    git_stdin(&repo, &["fast-import", "--quiet", "--done"], &stream);
+    git(&repo, &["reset", "-q", "--hard", "main"]);
+
+    let rev_list = git(&repo, &["rev-list", "main"]);
+    let oids: Vec<&str> = rev_list.lines().collect();
+    let stride = (oids.len() / branches.max(1)).max(1);
+    let mut refs = String::new();
+    for (slot, oid) in oids.iter().step_by(stride).take(branches).enumerate() {
+        refs.push_str(&format!("create refs/heads/branch-{slot:03} {oid}\n"));
+    }
+    git_stdin(&repo, &["update-ref", "--stdin"], &refs);
+    repo
 }
 
 pub fn press(app: &mut App, input: &mut InputMap, code: KeyCode) {
