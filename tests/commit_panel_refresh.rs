@@ -1,7 +1,13 @@
+use std::time::Duration;
+
 use git2::{Oid, Repository, RepositoryInitOptions, Signature, Time};
 use tempfile::TempDir;
 
 use ravix::app::{Action, App};
+
+fn settle(app: &mut App) {
+    app.update(Action::Tick(Duration::from_millis(200)));
+}
 
 fn commit(repo: &Repository, base: Option<Oid>, path: &str, message: &str) -> Oid {
     let signature = Signature::new("Dev", "dev@example.com", &Time::new(1000, 0)).unwrap();
@@ -54,6 +60,7 @@ fn the_open_panel_follows_the_selection_to_a_new_commit() {
     let mut app = App::open(dir.path()).unwrap();
 
     app.update(Action::OpenPanel);
+    settle(&mut app);
     assert_eq!(
         panel_paths(&app),
         vec!["c.txt".to_string()],
@@ -61,6 +68,7 @@ fn the_open_panel_follows_the_selection_to_a_new_commit() {
     );
 
     app.update(Action::SelectNext);
+    settle(&mut app);
     assert_eq!(
         panel_paths(&app),
         vec!["b.txt".to_string()],
@@ -73,6 +81,7 @@ fn the_open_panel_follows_the_selection_to_a_new_commit() {
     );
 
     app.update(Action::SelectPrev);
+    settle(&mut app);
     assert_eq!(
         panel_paths(&app),
         vec!["c.txt".to_string()],

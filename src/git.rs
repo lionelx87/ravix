@@ -336,6 +336,10 @@ impl Repo {
         std::fs::write(workdir.join(path), blob.content()).is_ok()
     }
 
+    pub fn cached_changed_files(&self, id: Oid) -> Option<Vec<FileChange>> {
+        self.changed_files_cache.lock().unwrap().get(&id).cloned()
+    }
+
     pub fn changed_files(&self, id: Oid) -> Result<Vec<FileChange>, git2::Error> {
         if let Some(cached) = self.changed_files_cache.lock().unwrap().get(&id) {
             return Ok(cached.clone());

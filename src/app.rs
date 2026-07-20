@@ -36,6 +36,7 @@ const SCROLL_STEP: isize = 3;
 const PANEL_ANIMATION: Duration = Duration::from_millis(160);
 const NAV_TRANSITION: Duration = Duration::from_millis(220);
 const CELEBRATION_DURATION: Duration = Duration::from_millis(350);
+const PEEK_DEBOUNCE: f32 = 0.08;
 const DEFAULT_PAGE: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +368,7 @@ pub struct App {
     commits: Vec<CommitInfo>,
     rows: Vec<GraphRow<Oid>>,
     graph_dims: Option<GraphDims>,
+    peek_debounce: Option<f32>,
     graph_layout: GraphLayout<Oid>,
     commit_oids: Vec<Oid>,
     exhausted: bool,
@@ -446,6 +448,7 @@ impl App {
             commits,
             rows,
             graph_dims: None,
+            peek_debounce: None,
             graph_layout,
             commit_oids,
             exhausted,
@@ -802,6 +805,7 @@ impl App {
             || self.celebration.is_some()
             || self.remote.is_some()
             || self.nav_transition.is_some()
+            || self.peek_debounce.is_some()
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -1626,7 +1630,11 @@ impl App {
             return;
         };
         self.working = None;
-        let changed_files = self.repo.changed_files(id).unwrap_or_default();
+        let (changed_files, pending) = match self.repo.cached_changed_files(id) {
+            Some(files) => (files, false),
+            None => (Vec::new(), true),
+        };
+        self.peek_debounce = pending.then_some(PEEK_DEBOUNCE);
         match &mut self.panel {
             Some(panel) => {
                 panel.commit_index = self.selected;
@@ -1658,7 +1666,27 @@ impl App {
         }
     }
 
+    fn fill_peek(&mut self) {
+        let Some(index) = self.panel.as_ref().map(|panel| panel.commit_index) else {
+            return;
+        };
+        let Some(id) = self.commits.get(index).map(|commit| commit.id) else {
+            return;
+        };
+        let files = self.repo.changed_files(id).unwrap_or_default();
+        if let Some(panel) = &mut self.panel {
+            panel.changed_files = files;
+        }
+    }
+
+    fn flush_peek(&mut self) {
+        if self.peek_debounce.take().is_some() {
+            self.fill_peek();
+        }
+    }
+
     fn expand_commit_diff(&mut self) {
+        self.flush_peek();
         if let Some(panel) = &mut self.panel {
             panel.fullscreen = true;
             panel.file = 0;
@@ -3234,6 +3262,13 @@ impl App {
     }
 
     fn tick(&mut self, dt: Duration) {
+        if let Some(remaining) = &mut self.peek_debounce {
+            *remaining -= dt.as_secs_f32();
+            if *remaining <= 0.0 {
+                self.peek_debounce = None;
+                self.fill_peek();
+            }
+        }
         let step = dt.as_secs_f32() / PANEL_ANIMATION.as_secs_f32();
         if let Some(panel) = &mut self.panel {
             advance(&mut panel.progress, panel.target, step);
