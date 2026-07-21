@@ -2502,13 +2502,31 @@ impl App {
         let Some(parent) = breadcrumb.pop() else {
             return;
         };
+        let child_workdir = self.current_workdir().canonicalize().ok();
         match App::open(&parent) {
             Ok(mut app) => {
                 app.breadcrumb = breadcrumb;
+                app.reopen_submodule_panel(child_workdir.as_deref());
                 self.swap_with_transition(app, NavDirection::Pop);
             }
             Err(_) => self.fail("Could not return to the parent repository".to_string()),
         }
+    }
+
+    fn reopen_submodule_panel(&mut self, child_workdir: Option<&Path>) {
+        let workdir = self.current_workdir();
+        let mut panel = SubmodulePanel::opening(self.repo.submodules());
+        if let Some(child) = child_workdir
+            && let Some(index) = panel.entries.iter().position(|sub| {
+                workdir
+                    .join(&sub.path)
+                    .canonicalize()
+                    .is_ok_and(|path| path == child)
+            })
+        {
+            panel.selected = index;
+        }
+        self.submodule_panel = Some(panel);
     }
 
     fn checkout_focused_branch(&mut self) {

@@ -54,3 +54,24 @@ fn exiting_a_submodule_plays_a_pop_transition_back_to_the_parent() {
     app.update(Action::Tick(Duration::from_millis(500)));
     assert!(app.nav_transition().is_none());
 }
+
+#[test]
+fn exiting_a_submodule_reopens_the_panel_focused_on_the_submodule() {
+    let temp = TempDir::new().unwrap();
+    let main = submodule_fixture(temp.path());
+
+    let mut app = App::open(&main).unwrap();
+    let mut input = InputMap::default();
+    enter_submodule(&mut app, &mut input);
+    app.update(Action::Tick(Duration::from_millis(500)));
+
+    press(&mut app, &mut input, KeyCode::Char('<'));
+    app.update(Action::Tick(Duration::from_millis(500)));
+
+    assert!(app.breadcrumb().is_none(), "should be back in the parent");
+    let panel = app
+        .submodule_panel()
+        .expect("panel should stay open after returning to the parent");
+    let focused = panel.focused().expect("a submodule should be focused");
+    assert_eq!(focused.path, "modules/sub");
+}

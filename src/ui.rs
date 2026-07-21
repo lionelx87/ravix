@@ -247,7 +247,7 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
         render_focus_panel(frame, panel, &theme, graph_area);
     }
     if let Some(panel) = app.submodule_panel() {
-        render_submodule_panel(frame, panel, &theme, graph_area);
+        render_submodule_panel(frame, panel, app.breadcrumb().is_some(), &theme, graph_area);
     }
     if let Some(browser) = app.conflict_browser() {
         render_conflict_browser(frame, browser, &theme, graph_area);
@@ -1892,7 +1892,13 @@ fn render_focus_panel(frame: &mut Frame, panel: &FocusPanel, theme: &Theme, area
     );
 }
 
-fn render_submodule_panel(frame: &mut Frame, panel: &SubmodulePanel, theme: &Theme, area: Rect) {
+fn render_submodule_panel(
+    frame: &mut Frame,
+    panel: &SubmodulePanel,
+    has_parent: bool,
+    theme: &Theme,
+    area: Rect,
+) {
     let Some(rect) = slide_rect(area, panel.slide, 0.45, 56.0) else {
         return;
     };
@@ -1945,7 +1951,7 @@ fn render_submodule_panel(frame: &mut Frame, panel: &SubmodulePanel, theme: &The
             ..inner
         };
         frame.render_widget(
-            Paragraph::new(submodule_detail(sub, theme)),
+            Paragraph::new(submodule_detail(sub, has_parent, theme)),
             detail_area,
         );
     }
@@ -2035,7 +2041,7 @@ fn submodule_row(sub: &Submodule, selected: bool, theme: &Theme) -> Line<'static
     line
 }
 
-fn submodule_detail(sub: &Submodule, theme: &Theme) -> Vec<Line<'static>> {
+fn submodule_detail(sub: &Submodule, has_parent: bool, theme: &Theme) -> Vec<Line<'static>> {
     let label = Style::default().fg(theme.label);
     let value = Style::default().fg(theme.summary);
     let mut lines = vec![Line::from(Span::styled(
@@ -2097,10 +2103,14 @@ fn submodule_detail(sub: &Submodule, theme: &Theme) -> Vec<Line<'static>> {
         SyncState::Drifted => "Enter enter · u update to recorded",
         SyncState::Synced => "Enter enter",
     };
-    lines.push(Line::from(vec![
-        Span::styled(format!(" {actions}"), Style::default().fg(theme.marker)),
-        Span::styled(" · < exit to parent", label),
-    ]));
+    let mut hint = vec![Span::styled(
+        format!(" {actions}"),
+        Style::default().fg(theme.marker),
+    )];
+    if has_parent {
+        hint.push(Span::styled(" · < exit to parent", label));
+    }
+    lines.push(Line::from(hint));
     lines
 }
 
