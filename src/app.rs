@@ -1473,6 +1473,7 @@ impl App {
             }
             let _ = tx.send(op(&cli));
         });
+        self.notice = None;
         self.remote = Some(RemoteJob {
             verb,
             on_complete,
