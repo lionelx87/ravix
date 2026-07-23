@@ -504,6 +504,10 @@ impl App {
         self.repo.git_dir().to_path_buf()
     }
 
+    pub fn workdir(&self) -> Option<std::path::PathBuf> {
+        self.repo.workdir().map(Path::to_path_buf)
+    }
+
     fn focus_path(&self) -> std::path::PathBuf {
         self.repo.git_dir().join("ravix").join("focus")
     }
@@ -1505,7 +1509,8 @@ impl App {
                         } else if is_auth_failure(&text) {
                             self.forget_used_credentials();
                             self.fail(text);
-                        } else if matches!(on_complete, OnComplete::Push) && is_non_fast_forward(&text)
+                        } else if matches!(on_complete, OnComplete::Push)
+                            && is_non_fast_forward(&text)
                         {
                             self.confirm = Some(Confirm {
                                 message:

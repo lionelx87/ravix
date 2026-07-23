@@ -68,7 +68,7 @@ impl PerfLog {
 
 fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     let mut input = InputMap::default();
-    let watcher = RepoWatcher::new(&app.git_dir(), WATCH_DEBOUNCE).ok();
+    let watcher = RepoWatcher::new(&app.git_dir(), app.workdir().as_deref(), WATCH_DEBOUNCE);
     let mut last_tick = Instant::now();
     let mut graph_area = Rect::default();
     let mut perf = PerfLog::from_env();
@@ -128,7 +128,7 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         app.poll_remote();
         app.poll_askpass();
 
-        if watcher.as_ref().is_some_and(RepoWatcher::changed) {
+        if watcher.changed() {
             let reload_started = Instant::now();
             app.update(Action::Reload);
             perf.record("reload", reload_started.elapsed());

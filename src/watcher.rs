@@ -1,36 +1,29 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
+use git2::Repository;
 use notify::event::ModifyKind;
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode, Watcher};
 
-/// Watches a repository's `.git` directory and coalesces bursts of filesystem
-/// events into a single debounced reload signal.
+/// Watches a repository's `.git` directory and working tree, coalescing bursts
+/// of filesystem events into a single debounced reload signal. Worktree events
+/// on git-ignored paths (build artifacts, caches) are dropped so background
+/// tooling never triggers reloads. Watch registration can take seconds on
+/// large worktrees, so the watcher is built entirely on a background thread
+/// and starts signaling once registration completes.
 pub struct RepoWatcher {
-    _watcher: RecommendedWatcher,
     reloads: Receiver<()>,
 }
 
 impl RepoWatcher {
-    pub fn new(git_dir: &Path, debounce: Duration) -> notify::Result<Self> {
-        let (raw_tx, raw_rx) = mpsc::channel();
-        let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if event.is_ok_and(|event| signals_change(&event.kind)) {
-                    let _ = raw_tx.send(());
-                }
-            })?;
-        watcher.watch(git_dir, RecursiveMode::Recursive)?;
-
+    pub fn new(git_dir: &Path, workdir: Option<&Path>, debounce: Duration) -> Self {
         let (reload_tx, reload_rx) = mpsc::channel();
-        thread::spawn(move || debounce_loop(raw_rx, reload_tx, debounce));
-
-        Ok(Self {
-            _watcher: watcher,
-            reloads: reload_rx,
-        })
+        let git_dir = git_dir.to_path_buf();
+        let workdir = workdir.map(Path::to_path_buf);
+        thread::spawn(move || watch_and_debounce(git_dir, workdir, debounce, reload_tx));
+        Self { reloads: reload_rx }
     }
 
     pub fn changed(&self) -> bool {
@@ -39,6 +32,89 @@ impl RepoWatcher {
             changed = true;
         }
         changed
+    }
+}
+
+fn watch_and_debounce(
+    git_dir: PathBuf,
+    workdir: Option<PathBuf>,
+    debounce: Duration,
+    reload: mpsc::Sender<()>,
+) {
+    let filter = EventFilter::new(&git_dir, workdir.as_deref());
+    let (raw_tx, raw_rx) = mpsc::channel();
+    let Ok(mut watcher) =
+        notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if event.is_ok_and(|event| filter.should_reload(&event)) {
+                let _ = raw_tx.send(());
+            }
+        })
+    else {
+        return;
+    };
+    if watcher.watch(&git_dir, RecursiveMode::Recursive).is_err() {
+        return;
+    }
+    if let Some(workdir) = &workdir {
+        let _ = watcher.watch(workdir, RecursiveMode::Recursive);
+    }
+    debounce_loop(raw_rx, reload, debounce);
+}
+
+struct EventFilter {
+    git_dir: PathBuf,
+    worktree: Option<WorktreeFilter>,
+}
+
+struct WorktreeFilter {
+    root: PathBuf,
+    repo: Option<Repository>,
+}
+
+impl EventFilter {
+    fn new(git_dir: &Path, workdir: Option<&Path>) -> Self {
+        Self {
+            git_dir: git_dir.to_path_buf(),
+            worktree: workdir.map(|root| WorktreeFilter {
+                root: root.to_path_buf(),
+                repo: Repository::open(root).ok(),
+            }),
+        }
+    }
+
+    fn should_reload(&self, event: &notify::Event) -> bool {
+        if !signals_change(&event.kind) {
+            return false;
+        }
+        if event.paths.is_empty() {
+            return true;
+        }
+        event.paths.iter().any(|path| self.path_is_relevant(path))
+    }
+
+    fn path_is_relevant(&self, path: &Path) -> bool {
+        if path.starts_with(&self.git_dir) {
+            return true;
+        }
+        match &self.worktree {
+            Some(worktree) => worktree.is_relevant(path),
+            None => true,
+        }
+    }
+}
+
+impl WorktreeFilter {
+    fn is_relevant(&self, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return true;
+        };
+        if relative.as_os_str().is_empty() {
+            return true;
+        }
+        match &self.repo {
+            Some(repo) => !repo.is_path_ignored(relative).unwrap_or(false),
+            None => true,
+        }
     }
 }
 
