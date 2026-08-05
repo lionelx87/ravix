@@ -63,6 +63,7 @@ const GRAPH: &[(&str, &str)] = &[
     ("> / <", "submodules: enter / exit"),
     ("n", "new branch"),
     ("u", "undo last action"),
+    ("Esc", "collapse the panel · back to the parent repo"),
     ("Ctrl+P", "command palette"),
 ];
 
@@ -127,7 +128,7 @@ const SUBMODULE: &[(&str, &str)] = &[
     ("Enter", "enter the submodule"),
     ("i", "initialize the submodule"),
     ("u", "update the submodule to the recorded commit"),
-    ("> / Esc", "close (use < in the graph to exit a submodule)"),
+    ("> / Esc", "close (< or Esc in the graph exits it)"),
 ];
 
 const COMMIT_DIFF: &[(&str, &str)] = &[

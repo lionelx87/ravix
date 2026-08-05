@@ -75,3 +75,81 @@ fn exiting_a_submodule_reopens_the_panel_focused_on_the_submodule() {
     let focused = panel.focused().expect("a submodule should be focused");
     assert_eq!(focused.path, "modules/sub");
 }
+
+#[test]
+fn esc_returns_to_the_parent_repository() {
+    let temp = TempDir::new().unwrap();
+    let main = submodule_fixture(temp.path());
+
+    let mut app = App::open(&main).unwrap();
+    let mut input = InputMap::default();
+    enter_submodule(&mut app, &mut input);
+    app.update(Action::Tick(Duration::from_millis(500)));
+
+    press(&mut app, &mut input, KeyCode::Esc);
+
+    assert!(app.breadcrumb().is_none(), "should be back in the parent");
+    let transition = app.nav_transition().expect("pop transition should start");
+    assert_eq!(transition.direction, NavDirection::Pop);
+}
+
+#[test]
+fn esc_closes_the_submodule_panel_before_leaving() {
+    let temp = TempDir::new().unwrap();
+    let main = submodule_fixture(temp.path());
+
+    let mut app = App::open(&main).unwrap();
+    let mut input = InputMap::default();
+    enter_submodule(&mut app, &mut input);
+    app.update(Action::Tick(Duration::from_millis(500)));
+    open_panel(&mut app, &mut input);
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    assert!(
+        app.breadcrumb().is_some(),
+        "the first Esc should only close the panel"
+    );
+
+    app.update(Action::Tick(Duration::from_millis(500)));
+    press(&mut app, &mut input, KeyCode::Esc);
+    assert!(app.breadcrumb().is_none(), "the second Esc should exit");
+}
+
+#[test]
+fn esc_collapses_the_commit_panel_before_leaving() {
+    let temp = TempDir::new().unwrap();
+    let main = submodule_fixture(temp.path());
+
+    let mut app = App::open(&main).unwrap();
+    let mut input = InputMap::default();
+    enter_submodule(&mut app, &mut input);
+    app.update(Action::Tick(Duration::from_millis(500)));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    assert!(
+        app.breadcrumb().is_some(),
+        "the first Esc should only collapse the detail panel"
+    );
+
+    app.update(Action::Tick(Duration::from_millis(500)));
+    press(&mut app, &mut input, KeyCode::Esc);
+    assert!(app.breadcrumb().is_none(), "the second Esc should exit");
+}
+
+#[test]
+fn esc_in_the_root_repository_does_nothing() {
+    let temp = TempDir::new().unwrap();
+    let main = submodule_fixture(temp.path());
+
+    let mut app = App::open(&main).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Esc);
+
+    assert!(app.breadcrumb().is_none());
+    assert!(
+        app.nav_transition().is_none(),
+        "there is no parent to navigate to"
+    );
+}

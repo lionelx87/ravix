@@ -1730,6 +1730,12 @@ impl App {
     }
 
     fn dismiss(&mut self) {
+        if !self.dismiss_layer() {
+            self.exit_submodule();
+        }
+    }
+
+    fn dismiss_layer(&mut self) -> bool {
         if self.password.is_some() {
             self.password_cancel();
         } else if self.focus_name.is_some() {
@@ -1773,7 +1779,10 @@ impl App {
             } else {
                 panel.target = 0.0;
             }
+        } else {
+            return false;
         }
+        true
     }
 
     fn focused_working_file(&self) -> Option<WorkingFile> {
@@ -2504,6 +2513,9 @@ impl App {
     }
 
     fn exit_submodule(&mut self) {
+        if self.nav_transition.is_some() {
+            return;
+        }
         let mut breadcrumb = self.breadcrumb.clone();
         let Some(parent) = breadcrumb.pop() else {
             return;

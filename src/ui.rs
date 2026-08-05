@@ -476,7 +476,7 @@ fn render_submodule_bar(frame: &mut Frame, app: &App, path: &str, theme: &Theme,
         ));
     }
     spans.push(Span::styled(
-        "   < back to parent",
+        "   < / Esc back to parent",
         Style::default().fg(theme.meta),
     ));
     frame.render_widget(

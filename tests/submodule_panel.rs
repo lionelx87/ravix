@@ -100,7 +100,10 @@ fn inside_a_submodule_a_persistent_bar_shows_path_status_and_way_back() {
     assert!(bar.contains(&format!("@{head}")), "sha missing in bar:\n{screen}");
     assert!(bar.contains("● in sync"), "sync marker missing in bar:\n{screen}");
     assert!(bar.contains("?1"), "dirty marker missing in bar:\n{screen}");
-    assert!(bar.contains("< back"), "return hint missing in bar:\n{screen}");
+    assert!(
+        bar.contains("< / Esc back"),
+        "return hint missing in bar:\n{screen}"
+    );
 }
 
 #[test]
