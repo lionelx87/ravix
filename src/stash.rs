@@ -4,6 +4,13 @@ pub struct StashEntry {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashConflict {
+    pub index: usize,
+    pub message: String,
+    pub pop: bool,
+}
+
 pub fn parse_stash_list(text: &str) -> Vec<StashEntry> {
     text.lines().filter_map(parse_line).collect()
 }

@@ -13,7 +13,8 @@ use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_coun
 use crate::drag::{DropIntent, RowRef, resolve_drop};
 use crate::focus::{self, FocusSet};
 use crate::git::{
-    BadgeKind, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile, WorkingStatus,
+    BadgeKind, CONFLICTED, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile,
+    WorkingStatus,
 };
 use crate::graph::{GraphCommit, GraphLayout, GraphRow};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
@@ -24,7 +25,7 @@ use crate::remote::{
 };
 use crate::slide::{self, SlidePanel, advance};
 use crate::staging::{FileDiff, build_patch};
-use crate::stash::StashPanel;
+use crate::stash::{StashConflict, StashPanel};
 use crate::submodule::{Submodule, SyncState, breadcrumb_label};
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::visibility::Visibility;
@@ -220,10 +221,17 @@ struct RemoteJob {
     rx: mpsc::Receiver<Result<(), MutationError>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiscardMode {
+    Worktree,
+    Head,
+    Untracked,
+}
+
 enum ConfirmKind {
     Discard {
         path: String,
-        untracked: bool,
+        mode: DiscardMode,
     },
     DiscardHunk {
         path: String,
@@ -247,6 +255,7 @@ enum ConfirmKind {
     DropStash {
         index: usize,
     },
+    AbortStashConflict,
     DeleteFocus {
         name: String,
     },
@@ -395,6 +404,7 @@ pub struct App {
     edit_request: Option<String>,
     drag: Option<DragState>,
     stash: Option<StashPanel>,
+    stash_conflict: Option<StashConflict>,
     remote: Option<RemoteJob>,
     askpass_sock: Option<PathBuf>,
     askpass_requests: Option<mpsc::Receiver<AskpassRequest>>,
@@ -475,6 +485,7 @@ impl App {
             edit_request: None,
             drag: None,
             stash: None,
+            stash_conflict: None,
             remote: None,
             askpass_sock: None,
             askpass_requests: None,
@@ -1362,20 +1373,31 @@ impl App {
             .map(|entry| entry.index)
     }
 
+    fn focused_stash_conflict(&self, pop: bool) -> Option<StashConflict> {
+        self.stash
+            .as_ref()
+            .and_then(StashPanel::focused)
+            .map(|entry| StashConflict {
+                index: entry.index,
+                message: entry.message.clone(),
+                pop,
+            })
+    }
+
     fn stash_pop(&mut self) {
-        let Some(index) = self.focused_stash() else {
+        let Some(entry) = self.focused_stash_conflict(true) else {
             return;
         };
-        let result = self.cli.stash_pop(index);
-        self.after_stash_mutation(result, "Popped stash");
+        let result = self.cli.stash_pop(entry.index);
+        self.after_stash_restore(result, entry, "Popped stash");
     }
 
     fn stash_apply(&mut self) {
-        let Some(index) = self.focused_stash() else {
+        let Some(entry) = self.focused_stash_conflict(false) else {
             return;
         };
-        let result = self.cli.stash_apply(index);
-        self.after_stash_mutation(result, "Applied stash");
+        let result = self.cli.stash_apply(entry.index);
+        self.after_stash_restore(result, entry, "Applied stash");
     }
 
     fn request_drop_stash(&mut self) {
@@ -1395,6 +1417,32 @@ impl App {
             Ok(()) => self.info(ok_notice.to_string()),
             Err(error) => self.fail(error.to_string()),
         }
+    }
+
+    fn after_stash_restore(
+        &mut self,
+        result: Result<(), MutationError>,
+        entry: StashConflict,
+        ok_notice: &str,
+    ) {
+        let Err(error) = result else {
+            self.after_stash_mutation(Ok(()), ok_notice);
+            return;
+        };
+        let conflicts = self.repo.conflicted_files();
+        if conflicts.is_empty() {
+            self.after_stash_mutation(Err(error), ok_notice);
+            return;
+        }
+        let count = conflicts.len();
+        self.stash_conflict = Some(entry);
+        self.stash = None;
+        self.enter_conflict_browser(OpKind::Stash);
+        self.reload();
+        self.refresh_stash();
+        self.fail(format!(
+            "Stash conflicts in {count} file(s) — resolve, then [c]"
+        ));
     }
 
     fn palette_input(&mut self, character: char) {
@@ -1871,12 +1919,16 @@ impl App {
         let Some(file) = self.focused_working_file() else {
             return;
         };
-        let untracked = file.state == StageState::Untracked;
+        let mode = discard_mode(&file);
+        let scope = match mode {
+            DiscardMode::Head => "staged changes to",
+            _ => "changes to",
+        };
         self.confirm = Some(Confirm {
-            message: format!("Discard changes to {}? (y/n)", file.path),
+            message: format!("Discard {scope} {}? (y/n)", file.path),
             kind: ConfirmKind::Discard {
                 path: file.path,
-                untracked,
+                mode,
             },
         });
     }
@@ -1886,12 +1938,12 @@ impl App {
             return;
         };
         match confirm.kind {
-            ConfirmKind::Discard { path, untracked } => {
+            ConfirmKind::Discard { path, mode } => {
                 let snapshot = self.repo.snapshot_blob(&path);
-                let result = if untracked {
-                    self.cli.remove_untracked(&path)
-                } else {
-                    self.cli.discard_file(&path)
+                let result = match mode {
+                    DiscardMode::Untracked => self.cli.remove_untracked(&path),
+                    DiscardMode::Head => self.cli.restore_from_head(std::slice::from_ref(&path)),
+                    DiscardMode::Worktree => self.cli.discard_file(&path),
                 };
                 self.finish_discard(result, path, snapshot);
             }
@@ -1936,6 +1988,7 @@ impl App {
                 let result = self.cli.stash_drop(index);
                 self.after_stash_mutation(result, "Dropped stash");
             }
+            ConfirmKind::AbortStashConflict => self.abort_stash_conflict(),
             ConfirmKind::DeleteFocus { name } => {
                 focus::remove(&mut self.focus_sets, &name);
                 self.write_focus_sets();
@@ -2901,13 +2954,27 @@ impl App {
         if self.conflict.is_some() {
             return;
         }
-        if let Some(op) = self.repo.state_op() {
-            let files = self.load_conflict_files();
-            if !files.is_empty() {
-                let progress = self.repo.rebase_progress();
-                self.conflict = Some(ConflictBrowser::new(op, files, progress));
-            }
+        let Some(op) = self.pending_op() else {
+            return;
+        };
+        let files = self.load_conflict_files();
+        if !files.is_empty() {
+            let progress = self.repo.rebase_progress();
+            self.conflict = Some(ConflictBrowser::new(op, files, progress));
         }
+    }
+
+    fn pending_op(&self) -> Option<OpKind> {
+        self.repo.state_op().or_else(|| {
+            (self.has_conflicts() && self.repo.is_clean_state()).then_some(OpKind::Stash)
+        })
+    }
+
+    fn has_conflicts(&self) -> bool {
+        self.status
+            .unstaged
+            .iter()
+            .any(|file| file.status == CONFLICTED)
     }
 
     fn enter_conflict_browser(&mut self, op: OpKind) {
@@ -2973,6 +3040,10 @@ impl App {
             self.continue_rebase();
             return;
         }
+        if op == OpKind::Stash {
+            self.finish_stash_conflict();
+            return;
+        }
         let message = self.repo.pending_message().unwrap_or_default();
         self.commit = Some(CommitEditor {
             message,
@@ -2980,23 +3051,57 @@ impl App {
         });
     }
 
+    fn finish_stash_conflict(&mut self) {
+        let remaining = self.repo.conflicted_files().len();
+        if remaining > 0 {
+            self.refresh_conflict_files();
+            self.info(format!("Still {remaining} conflicted file(s)"));
+            return;
+        }
+        self.conflict = None;
+        let notice = match self.stash_conflict.take() {
+            Some(entry) if entry.pop => self.drop_restored_stash(&entry),
+            Some(entry) => format!("Resolved — stash@{{{}}} kept", entry.index),
+            None => "Resolved — drop the stash yourself when ready".to_string(),
+        };
+        self.reload();
+        self.refresh_stash();
+        self.info(notice);
+    }
+
+    fn drop_restored_stash(&mut self, entry: &StashConflict) -> String {
+        let listed = self
+            .cli
+            .stash_list()
+            .into_iter()
+            .any(|listed| listed.index == entry.index && listed.message == entry.message);
+        if !listed {
+            return format!("Resolved — stash@{{{}}} kept (list changed)", entry.index);
+        }
+        match self.cli.stash_drop(entry.index) {
+            Ok(()) => format!("Resolved — dropped stash@{{{}}}", entry.index),
+            Err(error) => format!("Resolved — {error}"),
+        }
+    }
+
     fn finish_conflict_commit(&mut self, op: OpKind, message: &str) {
+        if !op.needs_commit() {
+            return;
+        }
         let previous = self.repo.head_oid();
         match self.cli.commit(message) {
             Ok(()) => {
                 if let Some(previous) = previous {
                     self.last_action = Some(match op {
-                        OpKind::Merge => UndoableAction::Merged { previous },
                         OpKind::CherryPick => UndoableAction::CherryPicked { previous },
-                        OpKind::Rebase => UndoableAction::Rebased { previous },
+                        _ => UndoableAction::Merged { previous },
                     });
                 }
                 self.conflict = None;
                 self.reload();
                 self.celebrate(match op {
                     OpKind::CherryPick => Event::CherryPick,
-                    OpKind::Rebase => Event::Rebase,
-                    OpKind::Merge => Event::Merge,
+                    _ => Event::Merge,
                 });
                 self.info(format!("Resolved {}", op.label()));
             }
@@ -3042,10 +3147,14 @@ impl App {
             return;
         };
         let op = browser.op;
+        if op == OpKind::Stash {
+            self.request_abort_stash_conflict();
+            return;
+        }
         let result = match op {
-            OpKind::Merge => self.cli.merge_abort(),
             OpKind::CherryPick => self.cli.cherry_pick_abort(),
             OpKind::Rebase => self.cli.rebase_abort(),
+            _ => self.cli.merge_abort(),
         };
         self.conflict = None;
         match result {
@@ -3053,6 +3162,51 @@ impl App {
             Err(error) => self.fail(error.to_string()),
         }
         self.reload();
+    }
+
+    fn request_abort_stash_conflict(&mut self) {
+        let paths = self.stash_restore_paths();
+        if paths.is_empty() {
+            self.conflict = None;
+            self.stash_conflict = None;
+            self.info("Nothing left to discard".to_string());
+            self.reload();
+            return;
+        }
+        let kept = match &self.stash_conflict {
+            Some(entry) => format!("stash@{{{}}} is kept", entry.index),
+            None => "the stash is kept".to_string(),
+        };
+        self.confirm = Some(Confirm {
+            message: format!("Discard {} file(s)? {kept} (y/n)", paths.len()),
+            kind: ConfirmKind::AbortStashConflict,
+        });
+    }
+
+    fn stash_restore_paths(&self) -> Vec<String> {
+        let mut paths = self.repo.conflicted_files();
+        if let Some(entry) = &self.stash_conflict {
+            for path in self.cli.stash_paths(entry.index) {
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        paths.retain(|path| self.repo.known_path(path));
+        paths
+    }
+
+    fn abort_stash_conflict(&mut self) {
+        let paths = self.stash_restore_paths();
+        let result = self.cli.restore_from_head(&paths);
+        self.conflict = None;
+        self.stash_conflict = None;
+        match result {
+            Ok(()) => self.info("Discarded stash conflicts — stash kept".to_string()),
+            Err(error) => self.fail(error.to_string()),
+        }
+        self.reload();
+        self.refresh_stash();
     }
 
     fn request_delete_branch(&mut self) {
@@ -3364,6 +3518,15 @@ impl App {
 
 fn short_oid(oid: &str) -> String {
     oid.chars().take(7).collect()
+}
+
+fn discard_mode(file: &WorkingFile) -> DiscardMode {
+    match file.state {
+        StageState::Untracked => DiscardMode::Untracked,
+        StageState::Staged => DiscardMode::Head,
+        StageState::Unstaged if file.status == CONFLICTED => DiscardMode::Head,
+        StageState::Unstaged => DiscardMode::Worktree,
+    }
 }
 
 fn split_remote_ref(reference: &str) -> Option<(String, String)> {

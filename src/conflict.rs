@@ -93,6 +93,7 @@ pub enum OpKind {
     Merge,
     CherryPick,
     Rebase,
+    Stash,
 }
 
 impl OpKind {
@@ -101,7 +102,12 @@ impl OpKind {
             OpKind::Merge => "merge",
             OpKind::CherryPick => "cherry-pick",
             OpKind::Rebase => "rebase",
+            OpKind::Stash => "stash",
         }
+    }
+
+    pub fn needs_commit(self) -> bool {
+        matches!(self, OpKind::Merge | OpKind::CherryPick)
     }
 }
 

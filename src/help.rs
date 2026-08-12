@@ -102,9 +102,9 @@ const CONFLICT: &[(&str, &str)] = &[
     ("o / t", "take ours / theirs"),
     ("e", "edit in $EDITOR"),
     ("Tab", "next conflicted file"),
-    ("c", "continue the operation"),
+    ("c", "continue (stash: finish and keep or drop the entry)"),
     ("s", "skip (rebase)"),
-    ("A", "abort"),
+    ("A", "abort (stash: discard the applied files)"),
 ];
 
 const STASH: &[(&str, &str)] = &[
@@ -113,6 +113,7 @@ const STASH: &[(&str, &str)] = &[
     ("a", "apply"),
     ("d", "drop"),
     ("S / Esc", "close"),
+    ("", "a conflicting pop or apply opens the resolver"),
 ];
 
 const FOCUS: &[(&str, &str)] = &[

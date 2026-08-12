@@ -7,19 +7,70 @@ use crate::askpass::AskpassConfig;
 use crate::join::MergeTreeResult;
 use crate::stash::{StashEntry, parse_stash_list};
 
+const DETAIL_LIMIT: usize = 160;
+
 #[derive(Debug)]
 pub enum MutationError {
     Spawn(std::io::Error),
-    Failed { command: String, stderr: String },
+    Failed {
+        command: String,
+        stderr: String,
+        stdout: String,
+    },
+}
+
+impl MutationError {
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Spawn(error) => format!("could not run git: {error}"),
+            Self::Failed { stderr, stdout, .. } => {
+                let text = if stderr.trim().is_empty() {
+                    stdout
+                } else {
+                    stderr
+                };
+                summarize(text)
+            }
+        }
+    }
 }
 
 impl fmt::Display for MutationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Spawn(error) => write!(f, "could not run git: {error}"),
-            Self::Failed { command, stderr } => write!(f, "{command}: {stderr}"),
+            Self::Failed { command, .. } => {
+                let detail = self.detail();
+                if detail.is_empty() {
+                    write!(f, "{command} failed")
+                } else {
+                    write!(f, "{command}: {detail}")
+                }
+            }
         }
     }
+}
+
+fn summarize(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let chosen = lines
+        .iter()
+        .find(|line| {
+            line.starts_with("fatal:") || line.starts_with("error:") || line.starts_with("CONFLICT")
+        })
+        .or_else(|| lines.first())
+        .copied()
+        .unwrap_or_default();
+    let condensed = chosen.split_whitespace().collect::<Vec<_>>().join(" ");
+    if condensed.chars().count() <= DETAIL_LIMIT {
+        return condensed;
+    }
+    let clipped: String = condensed.chars().take(DETAIL_LIMIT).collect();
+    format!("{clipped}…")
 }
 
 pub struct GitCli {
@@ -77,6 +128,15 @@ impl GitCli {
 
     pub fn discard_file(&self, path: &str) -> Result<(), MutationError> {
         self.run(&["restore", "--recurse-submodules", "--", path], None)
+    }
+
+    pub fn restore_from_head(&self, paths: &[String]) -> Result<(), MutationError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+        args.extend(paths.iter().map(String::as_str));
+        self.run(&args, None)
     }
 
     pub fn discard_hunk(&self, patch: &str) -> Result<(), MutationError> {
@@ -203,6 +263,30 @@ impl GitCli {
         self.run(&["stash", "drop", &format!("stash@{{{index}}}")], None)
     }
 
+    pub fn stash_paths(&self, index: usize) -> Vec<String> {
+        let output = Command::new("git")
+            .current_dir(&self.workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args([
+                "-c",
+                "core.quotePath=false",
+                "stash",
+                "show",
+                "--name-only",
+                "-z",
+                &format!("stash@{{{index}}}"),
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn stash_list(&self) -> Vec<StashEntry> {
         let output = Command::new("git")
             .current_dir(&self.workdir)
@@ -271,7 +355,7 @@ impl GitCli {
             } else {
                 Stdio::null()
             })
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         let mut child = command.spawn().map_err(MutationError::Spawn)?;
@@ -291,6 +375,7 @@ impl GitCli {
             Err(MutationError::Failed {
                 command: format!("git {}", args.join(" ")),
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
             })
         }
     }

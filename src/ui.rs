@@ -17,7 +17,7 @@ use crate::app::{
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
-use crate::git::{BadgeKind, FileStatus, RefBadge};
+use crate::git::{BadgeKind, CONFLICTED, FileStatus, RefBadge};
 use crate::help::context_help;
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
@@ -302,6 +302,7 @@ fn status_color(code: char, theme: &Theme) -> Color {
         'D' => theme.removed,
         'M' => theme.wip,
         'R' | 'C' | 'T' => theme.branch_badge,
+        CONFLICTED => theme.warn,
         _ => theme.meta,
     }
 }
@@ -963,8 +964,13 @@ fn render_conflict_browser(
         ]));
     }
     if file_lines.is_empty() {
+        let verb = if browser.op == OpKind::Stash {
+            "finish"
+        } else {
+            "continue"
+        };
         file_lines.push(Line::from(Span::styled(
-            "all resolved — press [c] to continue",
+            format!("all resolved — press [c] to {verb}"),
             Style::default()
                 .fg(theme.added)
                 .add_modifier(Modifier::BOLD),
@@ -987,9 +993,14 @@ fn render_conflict_browser(
         Some((current, total)) => format!(" · step {current}/{total}"),
         None => String::new(),
     };
+    let headline = if browser.op == OpKind::Stash {
+        "stash conflicts — nothing to commit".to_string()
+    } else {
+        format!("{} in progress{progress}", browser.op.label())
+    };
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("{} in progress{progress}", browser.op.label()),
+            headline,
             Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -1055,9 +1066,14 @@ fn render_conflict_browser(
     } else {
         ""
     };
+    let (finish, undo) = if browser.op == OpKind::Stash {
+        ("finish", "discard")
+    } else {
+        ("continue", "abort")
+    };
     lines.push(Line::from(Span::styled(
         format!(
-            "[o] ours · [t] theirs · [e] edit · [c] continue{skip} · [A]/[Esc] abort — {} left",
+            "[o] ours · [t] theirs · [e] edit · [c] {finish}{skip} · [A]/[Esc] {undo} — {} left",
             browser.remaining()
         ),
         Style::default().fg(theme.meta),

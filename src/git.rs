@@ -92,6 +92,8 @@ pub enum StageState {
     Untracked,
 }
 
+pub const CONFLICTED: char = 'U';
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingFile {
     pub path: String,
@@ -393,6 +395,10 @@ impl Repo {
         }
     }
 
+    pub fn is_clean_state(&self) -> bool {
+        self.inner.state() == git2::RepositoryState::Clean
+    }
+
     pub fn orig_head(&self) -> Option<String> {
         let text = std::fs::read_to_string(self.inner.path().join("ORIG_HEAD")).ok()?;
         let oid = text.trim().to_string();
@@ -440,6 +446,18 @@ impl Repo {
             .collect()
     }
 
+    pub fn known_path(&self, path: &str) -> bool {
+        if self.inner.index().is_ok_and(|index| {
+            (0..=3).any(|stage| index.get_path(Path::new(path), stage).is_some())
+        }) {
+            return true;
+        }
+        self.inner
+            .head()
+            .and_then(|head| head.peel_to_tree())
+            .is_ok_and(|tree| tree.get_path(Path::new(path)).is_ok())
+    }
+
     pub fn pending_message(&self) -> Option<String> {
         let text = std::fs::read_to_string(self.inner.path().join("MERGE_MSG")).ok()?;
         let message = text
@@ -476,6 +494,15 @@ impl Repo {
         for entry in statuses.iter() {
             let flags = entry.status();
             let path = entry.path().unwrap_or("").to_string();
+
+            if flags.is_conflicted() {
+                status.unstaged.push(WorkingFile {
+                    path,
+                    status: CONFLICTED,
+                    state: StageState::Unstaged,
+                });
+                continue;
+            }
 
             if let Some(code) = index_status(flags) {
                 status.staged.push(WorkingFile {
