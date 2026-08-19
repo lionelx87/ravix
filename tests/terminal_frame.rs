@@ -235,6 +235,17 @@ fn panel_marker_row(buffer: &Buffer) -> Option<u16> {
         .find(|&y| (panel_side..area.width).any(|x| buffer.cell((x, y)).unwrap().symbol() == "❯"))
 }
 
+fn panel_marker_line(buffer: &Buffer) -> Option<String> {
+    let area = buffer.area();
+    let panel_side = area.width / 2;
+    let row = panel_marker_row(buffer)?;
+    let mut line = String::new();
+    for x in panel_side..area.width {
+        line.push_str(buffer.cell((x, row)).unwrap().symbol());
+    }
+    Some(line)
+}
+
 fn status_code_fg(buffer: &Buffer, path: &str) -> Color {
     let area = buffer.area();
     let panel_side = area.width / 2;
@@ -1256,6 +1267,41 @@ fn arrow_keys_move_the_selection_while_typing_a_filter() {
         after,
         before + 1,
         "Down moves the selection through the matches while the filter is being typed"
+    );
+}
+
+#[test]
+fn typing_a_filter_selects_the_best_match() {
+    let dir = TempDir::new().unwrap();
+    three_branch_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    settle(&mut app);
+    let top = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker on the first branch");
+
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    let moved = panel_marker_row(&draw(&mut app, 80, 20)).expect("marker after moving down");
+    assert!(
+        moved > top,
+        "the selection moved away from the first row before filtering"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    press(&mut app, &mut input, KeyCode::Char('a'));
+    let frame = draw(&mut app, 80, 20);
+    let filtered = panel_marker_row(&frame).expect("marker while filtering");
+    let line = panel_marker_line(&frame).expect("selected row while filtering");
+
+    assert_eq!(
+        filtered, top,
+        "typing a filter snaps the selection back to the top of the matches"
+    );
+    assert!(
+        line.contains("alpha"),
+        "the top match is selected instead of an arbitrary leftover row:\n{line}"
     );
 }
 
@@ -3215,6 +3261,37 @@ fn typing_fuzzy_filters_the_palette() {
     let rows = app.palette().expect("palette open").rows();
     assert_eq!(rows.len(), 1, "the query should filter to a single command");
     assert_eq!(rows[0].0, "Push");
+}
+
+#[test]
+fn typing_in_the_palette_selects_the_best_match() {
+    let dir = TempDir::new().unwrap();
+    fixture_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press_ctrl(&mut app, &mut input, KeyCode::Char('p'));
+    press(&mut app, &mut input, KeyCode::Down);
+    press(&mut app, &mut input, KeyCode::Down);
+    type_text(&mut app, &mut input, "u");
+
+    let palette = app.palette().expect("palette open");
+    assert_eq!(
+        palette.selected, 0,
+        "typing snaps the selection back to the top of the matches"
+    );
+    assert_eq!(
+        palette.rows()[palette.selected].0,
+        "Undo",
+        "the top match is selected instead of a stale row index"
+    );
+
+    press(&mut app, &mut input, KeyCode::Enter);
+    assert_eq!(
+        app.notice(),
+        Some("Nothing to undo"),
+        "Enter runs the highlighted command, not the one the stale index pointed at"
+    );
 }
 
 #[test]

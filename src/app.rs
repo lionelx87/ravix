@@ -344,7 +344,7 @@ impl Palette {
     fn refilter(&mut self) {
         let labels: Vec<&str> = COMMANDS.iter().map(|(label, _, _)| *label).collect();
         self.matches = fuzzy_filter(&self.query, &labels);
-        self.selected = self.selected.min(self.matches.len().saturating_sub(1));
+        self.selected = 0;
     }
 
     pub fn rows(&self) -> Vec<(&'static str, &'static str)> {
@@ -2301,14 +2301,21 @@ impl App {
         if let Some(filter) = &mut self.branch_filter {
             filter.query.push(character);
         }
-        self.apply_branch_filter();
+        self.requery_branch_filter();
     }
 
     fn branch_filter_backspace(&mut self) {
         if let Some(filter) = &mut self.branch_filter {
             filter.query.pop();
         }
+        self.requery_branch_filter();
+    }
+
+    fn requery_branch_filter(&mut self) {
         self.apply_branch_filter();
+        if let Some(panel) = &mut self.branch {
+            panel.selected = 0;
+        }
     }
 
     fn branch_filter_submit(&mut self) {
