@@ -1093,7 +1093,11 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(format!(" Stashes   {count}   [Enter] fullscreen "));
+        .title(match (app.stash_filter_query(), app.stash_filter_editing()) {
+            (Some(query), true) => format!(" Stashes   {count}   /{query}▏"),
+            (Some(query), false) => format!(" Stashes   {count}   /{query} "),
+            (None, _) => format!(" Stashes   {count}   [Enter] fullscreen "),
+        });
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let width = inner.width as usize;

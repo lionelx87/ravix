@@ -3325,6 +3325,31 @@ fn b_takes_the_stash_out_to_a_new_branch() {
 }
 
 #[test]
+fn slash_filters_the_stash_list_while_typing() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    std::fs::write(dir.path().join("app.txt"), "spike\n").unwrap();
+    git_run(dir.path(), &["stash", "push", "-m", "spike: async graph reload"]);
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    type_message(&mut app, &mut input, "spike");
+    let screen = dump(&draw(&mut app, 120, 30));
+
+    assert!(
+        screen.contains("spike: async graph reload"),
+        "the matching entry should stay:\n{screen}"
+    );
+    assert!(
+        !screen.contains("fix status refresh race"),
+        "the entries that do not match should go:\n{screen}"
+    );
+}
+
+#[test]
 fn popping_a_stash_restores_the_changes_and_removes_it() {
     let dir = TempDir::new().unwrap();
     dirty_repo(dir.path());

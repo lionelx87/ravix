@@ -29,6 +29,7 @@ impl InputMap {
             InputContext::Branch => on_branch_key(key),
             InputContext::BranchName => on_branch_name_key(key),
             InputContext::BranchFilter => on_branch_filter_key(key),
+            InputContext::StashFilter => on_stash_filter_key(key),
             InputContext::FocusSets => on_focus_key(key),
             InputContext::FocusName => on_focus_name_key(key),
             InputContext::Submodules => on_submodule_key(key),
@@ -241,6 +242,19 @@ fn on_focus_name_key(key: KeyEvent) -> Option<Action> {
     }
 }
 
+fn on_stash_filter_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::StashFilterSubmit),
+        KeyCode::Backspace => Some(Action::StashFilterBackspace),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char(character) if !ctrl => Some(Action::StashFilterInput(character)),
+        _ => None,
+    }
+}
+
 fn on_branch_filter_key(key: KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -296,6 +310,7 @@ fn on_stash_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('d') => Some(Action::StashDrop),
         KeyCode::Char('x') => Some(Action::StashRestoreFile),
         KeyCode::Char('b') => Some(Action::StashBranch),
+        KeyCode::Char('/') => Some(Action::StartStashFilter),
         KeyCode::Char('S') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Char('?') => Some(Action::ToggleHelp),

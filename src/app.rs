@@ -25,7 +25,9 @@ use crate::remote::{
 };
 use crate::slide::{self, SlidePanel, advance};
 use crate::staging::{FileDiff, build_patch};
-use crate::stash::{Focus as StashFocus, StashConflict, StashFile, StashPanel, StashStats, StashView};
+use crate::stash::{
+    Focus as StashFocus, StashConflict, StashEntry, StashFile, StashPanel, StashStats, StashView,
+};
 use crate::submodule::{Submodule, SyncState, breadcrumb_label};
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::visibility::Visibility;
@@ -104,6 +106,10 @@ pub enum Action {
     SoloBranch,
     PinBranch,
     StartBranchFilter,
+    StartStashFilter,
+    StashFilterInput(char),
+    StashFilterBackspace,
+    StashFilterSubmit,
     BranchFilterInput(char),
     BranchFilterBackspace,
     BranchFilterSubmit,
@@ -146,6 +152,7 @@ pub enum InputContext {
     Branch,
     BranchName,
     BranchFilter,
+    StashFilter,
     FocusSets,
     FocusName,
     Submodules,
@@ -195,7 +202,7 @@ impl BranchCreate {
     }
 }
 
-struct BranchFilter {
+struct TextFilter {
     query: String,
     editing: bool,
 }
@@ -406,7 +413,7 @@ pub struct App {
     visibility: Visibility,
     working: Option<WorkingView>,
     branch: Option<BranchPanel>,
-    branch_filter: Option<BranchFilter>,
+    branch_filter: Option<TextFilter>,
     branch_all: Vec<BranchEntry>,
     focus_panel: Option<FocusPanel>,
     focus_sets: Vec<FocusSet>,
@@ -421,6 +428,8 @@ pub struct App {
     drag: Option<DragState>,
     stash: Option<StashView>,
     stash_message: Option<String>,
+    stash_all: Vec<StashEntry>,
+    stash_filter: Option<TextFilter>,
     stash_conflict: Option<StashConflict>,
     remote: Option<RemoteJob>,
     askpass_sock: Option<PathBuf>,
@@ -506,6 +515,8 @@ impl App {
             drag: None,
             stash: None,
             stash_message: None,
+            stash_all: Vec::new(),
+            stash_filter: None,
             stash_conflict: None,
             remote: None,
             askpass_sock: None,
@@ -824,6 +835,12 @@ impl App {
             InputContext::Confirm
         } else if self.conflict.is_some() {
             InputContext::Conflict
+        } else if self
+            .stash_filter
+            .as_ref()
+            .is_some_and(|filter| filter.editing)
+        {
+            InputContext::StashFilter
         } else if self.stash.is_some() {
             InputContext::Stash
         } else if self.join.is_some() {
@@ -980,6 +997,10 @@ impl App {
             Action::SoloBranch => self.solo_branch(),
             Action::PinBranch => self.pin_branch(),
             Action::StartBranchFilter => self.start_branch_filter(),
+            Action::StartStashFilter => self.start_stash_filter(),
+            Action::StashFilterInput(character) => self.stash_filter_input(character),
+            Action::StashFilterBackspace => self.stash_filter_backspace(),
+            Action::StashFilterSubmit => self.stash_filter_submit(),
             Action::BranchFilterInput(character) => self.branch_filter_input(character),
             Action::BranchFilterBackspace => self.branch_filter_backspace(),
             Action::BranchFilterSubmit => self.branch_filter_submit(),
@@ -1426,8 +1447,9 @@ impl App {
             self.close_stash();
             return;
         }
-        let entries = self.cli.stash_list();
-        self.stash = Some(StashView::opening(entries));
+        self.stash_all = self.cli.stash_list();
+        self.stash_filter = None;
+        self.stash = Some(StashView::opening(self.stash_all.clone()));
         self.sync_stash_files();
     }
 
@@ -1438,11 +1460,89 @@ impl App {
     }
 
     fn refresh_stash(&mut self) {
-        let entries = self.cli.stash_list();
+        self.stash_all = self.cli.stash_list();
+        self.apply_stash_filter();
+        self.sync_stash_files();
+    }
+
+    fn start_stash_filter(&mut self) {
+        if self.stash.is_none() {
+            return;
+        }
+        self.stash_filter = Some(TextFilter {
+            query: String::new(),
+            editing: true,
+        });
+    }
+
+    fn stash_filter_input(&mut self, character: char) {
+        if let Some(filter) = &mut self.stash_filter {
+            filter.query.push(character);
+        }
+        self.apply_stash_filter();
+        self.sync_stash_files();
+    }
+
+    fn stash_filter_backspace(&mut self) {
+        if let Some(filter) = &mut self.stash_filter {
+            filter.query.pop();
+        }
+        self.apply_stash_filter();
+        self.sync_stash_files();
+    }
+
+    fn stash_filter_submit(&mut self) {
+        if let Some(filter) = &mut self.stash_filter {
+            if filter.query.is_empty() {
+                self.stash_filter = None;
+            } else {
+                filter.editing = false;
+            }
+        }
+    }
+
+    fn apply_stash_filter(&mut self) {
+        let query = self
+            .stash_filter
+            .as_ref()
+            .map(|filter| filter.query.clone())
+            .unwrap_or_default();
+        let entries = if query.is_empty() {
+            self.stash_all.clone()
+        } else {
+            let haystack: Vec<String> = self
+                .stash_all
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{} {}",
+                        entry.message.text(),
+                        entry.branch.clone().unwrap_or_default()
+                    )
+                })
+                .collect();
+            let refs: Vec<&str> = haystack.iter().map(String::as_str).collect();
+            fuzzy_filter(&query, &refs)
+                .into_iter()
+                .map(|index| self.stash_all[index].clone())
+                .collect()
+        };
         if let Some(view) = &mut self.stash {
             view.panel.refresh(entries);
+            view.panel.selected = view.panel.selected.min(
+                view.panel.entries.len().saturating_sub(1),
+            );
         }
-        self.sync_stash_files();
+    }
+
+    pub fn stash_filter_query(&self) -> Option<&str> {
+        self.stash_filter.as_ref().map(|filter| filter.query.as_str())
+    }
+
+    pub fn stash_filter_editing(&self) -> bool {
+        self.stash_filter
+            .as_ref()
+            .is_some_and(|filter| filter.editing)
     }
 
     fn stash_move(&mut self, delta: isize) {
@@ -2012,6 +2112,9 @@ impl App {
             self.password_cancel();
         } else if self.focus_name.is_some() {
             self.focus_name = None;
+        } else if self.stash_filter.is_some() {
+            self.stash_filter = None;
+            self.apply_stash_filter();
         } else if self.branch_filter.is_some() {
             self.branch_filter = None;
             self.apply_branch_filter();
@@ -2541,7 +2644,7 @@ impl App {
         if self.branch.is_none() {
             return;
         }
-        self.branch_filter = Some(BranchFilter {
+        self.branch_filter = Some(TextFilter {
             query: String::new(),
             editing: true,
         });
