@@ -3433,6 +3433,163 @@ fn shift_tab_walks_the_focus_backwards() {
     );
 }
 
+fn three_stashes(dir: &Path) {
+    dirty_repo(dir);
+    git_run(dir, &["stash", "push", "-u", "-m", "alpha work"]);
+    std::fs::write(dir.join("app.txt"), "beta\n").unwrap();
+    git_run(dir, &["stash", "push", "-m", "beta work"]);
+    std::fs::write(dir.join("app.txt"), "gamma\n").unwrap();
+    git_run(dir, &["stash", "push", "-m", "gamma work"]);
+}
+
+#[test]
+fn filtering_selects_the_best_match() {
+    let dir = TempDir::new().unwrap();
+    three_stashes(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('j'));
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    type_message(&mut app, &mut input, "work");
+    let screen = dump(&draw(&mut app, 120, 24));
+
+    let first_card = screen
+        .lines()
+        .find(|line| line.contains('▣') || line.contains('▢'))
+        .expect("a card should be on screen");
+    assert!(
+        first_card.contains("❯ ▣"),
+        "the top match should be selected, not the row the cursor was on:\n{screen}"
+    );
+}
+
+#[test]
+fn the_filter_query_shows_in_fullscreen_too() {
+    let dir = TempDir::new().unwrap();
+    three_stashes(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Char('/'));
+    type_message(&mut app, &mut input, "beta");
+    let screen = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        screen.contains("/beta"),
+        "filtering in fullscreen should show what you typed:\n{screen}"
+    );
+}
+
+#[test]
+fn the_fullscreen_file_list_scrolls_to_the_focused_file() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path();
+    git_run(path, &["init", "-q", "-b", "main"]);
+    git_run(path, &["config", "user.email", "demo@ravix.dev"]);
+    git_run(path, &["config", "user.name", "Demo"]);
+    for index in 0..24 {
+        std::fs::write(path.join(format!("file-{index:02}.txt")), "before\n").unwrap();
+    }
+    git_run(path, &["add", "-A"]);
+    git_run(path, &["commit", "-q", "-m", "base"]);
+    for index in 0..24 {
+        std::fs::write(path.join(format!("file-{index:02}.txt")), "after\n").unwrap();
+    }
+    git_run(path, &["stash", "push", "-m", "touch everything"]);
+
+    let mut app = App::open(path).unwrap();
+    let mut input = InputMap::default();
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Tab);
+    for _ in 0..23 {
+        press(&mut app, &mut input, KeyCode::Char('j'));
+    }
+    let screen = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        screen.contains("❯ M file-23.txt"),
+        "the file list should scroll to the focused file:\n{screen}"
+    );
+    assert!(
+        !screen.contains("file-00.txt"),
+        "the files above the focused one should scroll off:\n{screen}"
+    );
+}
+
+#[test]
+fn the_panel_diff_scrolls_when_the_diff_zone_has_the_focus() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Tab);
+    press(&mut app, &mut input, KeyCode::Tab);
+    let folded = dump(&draw(&mut app, 120, 24));
+    assert!(
+        !folded.contains("LINE TWELVE"),
+        "the end of the diff starts below the fold:\n{folded}"
+    );
+
+    for _ in 0..6 {
+        press(&mut app, &mut input, KeyCode::Char('j'));
+    }
+    let scrolled = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        scrolled.contains("LINE TWELVE"),
+        "j should scroll the diff once it has the focus:\n{scrolled}"
+    );
+}
+
+#[test]
+fn side_by_side_pans_sideways_in_the_stash_fullscreen() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path();
+    git_run(path, &["init", "-q", "-b", "main"]);
+    git_run(path, &["config", "user.email", "demo@ravix.dev"]);
+    git_run(path, &["config", "user.name", "Demo"]);
+    let long = format!("START{}END", "x".repeat(140));
+    std::fs::write(path.join("wide.txt"), format!("{long}\n")).unwrap();
+    git_run(path, &["add", "-A"]);
+    git_run(path, &["commit", "-q", "-m", "base"]);
+    std::fs::write(path.join("wide.txt"), format!("{long}!\n")).unwrap();
+    git_run(path, &["stash", "push", "-m", "widen the line"]);
+
+    let mut app = App::open(path).unwrap();
+    let mut input = InputMap::default();
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Char('v'));
+    let unpanned = dump(&draw(&mut app, 140, 24));
+    assert!(
+        unpanned.contains("START"),
+        "the line starts at the left edge:\n{unpanned}"
+    );
+
+    for _ in 0..10 {
+        press(&mut app, &mut input, KeyCode::Char('l'));
+    }
+    let panned = dump(&draw(&mut app, 140, 24));
+
+    assert!(
+        !panned.contains("START"),
+        "l should pan the side-by-side diff:\n{panned}"
+    );
+}
+
 #[test]
 fn popping_a_stash_restores_the_changes_and_removes_it() {
     let dir = TempDir::new().unwrap();

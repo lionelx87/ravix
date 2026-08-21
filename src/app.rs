@@ -1222,6 +1222,14 @@ impl App {
     }
 
     fn scroll_diff(&mut self, delta: isize) -> bool {
+        if let Some(view) = self
+            .stash
+            .as_mut()
+            .filter(|view| view.fullscreen || view.focus == StashFocus::Hunks)
+        {
+            view.diff_scroll = shift_scroll(view.diff_scroll, delta);
+            return true;
+        }
         if let Some(panel) = self.panel.as_mut().filter(|panel| panel.fullscreen) {
             panel.diff_scroll = shift_scroll(panel.diff_scroll, delta);
             return true;
@@ -1250,6 +1258,14 @@ impl App {
     }
 
     fn scroll_diff_horizontal(&mut self, delta: isize) {
+        if let Some(view) = self
+            .stash
+            .as_mut()
+            .filter(|view| view.fullscreen && view.split)
+        {
+            view.diff_hscroll = shift_scroll(view.diff_hscroll, delta);
+            return;
+        }
         if let Some(panel) = self
             .panel
             .as_mut()
@@ -1535,10 +1551,7 @@ impl App {
         };
         if let Some(view) = &mut self.stash {
             view.panel.refresh(entries);
-            view.panel.selected = view
-                .panel
-                .selected
-                .min(view.panel.entries.len().saturating_sub(1));
+            view.panel.selected = 0;
         }
     }
 
@@ -1567,7 +1580,13 @@ impl App {
                 view.move_file(delta);
                 self.sync_stash_diff();
             }
-            StashFocus::Hunks => view.move_hunk(delta),
+            StashFocus::Hunks => {
+                if view.fullscreen {
+                    view.move_hunk(delta);
+                } else {
+                    view.diff_scroll = shift_scroll(view.diff_scroll, delta);
+                }
+            }
         }
     }
 

@@ -1113,6 +1113,15 @@ fn stash_file_lines(
     lines
 }
 
+fn stash_filter_label(app: &App) -> Option<String> {
+    let query = app.stash_filter_query()?;
+    Some(if app.stash_filter_editing() {
+        format!("/{query}▏")
+    } else {
+        format!("/{query} ")
+    })
+}
+
 fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, now: i64) {
     let Some(rect) = app
         .stash_view()
@@ -1126,13 +1135,10 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(
-            match (app.stash_filter_query(), app.stash_filter_editing()) {
-                (Some(query), true) => format!(" Stashes   {count}   /{query}▏"),
-                (Some(query), false) => format!(" Stashes   {count}   /{query} "),
-                (None, _) => format!(" Stashes   {count}   [Enter] fullscreen "),
-            },
-        );
+        .title(match stash_filter_label(app) {
+            Some(label) => format!(" Stashes   {count}   {label}"),
+            None => format!(" Stashes   {count}   [Enter] fullscreen "),
+        });
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let width = inner.width as usize;
@@ -1211,7 +1217,10 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
         } else {
             theme.label
         }))
-        .title(format!(" Stashes {count} · p pop · a apply · d drop "));
+        .title(match stash_filter_label(app) {
+            Some(label) => format!(" Stashes {count} · {label}"),
+            None => format!(" Stashes {count} · p pop · a apply · d drop "),
+        });
     let files_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if focus == StashFocus::Files {
@@ -1241,7 +1250,11 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
     };
     frame.render_widget(Paragraph::new(entry_lines).block(entries_block), rows[0]);
 
-    let files_scroll = app.stash_view().map_or(0, |view| view.files_scroll);
+    let list_height = rows[1].height.saturating_sub(2) as usize;
+    let file_count = file_lines.len();
+    let view = app.stash_view_mut().unwrap();
+    view.files_scroll = scroll_into_view(view.files_scroll, view.file, list_height, file_count);
+    let files_scroll = view.files_scroll;
     frame.render_widget(
         Paragraph::new(file_lines)
             .block(files_block)
