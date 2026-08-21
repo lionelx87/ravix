@@ -722,7 +722,11 @@ impl App {
         };
         let mut stats = StashStats::default();
         for id in std::iter::once(oid).chain(self.repo.untracked_parent(oid)) {
-            stats.files += self.repo.changed_files(id).map(|files| files.len()).unwrap_or(0);
+            stats.files += self
+                .repo
+                .changed_files(id)
+                .map(|files| files.len())
+                .unwrap_or(0);
             for lines in self.repo.change_stats(id).values() {
                 stats.added += lines.added;
                 stats.removed += lines.removed;
@@ -1529,14 +1533,17 @@ impl App {
         };
         if let Some(view) = &mut self.stash {
             view.panel.refresh(entries);
-            view.panel.selected = view.panel.selected.min(
-                view.panel.entries.len().saturating_sub(1),
-            );
+            view.panel.selected = view
+                .panel
+                .selected
+                .min(view.panel.entries.len().saturating_sub(1));
         }
     }
 
     pub fn stash_filter_query(&self) -> Option<&str> {
-        self.stash_filter.as_ref().map(|filter| filter.query.as_str())
+        self.stash_filter
+            .as_ref()
+            .map(|filter| filter.query.as_str())
     }
 
     pub fn stash_filter_editing(&self) -> bool {
@@ -1588,7 +1595,8 @@ impl App {
         };
         let untracked = self.repo.untracked_parent(oid);
         let mut files = Vec::new();
-        for (id, is_untracked) in std::iter::once((oid, false)).chain(untracked.map(|id| (id, true)))
+        for (id, is_untracked) in
+            std::iter::once((oid, false)).chain(untracked.map(|id| (id, true)))
         {
             let stats = self.repo.change_stats(id);
             let Ok(changes) = self.repo.changed_files(id) else {
@@ -1610,8 +1618,10 @@ impl App {
         let Some(view) = &self.stash else {
             return;
         };
-        let target = view.focused_entry().zip(view.focused_file()).and_then(
-            |(entry, file)| {
+        let target = view
+            .focused_entry()
+            .zip(view.focused_file())
+            .and_then(|(entry, file)| {
                 let oid = Oid::from_str(&entry.oid).ok()?;
                 let id = if file.untracked {
                     self.repo.untracked_parent(oid)?
@@ -1619,9 +1629,9 @@ impl App {
                     oid
                 };
                 Some((id, file.path.clone()))
-            },
-        );
-        let diff = target.and_then(|(id, path)| self.repo.commit_file_diff(id, &path).ok().flatten());
+            });
+        let diff =
+            target.and_then(|(id, path)| self.repo.commit_file_diff(id, &path).ok().flatten());
         if let Some(view) = &mut self.stash {
             view.diff = diff;
             if view.diff.is_none() && view.focus == StashFocus::Hunks {
@@ -2529,8 +2539,9 @@ impl App {
             }
             InversePlan::UndoStashRestore { path, snapshot } => {
                 let undone = match snapshot {
-                    Some(snapshot) => Oid::from_str(&snapshot)
-                        .is_ok_and(|oid| self.repo.restore_blob(&path, oid)),
+                    Some(snapshot) => {
+                        Oid::from_str(&snapshot).is_ok_and(|oid| self.repo.restore_blob(&path, oid))
+                    }
                     None => self.repo.remove_workdir_file(&path),
                 };
                 (undone, format!("Undid restore of {path}"))
@@ -3430,11 +3441,10 @@ impl App {
     }
 
     fn drop_restored_stash(&mut self, entry: &StashConflict) -> String {
-        let listed = self
-            .cli
-            .stash_list()
-            .into_iter()
-            .any(|listed| listed.index == entry.index && listed.message.text() == entry.message);
+        let listed =
+            self.cli.stash_list().into_iter().any(|listed| {
+                listed.index == entry.index && listed.message.text() == entry.message
+            });
         if !listed {
             return format!("Resolved — stash@{{{}}} kept (list changed)", entry.index);
         }

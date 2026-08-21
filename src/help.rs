@@ -108,10 +108,16 @@ const CONFLICT: &[(&str, &str)] = &[
 ];
 
 const STASH: &[(&str, &str)] = &[
-    ("j / k", "select a stash"),
+    ("j / k", "move inside the focused zone"),
+    ("Tab", "focus entries, files, then the diff"),
+    ("Enter", "fullscreen"),
     ("p", "pop"),
     ("a", "apply"),
     ("d", "drop"),
+    ("x", "restore only the focused file"),
+    ("b", "take the entry out to a new branch"),
+    ("v", "side-by-side diff"),
+    ("/", "filter the list"),
     ("S / Esc", "close"),
     ("", "a conflicting pop or apply opens the resolver"),
 ];

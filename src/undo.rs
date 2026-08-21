@@ -2,24 +2,48 @@
 pub enum UndoableAction {
     Staged(String),
     Unstaged(String),
-    StagedHunk { patch: String },
-    UnstagedHunk { patch: String },
+    StagedHunk {
+        patch: String,
+    },
+    UnstagedHunk {
+        patch: String,
+    },
     StagedAll,
     UnstagedAll,
-    Discarded { path: String, snapshot: String },
+    Discarded {
+        path: String,
+        snapshot: String,
+    },
     Committed,
-    CheckedOut { previous: String },
-    CreatedBranch { name: String, previous: String },
-    DeletedBranch { name: String, oid: String },
-    Merged { previous: String },
-    CherryPicked { previous: String },
-    Rebased { previous: String },
+    CheckedOut {
+        previous: String,
+    },
+    CreatedBranch {
+        name: String,
+        previous: String,
+    },
+    DeletedBranch {
+        name: String,
+        oid: String,
+    },
+    Merged {
+        previous: String,
+    },
+    CherryPicked {
+        previous: String,
+    },
+    Rebased {
+        previous: String,
+    },
     Stashed,
     RestoredFromStash {
         path: String,
         snapshot: Option<String>,
     },
-    SubmoduleUpdated { path: String, previous: String },
+    SubmoduleUpdated {
+        path: String,
+        previous: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,18 +54,30 @@ pub enum InversePlan {
     UnstageHunk(String),
     StageAll,
     UnstageAll,
-    RestoreFile { path: String, snapshot: String },
+    RestoreFile {
+        path: String,
+        snapshot: String,
+    },
     ReflogSoftReset,
     Checkout(String),
-    DropBranch { name: String, back_to: String },
-    RestoreBranch { name: String, oid: String },
+    DropBranch {
+        name: String,
+        back_to: String,
+    },
+    RestoreBranch {
+        name: String,
+        oid: String,
+    },
     ResetKeep(String),
     StashPop,
     UndoStashRestore {
         path: String,
         snapshot: Option<String>,
     },
-    CheckoutInSubmodule { path: String, oid: String },
+    CheckoutInSubmodule {
+        path: String,
+        oid: String,
+    },
 }
 
 pub fn invert(action: &UndoableAction) -> InversePlan {

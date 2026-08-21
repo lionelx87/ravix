@@ -249,7 +249,10 @@ impl GitCli {
 
     pub fn stash_save(&self, message: Option<&str>) -> Result<(), MutationError> {
         match message {
-            Some(message) => self.run(&["stash", "push", "--include-untracked", "-m", message], None),
+            Some(message) => self.run(
+                &["stash", "push", "--include-untracked", "-m", message],
+                None,
+            ),
             None => self.run(&["stash", "push", "--include-untracked"], None),
         }
     }
@@ -319,7 +322,11 @@ impl GitCli {
         let output = Command::new("git")
             .current_dir(&self.workdir)
             .env("GIT_TERMINAL_PROMPT", "0")
-            .args(["stash", "list", &format!("--format={}", crate::stash::LIST_FORMAT)])
+            .args([
+                "stash",
+                "list",
+                &format!("--format={}", crate::stash::LIST_FORMAT),
+            ])
             .output();
         match output {
             Ok(output) => parse_stash_list(&String::from_utf8_lossy(&output.stdout)),

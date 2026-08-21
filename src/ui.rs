@@ -925,8 +925,14 @@ fn padded(spans: Vec<Span<'static>>, width: usize, style: Style) -> Line<'static
 
 fn stats_spans(stats: StashStats, theme: &Theme) -> Vec<Span<'static>> {
     vec![
-        Span::styled(format!("+{} ", stats.added), Style::default().fg(theme.added)),
-        Span::styled(format!("−{}", stats.removed), Style::default().fg(theme.removed)),
+        Span::styled(
+            format!("+{} ", stats.added),
+            Style::default().fg(theme.added),
+        ),
+        Span::styled(
+            format!("−{}", stats.removed),
+            Style::default().fg(theme.removed),
+        ),
     ]
 }
 
@@ -1093,11 +1099,13 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(match (app.stash_filter_query(), app.stash_filter_editing()) {
-            (Some(query), true) => format!(" Stashes   {count}   /{query}▏"),
-            (Some(query), false) => format!(" Stashes   {count}   /{query} "),
-            (None, _) => format!(" Stashes   {count}   [Enter] fullscreen "),
-        });
+        .title(
+            match (app.stash_filter_query(), app.stash_filter_editing()) {
+                (Some(query), true) => format!(" Stashes   {count}   /{query}▏"),
+                (Some(query), false) => format!(" Stashes   {count}   /{query} "),
+                (None, _) => format!(" Stashes   {count}   [Enter] fullscreen "),
+            },
+        );
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let width = inner.width as usize;
@@ -1142,8 +1150,8 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
         (view.focus, view.panel.entries.len())
     };
     let entry_rows = (count as u16 * 2 + 2).min(area.height / 2).max(3);
-    let rows = Layout::vertical([Constraint::Length(entry_rows), Constraint::Min(0)])
-        .split(columns[0]);
+    let rows =
+        Layout::vertical([Constraint::Length(entry_rows), Constraint::Min(0)]).split(columns[0]);
 
     let entries_block = Block::default()
         .borders(Borders::ALL)
@@ -1152,7 +1160,9 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
         } else {
             theme.label
         }))
-        .title(format!(" Stashes   {count}   [p] pop · [a] apply · [d] drop "));
+        .title(format!(
+            " Stashes   {count}   [p] pop · [a] apply · [d] drop "
+        ));
     let files_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if focus == StashFocus::Files {

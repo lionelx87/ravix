@@ -3117,7 +3117,10 @@ fn s_asks_for_a_message_before_stashing() {
         prompt.contains("Stash message"),
         "s should ask for a message first:\n{prompt}"
     );
-    assert!(app.has_wip(), "nothing should be stashed until the prompt is answered");
+    assert!(
+        app.has_wip(),
+        "nothing should be stashed until the prompt is answered"
+    );
 
     type_message(&mut app, &mut input, "fix status refresh race");
     press(&mut app, &mut input, KeyCode::Enter);
@@ -3145,7 +3148,10 @@ fn esc_on_the_stash_prompt_keeps_the_working_changes() {
     type_message(&mut app, &mut input, "never mind");
     press(&mut app, &mut input, KeyCode::Esc);
 
-    assert!(app.has_wip(), "cancelling should leave the working tree alone");
+    assert!(
+        app.has_wip(),
+        "cancelling should leave the working tree alone"
+    );
     assert_eq!(app.notice(), None);
 }
 
@@ -3276,7 +3282,8 @@ fn x_restores_one_file_out_of_the_stash_and_u_takes_it_back() {
     );
     assert!(app.has_wip(), "the restored file shows as a working change");
     assert!(
-        app.stash_panel().is_some_and(|panel| panel.entries.len() == 1),
+        app.stash_panel()
+            .is_some_and(|panel| panel.entries.len() == 1),
         "restoring one file should leave the entry alone"
     );
 
@@ -3319,7 +3326,8 @@ fn b_takes_the_stash_out_to_a_new_branch() {
         "the stashed work should be back in the working tree"
     );
     assert!(
-        app.stash_panel().is_none_or(|panel| panel.entries.is_empty()),
+        app.stash_panel()
+            .is_none_or(|panel| panel.entries.is_empty()),
         "the entry should be gone once it became a branch"
     );
 }
@@ -3329,7 +3337,10 @@ fn slash_filters_the_stash_list_while_typing() {
     let dir = TempDir::new().unwrap();
     stash_repo(dir.path(), "fix status refresh race");
     std::fs::write(dir.path().join("app.txt"), "spike\n").unwrap();
-    git_run(dir.path(), &["stash", "push", "-m", "spike: async graph reload"]);
+    git_run(
+        dir.path(),
+        &["stash", "push", "-m", "spike: async graph reload"],
+    );
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
 

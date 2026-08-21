@@ -51,7 +51,12 @@ fn an_auto_entry_keeps_the_base_commit_it_was_taken_on() {
 
 #[test]
 fn an_entry_taken_on_a_detached_head_has_no_branch() {
-    let text = line("stash@{0}", "1787282005", "On (no branch): named one", "abc");
+    let text = line(
+        "stash@{0}",
+        "1787282005",
+        "On (no branch): named one",
+        "abc",
+    );
 
     let entries = parse_stash_list(&text);
 
@@ -61,7 +66,12 @@ fn an_entry_taken_on_a_detached_head_has_no_branch() {
 
 #[test]
 fn a_message_holding_a_colon_is_not_split_further() {
-    let text = line("stash@{0}", "1787282005", "On main: spike: async reload", "abc");
+    let text = line(
+        "stash@{0}",
+        "1787282005",
+        "On main: spike: async reload",
+        "abc",
+    );
 
     let entries = parse_stash_list(&text);
 

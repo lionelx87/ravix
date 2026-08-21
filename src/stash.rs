@@ -6,7 +6,10 @@ pub const LIST_FORMAT: &str = "%gd%x00%ct%x00%gs%x00%H";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StashMessage {
     Named(String),
-    Auto { base_id: String, base_summary: String },
+    Auto {
+        base_id: String,
+        base_summary: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
