@@ -277,6 +277,7 @@ fn on_stash_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('h') | KeyCode::Left => Some(Action::ScrollDiffLeft),
         KeyCode::Char('l') | KeyCode::Right => Some(Action::ScrollDiffRight),
         KeyCode::Tab | KeyCode::BackTab => Some(Action::ToggleFocus),
+        KeyCode::Enter => Some(Action::OpenPanel),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Char('p') => Some(Action::StashPop),
         KeyCode::Char('a') => Some(Action::StashApply),

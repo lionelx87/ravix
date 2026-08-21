@@ -1783,6 +1783,11 @@ impl App {
     }
 
     fn open_or_expand(&mut self) {
+        if let Some(view) = &mut self.stash {
+            view.fullscreen = !view.fullscreen;
+            view.diff_scroll = 0;
+            return;
+        }
         if let Some(view) = &mut self.working {
             view.fullscreen = !view.fullscreen;
         } else if self.on_wip {
@@ -2218,6 +2223,12 @@ impl App {
     }
 
     fn toggle_diff_view(&mut self) {
+        if let Some(view) = &mut self.stash {
+            view.split = !view.split;
+            view.diff_scroll = 0;
+            view.diff_hscroll = 0;
+            return;
+        }
         if let Some(view) = &mut self.working {
             view.split = !view.split;
             view.diff_scroll = 0;

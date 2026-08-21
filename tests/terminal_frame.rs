@@ -3165,6 +3165,44 @@ fn the_visible_keys_follow_the_focus() {
 }
 
 #[test]
+fn enter_expands_the_stash_and_esc_comes_back_to_the_panel() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Enter);
+    let full = dump(&draw(&mut app, 120, 30));
+
+    assert!(
+        full.contains("side-by-side"),
+        "the fullscreen stash should carry the diff pane:\n{full}"
+    );
+    assert!(
+        full.contains("fix status refresh race"),
+        "the stash list should stay on screen while reading a diff:\n{full}"
+    );
+    assert!(
+        full.contains("app.txt"),
+        "the files of the entry should stay on screen:\n{full}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    let panel = dump(&draw(&mut app, 120, 30));
+
+    assert!(
+        panel.contains("[Enter] fullscreen"),
+        "Esc should come back to the panel:\n{panel}"
+    );
+    assert!(
+        panel.contains("fix status refresh race"),
+        "the same entry should still be selected:\n{panel}"
+    );
+}
+
+#[test]
 fn popping_a_stash_restores_the_changes_and_removes_it() {
     let dir = TempDir::new().unwrap();
     dirty_repo(dir.path());

@@ -242,8 +242,10 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     if let Some(menu) = app.join_menu() {
         render_join_menu(frame, menu, &theme, graph_area);
     }
-    if app.stash_view().is_some() {
-        render_stash_panel(frame, app, &theme, graph_area, now);
+    match app.stash_view().map(|view| view.fullscreen) {
+        Some(true) => render_stash_fullscreen(frame, app, &theme, graph_area, now),
+        Some(false) => render_stash_panel(frame, app, &theme, graph_area, now),
+        None => {}
     }
     if let Some(panel) = app.focus_panel() {
         render_focus_panel(frame, panel, &theme, graph_area);
@@ -1122,6 +1124,79 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     if let Some(view) = app.stash_view_mut() {
         view.diff_scroll = scroll;
     }
+}
+
+fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, now: i64) {
+    frame.render_widget(Clear, area);
+    let columns = Layout::horizontal([Constraint::Length(46), Constraint::Min(0)]).split(area);
+
+    let (focus, count) = {
+        let view = app.stash_view().unwrap();
+        (view.focus, view.panel.entries.len())
+    };
+    let entry_rows = (count as u16 * 2 + 2).min(area.height / 2).max(3);
+    let rows = Layout::vertical([Constraint::Length(entry_rows), Constraint::Min(0)])
+        .split(columns[0]);
+
+    let entries_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focus == StashFocus::Entries {
+            theme.marker
+        } else {
+            theme.label
+        }))
+        .title(format!(" Stashes   {count}   [p] pop · [a] apply · [d] drop "));
+    let files_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focus == StashFocus::Files {
+            theme.marker
+        } else {
+            theme.label
+        }))
+        .title(" Files   [x] restore one · [b] branch ");
+
+    let (entry_lines, file_lines) = {
+        let view = app.stash_view().unwrap();
+        let width = rows[0].width.saturating_sub(2) as usize;
+        (
+            stash_card_lines(app, view, width, theme, now),
+            stash_file_lines(view, width, theme),
+        )
+    };
+    frame.render_widget(Paragraph::new(entry_lines).block(entries_block), rows[0]);
+
+    let files_scroll = app.stash_view().map_or(0, |view| view.files_scroll);
+    frame.render_widget(
+        Paragraph::new(file_lines)
+            .block(files_block)
+            .scroll((files_scroll, 0)),
+        rows[1],
+    );
+
+    let view = app.stash_view_mut().unwrap();
+    let focused_hunk = (view.focus == StashFocus::Hunks).then_some(view.hunk);
+    let snap = view.hunk_snap;
+    view.hunk_snap = false;
+    let split = view.split;
+    let diff = view.diff.take();
+    let mut diff_scroll = view.diff_scroll;
+    let mut diff_hscroll = view.diff_hscroll;
+    render_diff_pane(
+        frame,
+        diff.as_ref(),
+        split,
+        focused_hunk,
+        &mut diff_scroll,
+        &mut diff_hscroll,
+        snap,
+        focus == StashFocus::Hunks,
+        theme,
+        columns[1],
+    );
+    let view = app.stash_view_mut().unwrap();
+    view.diff = diff;
+    view.diff_scroll = diff_scroll;
+    view.diff_hscroll = diff_hscroll;
 }
 
 fn no_stash_diff_lines(theme: &Theme) -> Vec<Line<'static>> {
