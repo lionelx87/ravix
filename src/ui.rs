@@ -32,6 +32,7 @@ mod graph_view;
 use graph_view::display_width;
 
 const SELECTION_MARKER: &str = "❯ ";
+const CARD_ROOM: usize = 8;
 const SPLIT_SEPARATOR: &str = " │ ";
 
 pub struct Theme {
@@ -936,12 +937,24 @@ fn stats_spans(stats: StashStats, theme: &Theme) -> Vec<Span<'static>> {
     ]
 }
 
+fn card_window(view: &StashView, room: usize) -> std::ops::Range<usize> {
+    let total = view.panel.entries.len();
+    let visible = (room / 2).clamp(1, total.max(1));
+    let first = view
+        .panel
+        .selected
+        .saturating_sub(visible / 2)
+        .min(total.saturating_sub(visible));
+    first..(first + visible).min(total)
+}
+
 fn stash_card_lines(
     app: &App,
     view: &StashView,
     width: usize,
     theme: &Theme,
     now: i64,
+    room: usize,
 ) -> Vec<Line<'static>> {
     if view.panel.entries.is_empty() {
         return vec![Line::from(Span::styled(
@@ -950,8 +963,16 @@ fn stash_card_lines(
         ))];
     }
 
+    let window = card_window(view, room);
     let mut lines = Vec::new();
-    for (index, entry) in view.panel.entries.iter().enumerate() {
+    for (index, entry) in view
+        .panel
+        .entries
+        .iter()
+        .enumerate()
+        .skip(window.start)
+        .take(window.len())
+    {
         let selected = index == view.panel.selected;
         let focused = selected && view.focus == StashFocus::Entries;
         let row = if selected {
@@ -1112,7 +1133,7 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 
     let scroll = {
         let view = app.stash_view().unwrap();
-        let mut lines = stash_card_lines(app, view, width, theme, now);
+        let mut lines = stash_card_lines(app, view, width, theme, now, CARD_ROOM);
         lines.push(Line::from(""));
         lines.extend(stash_file_lines(view, width, theme));
         lines.push(Line::from(""));
@@ -1176,7 +1197,14 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
         let view = app.stash_view().unwrap();
         let width = rows[0].width.saturating_sub(2) as usize;
         (
-            stash_card_lines(app, view, width, theme, now),
+            stash_card_lines(
+                app,
+                view,
+                width,
+                theme,
+                now,
+                rows[0].height.saturating_sub(2) as usize,
+            ),
             stash_file_lines(view, width, theme),
         )
     };

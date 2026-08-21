@@ -3361,6 +3361,43 @@ fn slash_filters_the_stash_list_while_typing() {
 }
 
 #[test]
+fn the_card_list_scrolls_to_keep_the_selection_in_view() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    for index in 0..6 {
+        std::fs::write(dir.path().join("app.txt"), format!("change {index}\n")).unwrap();
+        git_run(
+            dir.path(),
+            &["stash", "push", "-m", &format!("entry number {index}")],
+        );
+    }
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    let top = dump(&draw(&mut app, 120, 24));
+    assert!(
+        top.contains("entry number 5"),
+        "the newest entry is selected first:\n{top}"
+    );
+
+    for _ in 0..5 {
+        press(&mut app, &mut input, KeyCode::Char('j'));
+    }
+    let bottom = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        bottom.contains("entry number 0"),
+        "the selected entry should stay in view:\n{bottom}"
+    );
+    assert!(
+        !bottom.contains("entry number 5"),
+        "the list should scroll instead of growing:\n{bottom}"
+    );
+}
+
+#[test]
 fn popping_a_stash_restores_the_changes_and_removes_it() {
     let dir = TempDir::new().unwrap();
     dirty_repo(dir.path());
