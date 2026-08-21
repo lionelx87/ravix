@@ -109,7 +109,7 @@ const CONFLICT: &[(&str, &str)] = &[
 
 const STASH: &[(&str, &str)] = &[
     ("j / k", "move inside the focused zone"),
-    ("Tab", "focus entries, files, then the diff"),
+    ("Tab / ⇧Tab", "focus the next zone, or the previous one"),
     ("Enter", "fullscreen"),
     ("p", "pop"),
     ("a", "apply"),

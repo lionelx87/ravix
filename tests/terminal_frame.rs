@@ -3402,6 +3402,38 @@ fn the_card_list_scrolls_to_keep_the_selection_in_view() {
 }
 
 #[test]
+fn shift_tab_walks_the_focus_backwards() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Tab);
+    press(&mut app, &mut input, KeyCode::Tab);
+    let diff = dump(&draw(&mut app, 120, 24));
+    assert!(
+        diff.contains("diff [v] side-by-side"),
+        "two tabs should land on the diff:\n{diff}"
+    );
+
+    press(&mut app, &mut input, KeyCode::BackTab);
+    let files = dump(&draw(&mut app, 120, 24));
+    assert!(
+        files.contains("files [x] restore one"),
+        "shift+tab should step back to the files:\n{files}"
+    );
+
+    press(&mut app, &mut input, KeyCode::BackTab);
+    let entries = dump(&draw(&mut app, 120, 24));
+    assert!(
+        entries.contains("stashes [p] pop"),
+        "shift+tab again should step back to the entries:\n{entries}"
+    );
+}
+
+#[test]
 fn popping_a_stash_restores_the_changes_and_removes_it() {
     let dir = TempDir::new().unwrap();
     dirty_repo(dir.path());

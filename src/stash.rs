@@ -183,4 +183,14 @@ impl StashView {
             _ => Focus::Entries,
         };
     }
+
+    pub fn rotate_focus_back(&mut self) {
+        self.focus = match self.focus {
+            Focus::Hunks => Focus::Files,
+            Focus::Files => Focus::Entries,
+            Focus::Entries if self.diff.is_some() => Focus::Hunks,
+            Focus::Entries if !self.files.is_empty() => Focus::Files,
+            Focus::Entries => Focus::Entries,
+        };
+    }
 }

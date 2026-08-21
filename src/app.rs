@@ -70,6 +70,7 @@ pub enum Action {
     Discard,
     OpenCommit,
     ToggleFocus,
+    ToggleFocusBack,
     ToggleDiffView,
     CommitInput(char),
     CommitBackspace,
@@ -946,6 +947,7 @@ impl App {
             Action::Discard => self.request_discard(),
             Action::OpenCommit => self.open_commit(),
             Action::ToggleFocus => self.toggle_focus(),
+            Action::ToggleFocusBack => self.toggle_focus_back(),
             Action::ToggleDiffView => self.toggle_diff_view(),
             Action::CommitInput(character) => self.commit_input(character),
             Action::CommitBackspace => self.commit_backspace(),
@@ -2402,6 +2404,13 @@ impl App {
         self.reload();
         if committed {
             self.celebrate(Event::Commit);
+        }
+    }
+
+    fn toggle_focus_back(&mut self) {
+        match &mut self.stash {
+            Some(view) => view.rotate_focus_back(),
+            None => self.toggle_focus(),
         }
     }
 
