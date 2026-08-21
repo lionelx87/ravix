@@ -27,6 +27,34 @@ fn hunk_and_bulk_staging_invert_symmetrically() {
 }
 
 #[test]
+fn restoring_a_file_out_of_a_stash_inverts_to_the_snapshot_taken_first() {
+    assert_eq!(
+        invert(&UndoableAction::RestoredFromStash {
+            path: "src/app.rs".into(),
+            snapshot: Some("deadbeef".into()),
+        }),
+        InversePlan::UndoStashRestore {
+            path: "src/app.rs".into(),
+            snapshot: Some("deadbeef".into()),
+        }
+    );
+}
+
+#[test]
+fn restoring_a_file_that_was_not_there_inverts_to_removing_it() {
+    assert_eq!(
+        invert(&UndoableAction::RestoredFromStash {
+            path: "notes.txt".into(),
+            snapshot: None,
+        }),
+        InversePlan::UndoStashRestore {
+            path: "notes.txt".into(),
+            snapshot: None,
+        }
+    );
+}
+
+#[test]
 fn a_discard_inverts_to_restoring_the_snapshot() {
     assert_eq!(
         invert(&UndoableAction::Discarded {

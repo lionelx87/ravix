@@ -2476,7 +2476,11 @@ fn render_branch_create(frame: &mut Frame, editor: &BranchCreate, theme: &Theme,
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(" New branch   [Enter] create · [Esc] cancel ");
+        .title(if editor.from_stash() {
+            " Branch from stash   [Enter] create · [Esc] cancel "
+        } else {
+            " New branch   [Enter] create · [Esc] cancel "
+        });
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 

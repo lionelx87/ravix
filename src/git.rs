@@ -574,6 +574,13 @@ impl Repo {
         std::fs::write(workdir.join(path), content).is_ok()
     }
 
+    pub fn remove_workdir_file(&self, path: &str) -> bool {
+        let Some(workdir) = self.inner.workdir() else {
+            return false;
+        };
+        std::fs::remove_file(workdir.join(path)).is_ok()
+    }
+
     pub fn working_status(&self) -> Result<WorkingStatus, git2::Error> {
         let mut options = StatusOptions::new();
         options

@@ -87,6 +87,8 @@ pub enum Action {
     StashPop,
     StashApply,
     StashDrop,
+    StashRestoreFile,
+    StashBranch,
     OpenJoin,
     ExecuteJoin,
     TakeOurs,
@@ -184,6 +186,13 @@ pub struct CommitEditor {
 pub struct BranchCreate {
     pub name: String,
     start: String,
+    stash: Option<usize>,
+}
+
+impl BranchCreate {
+    pub fn from_stash(&self) -> bool {
+        self.stash.is_some()
+    }
 }
 
 struct BranchFilter {
@@ -946,6 +955,8 @@ impl App {
             Action::StashPop => self.stash_pop(),
             Action::StashApply => self.stash_apply(),
             Action::StashDrop => self.request_drop_stash(),
+            Action::StashRestoreFile => self.stash_restore_file(),
+            Action::StashBranch => self.ask_stash_branch(),
             Action::OpenPalette => self.palette = Some(Palette::opening()),
             Action::PaletteInput(character) => self.palette_input(character),
             Action::PaletteBackspace => self.palette_backspace(),
@@ -1535,6 +1546,61 @@ impl App {
                 message: entry.message.text().to_string(),
                 pop,
             })
+    }
+
+    fn ask_stash_branch(&mut self) {
+        let Some(index) = self.focused_stash() else {
+            return;
+        };
+        let start = self.branch_start();
+        self.branch_create = Some(BranchCreate {
+            name: String::new(),
+            start,
+            stash: Some(index),
+        });
+    }
+
+    fn stash_branch(&mut self, index: usize, name: &str) {
+        let Some(entry) = self.focused_stash_conflict(true) else {
+            return;
+        };
+        let result = self.cli.stash_branch(index, name);
+        self.close_stash();
+        self.after_stash_restore(result, entry, &format!("Stash is now {name}"));
+    }
+
+    fn stash_restore_file(&mut self) {
+        let Some(view) = &self.stash else {
+            return;
+        };
+        if view.focus == StashFocus::Entries {
+            return;
+        }
+        let Some((index, file)) = view
+            .focused_entry()
+            .map(|entry| entry.index)
+            .zip(view.focused_file().cloned())
+        else {
+            return;
+        };
+        let snapshot = self
+            .repo
+            .snapshot_blob(&file.path)
+            .map(|oid| oid.to_string());
+        let result = self
+            .cli
+            .stash_restore_file(index, &file.path, file.untracked);
+        let restored = result.is_ok();
+        self.after_mutation_recording(
+            result,
+            UndoableAction::RestoredFromStash {
+                path: file.path.clone(),
+                snapshot,
+            },
+        );
+        if restored {
+            self.info(format!("Restored {} from stash@{{{index}}}", file.path));
+        }
     }
 
     fn stash_pop(&mut self) {
@@ -2357,6 +2423,14 @@ impl App {
                 let restored =
                     Oid::from_str(&snapshot).is_ok_and(|oid| self.repo.restore_blob(&path, oid));
                 (restored, format!("Undid discard of {path}"))
+            }
+            InversePlan::UndoStashRestore { path, snapshot } => {
+                let undone = match snapshot {
+                    Some(snapshot) => Oid::from_str(&snapshot)
+                        .is_ok_and(|oid| self.repo.restore_blob(&path, oid)),
+                    None => self.repo.remove_workdir_file(&path),
+                };
+                (undone, format!("Undid restore of {path}"))
             }
             InversePlan::ReflogSoftReset => (
                 self.cli.reset_soft_previous().is_ok(),
@@ -3482,6 +3556,7 @@ impl App {
         self.branch_create = Some(BranchCreate {
             name: String::new(),
             start,
+            stash: None,
         });
     }
 
@@ -3505,6 +3580,10 @@ impl App {
         if name.is_empty() {
             self.info("Empty branch name".to_string());
             self.branch_create = Some(editor);
+            return;
+        }
+        if let Some(index) = editor.stash {
+            self.stash_branch(index, &name);
             return;
         }
         let previous = self.repo.head_ref();

@@ -294,6 +294,8 @@ fn on_stash_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('p') => Some(Action::StashPop),
         KeyCode::Char('a') => Some(Action::StashApply),
         KeyCode::Char('d') => Some(Action::StashDrop),
+        KeyCode::Char('x') => Some(Action::StashRestoreFile),
+        KeyCode::Char('b') => Some(Action::StashBranch),
         KeyCode::Char('S') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Char('?') => Some(Action::ToggleHelp),

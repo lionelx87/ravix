@@ -3257,6 +3257,74 @@ fn enter_expands_the_stash_and_esc_comes_back_to_the_panel() {
 }
 
 #[test]
+fn x_restores_one_file_out_of_the_stash_and_u_takes_it_back() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    assert!(!app.has_wip(), "stashing leaves the working tree clean");
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Tab);
+    press(&mut app, &mut input, KeyCode::Char('x'));
+
+    let restored = std::fs::read_to_string(dir.path().join("app.txt")).unwrap();
+    assert!(
+        restored.contains("LINE ONE"),
+        "the focused file should come back out of the stash"
+    );
+    assert!(app.has_wip(), "the restored file shows as a working change");
+    assert!(
+        app.stash_panel().is_some_and(|panel| panel.entries.len() == 1),
+        "restoring one file should leave the entry alone"
+    );
+
+    press(&mut app, &mut input, KeyCode::Char('u'));
+
+    let undone = std::fs::read_to_string(dir.path().join("app.txt")).unwrap();
+    assert!(
+        !undone.contains("LINE ONE"),
+        "u should take the restored file back"
+    );
+}
+
+#[test]
+fn b_takes_the_stash_out_to_a_new_branch() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "spike: async graph reload");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('b'));
+    let prompt = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        prompt.contains("Branch from stash"),
+        "b should ask for the branch name:\n{prompt}"
+    );
+
+    type_message(&mut app, &mut input, "spike/async-reload");
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert_eq!(
+        app.meta().head_branch.as_deref(),
+        Some("spike/async-reload"),
+        "the new branch should be checked out"
+    );
+    assert!(
+        app.has_wip(),
+        "the stashed work should be back in the working tree"
+    );
+    assert!(
+        app.stash_panel().is_none_or(|panel| panel.entries.is_empty()),
+        "the entry should be gone once it became a branch"
+    );
+}
+
+#[test]
 fn popping_a_stash_restores_the_changes_and_removes_it() {
     let dir = TempDir::new().unwrap();
     dirty_repo(dir.path());
