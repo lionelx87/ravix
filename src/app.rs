@@ -1677,7 +1677,6 @@ impl App {
             return;
         };
         let result = self.cli.stash_branch(index, name);
-        self.close_stash();
         self.after_stash_restore(result, entry, &format!("Stash is now {name}"));
     }
 
@@ -1750,6 +1749,14 @@ impl App {
         }
     }
 
+    fn show_restored_changes(&mut self) {
+        if !self.has_wip() || self.on_wip {
+            return;
+        }
+        self.on_wip = true;
+        self.sync_peek();
+    }
+
     fn after_stash_restore(
         &mut self,
         result: Result<(), MutationError>,
@@ -1757,7 +1764,9 @@ impl App {
         ok_notice: &str,
     ) {
         let Err(error) = result else {
+            self.close_stash();
             self.after_stash_mutation(Ok(()), ok_notice);
+            self.show_restored_changes();
             return;
         };
         let conflicts = self.repo.conflicted_files();

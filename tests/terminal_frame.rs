@@ -3445,8 +3445,12 @@ fn popping_a_stash_restores_the_changes_and_removes_it() {
     assert!(!app.has_wip());
     press(&mut app, &mut input, KeyCode::Char('S'));
     press(&mut app, &mut input, KeyCode::Char('p'));
+    settle(&mut app);
 
     assert!(app.has_wip(), "popping should restore the working changes");
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
     assert!(
         app.stash_panel()
             .is_some_and(|panel| panel.entries.is_empty()),
@@ -3465,13 +3469,45 @@ fn applying_a_stash_restores_the_changes_but_keeps_it() {
     press(&mut app, &mut input, KeyCode::Enter);
     press(&mut app, &mut input, KeyCode::Char('S'));
     press(&mut app, &mut input, KeyCode::Char('a'));
+    settle(&mut app);
 
     assert!(app.has_wip(), "applying should restore the working changes");
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
     assert!(
         app.stash_panel()
             .is_some_and(|panel| panel.entries.len() == 1),
         "an applied stash should remain in the list"
     );
+}
+
+#[test]
+fn restoring_a_stash_closes_the_panel_and_lands_on_the_working_changes() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('a'));
+    settle(&mut app);
+
+    assert!(
+        app.stash_panel().is_none(),
+        "the panel should get out of the way once the entry is restored"
+    );
+    assert!(
+        app.on_wip(),
+        "the restored changes should be the selected row"
+    );
+    let screen = dump(&draw(&mut app, 120, 24));
+    assert!(
+        screen.contains("Uncommitted changes"),
+        "the working changes should be what is on screen:\n{screen}"
+    );
+    assert_eq!(app.notice(), Some("Applied stash"));
 }
 
 #[test]
