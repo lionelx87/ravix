@@ -247,8 +247,11 @@ impl GitCli {
         self.run(&["rebase", "--abort"], None)
     }
 
-    pub fn stash_save(&self) -> Result<(), MutationError> {
-        self.run(&["stash", "push", "--include-untracked"], None)
+    pub fn stash_save(&self, message: Option<&str>) -> Result<(), MutationError> {
+        match message {
+            Some(message) => self.run(&["stash", "push", "--include-untracked", "-m", message], None),
+            None => self.run(&["stash", "push", "--include-untracked"], None),
+        }
     }
 
     pub fn stash_pop(&self, index: usize) -> Result<(), MutationError> {
@@ -261,6 +264,31 @@ impl GitCli {
 
     pub fn stash_drop(&self, index: usize) -> Result<(), MutationError> {
         self.run(&["stash", "drop", &format!("stash@{{{index}}}")], None)
+    }
+
+    pub fn stash_restore_file(
+        &self,
+        index: usize,
+        path: &str,
+        untracked: bool,
+    ) -> Result<(), MutationError> {
+        let suffix = if untracked { "^3" } else { "" };
+        self.run(
+            &[
+                "restore",
+                &format!("--source=stash@{{{index}}}{suffix}"),
+                "--",
+                path,
+            ],
+            None,
+        )
+    }
+
+    pub fn stash_branch(&self, index: usize, name: &str) -> Result<(), MutationError> {
+        self.run(
+            &["stash", "branch", name, &format!("stash@{{{index}}}")],
+            None,
+        )
     }
 
     pub fn stash_paths(&self, index: usize) -> Vec<String> {
@@ -291,7 +319,7 @@ impl GitCli {
         let output = Command::new("git")
             .current_dir(&self.workdir)
             .env("GIT_TERMINAL_PROMPT", "0")
-            .args(["stash", "list"])
+            .args(["stash", "list", &format!("--format={}", crate::stash::LIST_FORMAT)])
             .output();
         match output {
             Ok(output) => parse_stash_list(&String::from_utf8_lossy(&output.stdout)),

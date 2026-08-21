@@ -478,7 +478,7 @@ fn fitted_pill(reference: &MergedRef, max_width: usize) -> String {
     pill_text_with(&label, reference)
 }
 
-fn display_width(text: &str) -> usize {
+pub(super) fn display_width(text: &str) -> usize {
     text.chars()
         .map(|character| character.width().unwrap_or(0))
         .sum()

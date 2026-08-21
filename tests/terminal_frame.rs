@@ -3085,8 +3085,34 @@ fn opening_the_stash_list_shows_the_saved_stash() {
         "stash panel title missing:\n{screen}"
     );
     assert!(
-        screen.contains("stash@{0}"),
-        "the saved stash should list:\n{screen}"
+        screen.contains("no message"),
+        "an unnamed stash should say so:\n{screen}"
+    );
+}
+
+fn stash_repo(dir: &Path, message: &str) {
+    dirty_repo(dir);
+    git_run(dir, &["stash", "push", "-u", "-m", message]);
+}
+
+#[test]
+fn a_stash_card_shows_its_message_branch_and_size() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        screen.contains("fix status refresh race"),
+        "the card should show the message it was saved with:\n{screen}"
+    );
+    assert!(
+        screen.contains("main · 0s · 3 files"),
+        "the card should show branch, age and file count:\n{screen}"
     );
 }
 

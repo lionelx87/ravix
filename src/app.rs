@@ -25,7 +25,7 @@ use crate::remote::{
 };
 use crate::slide::{self, SlidePanel, advance};
 use crate::staging::{FileDiff, build_patch};
-use crate::stash::{StashConflict, StashPanel};
+use crate::stash::{Focus as StashFocus, StashConflict, StashFile, StashPanel, StashStats, StashView};
 use crate::submodule::{Submodule, SyncState, breadcrumb_label};
 use crate::undo::{InversePlan, UndoableAction, invert};
 use crate::visibility::Visibility;
@@ -406,7 +406,7 @@ pub struct App {
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
     drag: Option<DragState>,
-    stash: Option<StashPanel>,
+    stash: Option<StashView>,
     stash_conflict: Option<StashConflict>,
     remote: Option<RemoteJob>,
     askpass_sock: Option<PathBuf>,
@@ -675,7 +675,30 @@ impl App {
     }
 
     pub fn stash_panel(&self) -> Option<&StashPanel> {
+        self.stash.as_ref().map(|view| &view.panel)
+    }
+
+    pub fn stash_view(&self) -> Option<&StashView> {
         self.stash.as_ref()
+    }
+
+    pub fn stash_view_mut(&mut self) -> Option<&mut StashView> {
+        self.stash.as_mut()
+    }
+
+    pub fn stash_stats(&self, entry: &crate::stash::StashEntry) -> StashStats {
+        let Ok(oid) = Oid::from_str(&entry.oid) else {
+            return StashStats::default();
+        };
+        let mut stats = StashStats::default();
+        for id in std::iter::once(oid).chain(self.repo.untracked_parent(oid)) {
+            stats.files += self.repo.changed_files(id).map(|files| files.len()).unwrap_or(0);
+            for lines in self.repo.change_stats(id).values() {
+                stats.added += lines.added;
+                stats.removed += lines.removed;
+            }
+        }
+        stats
     }
 
     pub fn palette(&self) -> Option<&Palette> {
@@ -820,7 +843,10 @@ impl App {
                 .join
                 .as_ref()
                 .is_some_and(|menu| menu.panel.is_sliding())
-            || slide::is_animating(&self.stash)
+            || self
+                .stash
+                .as_ref()
+                .is_some_and(|view| view.panel.is_sliding())
             || slide::is_animating(&self.focus_panel)
             || slide::is_animating(&self.submodule_panel)
             || self.celebration.is_some()
@@ -975,8 +1001,8 @@ impl App {
             panel.move_selection(delta);
             return;
         }
-        if let Some(panel) = &mut self.stash {
-            panel.move_selection(delta);
+        if self.stash.is_some() {
+            self.stash_move(delta);
             return;
         }
         if let Some(menu) = &mut self.join {
@@ -1030,8 +1056,8 @@ impl App {
             panel.move_selection(-delta);
             return;
         }
-        if let Some(panel) = &mut self.stash {
-            panel.move_selection(-delta);
+        if self.stash.is_some() {
+            self.stash_move(-delta);
             return;
         }
         if let Some(menu) = &mut self.join {
@@ -1340,7 +1366,7 @@ impl App {
             self.info("Nothing to stash".to_string());
             return;
         }
-        match self.cli.stash_save() {
+        match self.cli.stash_save(None) {
             Ok(()) => {
                 self.last_action = Some(UndoableAction::Stashed);
                 self.reload();
@@ -1356,36 +1382,123 @@ impl App {
             return;
         }
         let entries = self.cli.stash_list();
-        self.stash = Some(StashPanel::opening(entries));
+        self.stash = Some(StashView::opening(entries));
+        self.sync_stash_files();
     }
 
     fn close_stash(&mut self) {
-        if let Some(panel) = &mut self.stash {
-            panel.close();
+        if let Some(view) = &mut self.stash {
+            view.panel.close();
         }
     }
 
     fn refresh_stash(&mut self) {
         let entries = self.cli.stash_list();
-        if let Some(panel) = &mut self.stash {
-            panel.refresh(entries);
+        if let Some(view) = &mut self.stash {
+            view.panel.refresh(entries);
+        }
+        self.sync_stash_files();
+    }
+
+    fn stash_move(&mut self, delta: isize) {
+        let Some(view) = &mut self.stash else {
+            return;
+        };
+        match view.focus {
+            StashFocus::Entries => {
+                view.panel.move_selection(delta);
+                self.sync_stash_files();
+            }
+            StashFocus::Files => {
+                view.move_file(delta);
+                self.sync_stash_diff();
+            }
+            StashFocus::Hunks => view.move_hunk(delta),
+        }
+    }
+
+    fn sync_stash_files(&mut self) {
+        let Some(view) = &self.stash else {
+            return;
+        };
+        let files = view
+            .focused_entry()
+            .map(|entry| self.stash_files(entry))
+            .unwrap_or_default();
+        if let Some(view) = &mut self.stash {
+            view.files = files;
+            view.file = 0;
+            view.files_scroll = 0;
+            view.hunk = 0;
+            if view.files.is_empty() {
+                view.focus = StashFocus::Entries;
+            }
+        }
+        self.sync_stash_diff();
+    }
+
+    fn stash_files(&self, entry: &crate::stash::StashEntry) -> Vec<StashFile> {
+        let Ok(oid) = Oid::from_str(&entry.oid) else {
+            return Vec::new();
+        };
+        let untracked = self.repo.untracked_parent(oid);
+        let mut files = Vec::new();
+        for (id, is_untracked) in std::iter::once((oid, false)).chain(untracked.map(|id| (id, true)))
+        {
+            let stats = self.repo.change_stats(id);
+            let Ok(changes) = self.repo.changed_files(id) else {
+                continue;
+            };
+            for change in changes {
+                files.push(StashFile {
+                    stats: stats.get(&change.path).copied().unwrap_or_default(),
+                    path: change.path,
+                    status: change.status,
+                    untracked: is_untracked,
+                });
+            }
+        }
+        files
+    }
+
+    fn sync_stash_diff(&mut self) {
+        let Some(view) = &self.stash else {
+            return;
+        };
+        let target = view.focused_entry().zip(view.focused_file()).and_then(
+            |(entry, file)| {
+                let oid = Oid::from_str(&entry.oid).ok()?;
+                let id = if file.untracked {
+                    self.repo.untracked_parent(oid)?
+                } else {
+                    oid
+                };
+                Some((id, file.path.clone()))
+            },
+        );
+        let diff = target.and_then(|(id, path)| self.repo.commit_file_diff(id, &path).ok().flatten());
+        if let Some(view) = &mut self.stash {
+            view.diff = diff;
+            if view.diff.is_none() && view.focus == StashFocus::Hunks {
+                view.focus = StashFocus::Files;
+            }
         }
     }
 
     fn focused_stash(&self) -> Option<usize> {
         self.stash
             .as_ref()
-            .and_then(StashPanel::focused)
+            .and_then(StashView::focused_entry)
             .map(|entry| entry.index)
     }
 
     fn focused_stash_conflict(&self, pop: bool) -> Option<StashConflict> {
         self.stash
             .as_ref()
-            .and_then(StashPanel::focused)
+            .and_then(StashView::focused_entry)
             .map(|entry| StashConflict {
                 index: entry.index,
-                message: entry.message.clone(),
+                message: entry.message.text().to_string(),
                 pop,
             })
     }
@@ -1813,8 +1926,14 @@ impl App {
             panel.close();
         } else if let Some(panel) = &mut self.submodule_panel {
             panel.close();
-        } else if let Some(panel) = &mut self.stash {
-            panel.close();
+        } else if let Some(view) = &mut self.stash {
+            if view.focus != StashFocus::Entries {
+                view.focus = StashFocus::Entries;
+            } else if view.fullscreen {
+                view.fullscreen = false;
+            } else {
+                view.panel.close();
+            }
         } else if let Some(menu) = &mut self.join {
             menu.panel.close();
         } else if let Some(panel) = &mut self.branch {
@@ -3087,7 +3206,7 @@ impl App {
             .cli
             .stash_list()
             .into_iter()
-            .any(|listed| listed.index == entry.index && listed.message == entry.message);
+            .any(|listed| listed.index == entry.index && listed.message.text() == entry.message);
         if !listed {
             return format!("Resolved — stash@{{{}}} kept (list changed)", entry.index);
         }
@@ -3523,7 +3642,12 @@ impl App {
                 self.join = None;
             }
         }
-        slide::advance_panel(&mut self.stash, step);
+        if let Some(view) = &mut self.stash {
+            view.panel.advance(step);
+            if view.panel.is_dismissed() {
+                self.stash = None;
+            }
+        }
         if slide::advance_panel(&mut self.focus_panel, step) {
             self.focus_name = None;
         }

@@ -80,6 +80,12 @@ impl fmt::Display for FileStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LineStats {
+    pub added: usize,
+    pub removed: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileChange {
     pub path: String,
@@ -149,6 +155,7 @@ impl IndexStamp {
 pub struct Repo {
     inner: Repository,
     changed_files_cache: Mutex<HashMap<Oid, Vec<FileChange>>>,
+    change_stats_cache: Mutex<HashMap<Oid, HashMap<String, LineStats>>>,
 }
 
 impl Repo {
@@ -156,6 +163,7 @@ impl Repo {
         Ok(Self {
             inner: Repository::discover(path)?,
             changed_files_cache: Mutex::new(HashMap::new()),
+            change_stats_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -411,6 +419,59 @@ impl Repo {
             });
         }
         Ok(changes)
+    }
+
+    pub fn change_stats(&self, id: Oid) -> HashMap<String, LineStats> {
+        if let Some(cached) = self.change_stats_cache.lock().unwrap().get(&id) {
+            return cached.clone();
+        }
+        let stats = self.compute_change_stats(id).unwrap_or_default();
+        self.change_stats_cache
+            .lock()
+            .unwrap()
+            .insert(id, stats.clone());
+        stats
+    }
+
+    fn compute_change_stats(&self, id: Oid) -> Result<HashMap<String, LineStats>, git2::Error> {
+        let commit = self.inner.find_commit(id)?;
+        let tree = commit.tree()?;
+        let parent_tree = match commit.parents().next() {
+            Some(parent) => Some(parent.tree()?),
+            None => None,
+        };
+        let diff = self
+            .inner
+            .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+
+        let mut stats: HashMap<String, LineStats> = HashMap::new();
+        diff.foreach(
+            &mut |_, _| true,
+            None,
+            None,
+            Some(&mut |delta, _, line| {
+                let path = delta
+                    .new_file()
+                    .path()
+                    .or_else(|| delta.old_file().path())
+                    .and_then(Path::to_str)
+                    .unwrap_or("")
+                    .to_string();
+                let entry = stats.entry(path).or_default();
+                match line.origin() {
+                    '+' => entry.added += 1,
+                    '-' => entry.removed += 1,
+                    _ => {}
+                }
+                true
+            }),
+        )?;
+        Ok(stats)
+    }
+
+    pub fn untracked_parent(&self, id: Oid) -> Option<Oid> {
+        let commit = self.inner.find_commit(id).ok()?;
+        commit.parents().nth(2).map(|parent| parent.id())
     }
 
     pub fn state_op(&self) -> Option<OpKind> {

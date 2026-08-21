@@ -22,12 +22,14 @@ use crate::help::context_help;
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
 use crate::staging::{FileDiff, content_of, marker_of, split_rows};
-use crate::stash::StashPanel;
+use crate::stash::{Focus as StashFocus, StashEntry, StashMessage, StashStats, StashView};
 use crate::submodule::{Submodule, SyncState};
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
 mod graph_view;
+
+use graph_view::display_width;
 
 const SELECTION_MARKER: &str = "❯ ";
 const SPLIT_SEPARATOR: &str = " │ ";
@@ -240,8 +242,8 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     if let Some(menu) = app.join_menu() {
         render_join_menu(frame, menu, &theme, graph_area);
     }
-    if let Some(panel) = app.stash_panel() {
-        render_stash_panel(frame, panel, &theme, graph_area);
+    if app.stash_view().is_some() {
+        render_stash_panel(frame, app, &theme, graph_area, now);
     }
     if let Some(panel) = app.focus_panel() {
         render_focus_panel(frame, panel, &theme, graph_area);
@@ -891,36 +893,165 @@ fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rec
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_stash_panel(frame: &mut Frame, panel: &StashPanel, theme: &Theme, area: Rect) {
-    render_slide_list(
-        frame,
-        panel,
-        theme,
-        area,
-        SlideList {
-            title: " Stashes   [p] pop · [a] apply · [d] drop ",
-            empty: "no stashes",
-            hints: &[],
-            fraction: 0.45,
-            min_width: 38.0,
-        },
-        |entry, selected| {
-            Line::from(vec![
+fn stash_origin(entry: &StashEntry) -> String {
+    match (&entry.branch, entry.message.base_id()) {
+        (Some(branch), _) => branch.clone(),
+        (None, Some(base)) => base.to_string(),
+        (None, None) => "detached".to_string(),
+    }
+}
+
+fn file_word(count: usize) -> String {
+    if count == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{count} files")
+    }
+}
+
+fn padded(spans: Vec<Span<'static>>, width: usize, style: Style) -> Line<'static> {
+    let used: usize = spans.iter().map(|span| display_width(&span.content)).sum();
+    let mut spans = spans;
+    if used < width {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    Line::from(spans).style(style)
+}
+
+fn stats_spans(stats: StashStats, theme: &Theme) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(format!("+{} ", stats.added), Style::default().fg(theme.added)),
+        Span::styled(format!("−{}", stats.removed), Style::default().fg(theme.removed)),
+    ]
+}
+
+fn stash_card_lines(
+    app: &App,
+    view: &StashView,
+    width: usize,
+    theme: &Theme,
+    now: i64,
+) -> Vec<Line<'static>> {
+    if view.panel.entries.is_empty() {
+        return vec![Line::from(Span::styled(
+            "no stashes — s stashes your changes",
+            Style::default().fg(theme.meta),
+        ))];
+    }
+
+    let mut lines = Vec::new();
+    for (index, entry) in view.panel.entries.iter().enumerate() {
+        let selected = index == view.panel.selected;
+        let focused = selected && view.focus == StashFocus::Entries;
+        let row = if selected {
+            Style::default().bg(theme.selection_bg)
+        } else {
+            Style::default()
+        };
+        let named = matches!(entry.message, StashMessage::Named(_));
+        let mut message = Style::default().fg(if named { theme.node } else { theme.meta });
+        if selected {
+            message = message.add_modifier(Modifier::BOLD);
+        }
+        if !named {
+            message = message.add_modifier(Modifier::ITALIC);
+        }
+        lines.push(padded(
+            vec![
                 Span::styled(
-                    if selected { "❯ " } else { "  " },
+                    if focused { SELECTION_MARKER } else { "  " },
                     Style::default().fg(theme.marker),
                 ),
                 Span::styled(
-                    format!("stash@{{{}}} ", entry.index),
-                    Style::default().fg(theme.short_id),
+                    format!("{} {}  ", if selected { "▣" } else { "▢" }, entry.index),
+                    Style::default()
+                        .fg(theme.short_id)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    entry.message.clone(),
-                    Style::default().fg(if selected { theme.node } else { theme.summary }),
+                Span::styled(entry.message.text().to_string(), message),
+            ],
+            width,
+            row,
+        ));
+
+        let stats = app.stash_stats(entry);
+        let mut meta = vec![
+            Span::raw("      "),
+            Span::styled("⎇ ", Style::default().fg(theme.meta)),
+            Span::styled(stash_origin(entry), Style::default().fg(theme.head_badge)),
+            Span::styled(
+                format!(
+                    " · {} · {}",
+                    relative_time(now, entry.time),
+                    file_word(stats.files)
                 ),
-            ])
-        },
-    );
+                Style::default().fg(theme.meta),
+            ),
+        ];
+        let used: usize = meta.iter().map(|span| display_width(&span.content)).sum();
+        let tail = stats_spans(stats, theme);
+        let tail_width: usize = tail.iter().map(|span| display_width(&span.content)).sum();
+        if used + tail_width + 2 <= width {
+            meta.push(Span::raw(" ".repeat(width - used - tail_width)));
+            meta.extend(tail);
+        }
+        lines.push(padded(meta, width, row));
+    }
+    lines
+}
+
+fn stash_hint_lines(view: &StashView, theme: &Theme) -> Vec<Line<'static>> {
+    let label = match view.focus {
+        StashFocus::Entries => "stashes ",
+        StashFocus::Files => "files ",
+        StashFocus::Hunks => "diff ",
+    };
+    let keys = match view.focus {
+        StashFocus::Entries => "[p] pop  [a] apply  [b] branch  [d] drop",
+        StashFocus::Files => "[x] restore one  [p] pop  [a] apply  [d] drop",
+        StashFocus::Hunks => "[v] side-by-side  [p] pop  [a] apply",
+    };
+    vec![
+        Line::from(vec![
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(theme.branch_badge)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(keys, Style::default().fg(theme.meta)),
+        ]),
+        Line::from(Span::styled(
+            "[Tab] focus  [/] filter  [Enter] fullscreen  [?] help",
+            Style::default().fg(theme.meta),
+        )),
+    ]
+}
+
+fn render_stash_panel(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i64) {
+    let Some(view) = app.stash_view() else {
+        return;
+    };
+    let Some(rect) = slide_rect(area, view.panel.slide, 0.5, 46.0) else {
+        return;
+    };
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(format!(
+            " Stashes   {}   [Enter] fullscreen ",
+            view.panel.entries.len()
+        ));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    let width = inner.width as usize;
+
+    let mut lines = stash_card_lines(app, view, width, theme, now);
+    lines.push(Line::from(""));
+    lines.extend(stash_hint_lines(view, theme));
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_conflict_browser(
