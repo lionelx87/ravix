@@ -1028,30 +1028,107 @@ fn stash_hint_lines(view: &StashView, theme: &Theme) -> Vec<Line<'static>> {
     ]
 }
 
-fn render_stash_panel(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, now: i64) {
-    let Some(view) = app.stash_view() else {
-        return;
-    };
-    let Some(rect) = slide_rect(area, view.panel.slide, 0.5, 46.0) else {
+fn stash_file_lines(view: &StashView, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![section_title("Files", view.files.len(), theme)];
+    if view.files.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  nothing in this entry",
+            Style::default().fg(theme.meta),
+        )));
+        return lines;
+    }
+    for (index, file) in view.files.iter().enumerate() {
+        let selected = index == view.file;
+        let focused = selected && view.focus != StashFocus::Entries;
+        let row = if focused {
+            Style::default().bg(theme.selection_bg)
+        } else {
+            Style::default()
+        };
+        let mut spans = vec![
+            Span::styled(
+                if focused { SELECTION_MARKER } else { "  " },
+                Style::default().fg(theme.marker),
+            ),
+            status_span(file.status, theme),
+            Span::styled(
+                file.path.clone(),
+                Style::default().fg(if selected { theme.node } else { theme.summary }),
+            ),
+        ];
+        let used: usize = spans.iter().map(|span| display_width(&span.content)).sum();
+        let tail = stats_spans(
+            StashStats {
+                files: 0,
+                added: file.stats.added,
+                removed: file.stats.removed,
+            },
+            theme,
+        );
+        let tail_width: usize = tail.iter().map(|span| display_width(&span.content)).sum();
+        if used + tail_width + 2 <= width {
+            spans.push(Span::raw(" ".repeat(width - used - tail_width)));
+            spans.extend(tail);
+        }
+        lines.push(padded(spans, width, row));
+    }
+    lines
+}
+
+fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, now: i64) {
+    let Some(rect) = app
+        .stash_view()
+        .and_then(|view| slide_rect(area, view.panel.slide, 0.5, 46.0))
+    else {
         return;
     };
     frame.render_widget(Clear, rect);
 
+    let count = app.stash_view().map_or(0, |view| view.panel.entries.len());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(format!(
-            " Stashes   {}   [Enter] fullscreen ",
-            view.panel.entries.len()
-        ));
+        .title(format!(" Stashes   {count}   [Enter] fullscreen "));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let width = inner.width as usize;
 
-    let mut lines = stash_card_lines(app, view, width, theme, now);
-    lines.push(Line::from(""));
-    lines.extend(stash_hint_lines(view, theme));
-    frame.render_widget(Paragraph::new(lines), inner);
+    let scroll = {
+        let view = app.stash_view().unwrap();
+        let mut lines = stash_card_lines(app, view, width, theme, now);
+        lines.push(Line::from(""));
+        lines.extend(stash_file_lines(view, width, theme));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("── diff {}", "─".repeat(width.saturating_sub(8))),
+            Style::default().fg(theme.meta),
+        )));
+        let focused_hunk = (view.focus == StashFocus::Hunks).then_some(view.hunk);
+        let top = view.diff_scroll as usize;
+        let window = top..top + inner.height as usize;
+        match view.diff.as_ref() {
+            Some(diff) => lines.extend(diff_lines(diff, focused_hunk, width, window, theme).0),
+            None => lines.extend(no_stash_diff_lines(theme)),
+        }
+        lines.push(Line::from(""));
+        lines.extend(stash_hint_lines(view, theme));
+
+        let max_scroll = lines.len().saturating_sub(inner.height as usize) as u16;
+        let scroll = view.diff_scroll.min(max_scroll);
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+        scroll
+    };
+
+    if let Some(view) = app.stash_view_mut() {
+        view.diff_scroll = scroll;
+    }
+}
+
+fn no_stash_diff_lines(theme: &Theme) -> Vec<Line<'static>> {
+    vec![Line::from(Span::styled(
+        "  no textual diff",
+        Style::default().fg(theme.meta),
+    ))]
 }
 
 fn render_conflict_browser(

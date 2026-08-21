@@ -2186,6 +2186,10 @@ impl App {
     }
 
     fn toggle_focus(&mut self) {
+        if let Some(view) = &mut self.stash {
+            view.rotate_focus();
+            return;
+        }
         if let Some(view) = &mut self.working {
             match view.focus {
                 Focus::Files => {

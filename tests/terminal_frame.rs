@@ -3117,6 +3117,54 @@ fn a_stash_card_shows_its_message_branch_and_size() {
 }
 
 #[test]
+fn the_panel_lists_the_files_of_the_focused_stash() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 120, 30));
+
+    assert!(
+        screen.contains("Files (3)"),
+        "the focused entry's files should be listed:\n{screen}"
+    );
+    assert!(
+        screen.contains("app.txt") && screen.contains("readme.md"),
+        "tracked files should be listed:\n{screen}"
+    );
+    assert!(
+        screen.contains("notes.txt"),
+        "a file that was untracked when stashed should be listed too:\n{screen}"
+    );
+}
+
+#[test]
+fn the_visible_keys_follow_the_focus() {
+    let dir = TempDir::new().unwrap();
+    stash_repo(dir.path(), "fix status refresh race");
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    let entries = dump(&draw(&mut app, 120, 30));
+    press(&mut app, &mut input, KeyCode::Tab);
+    let files = dump(&draw(&mut app, 120, 30));
+
+    assert!(
+        entries.contains("[b] branch") && !entries.contains("[x] restore one"),
+        "the entry list should offer the entry keys:\n{entries}"
+    );
+    assert!(
+        files.contains("[x] restore one"),
+        "standing on the files should offer restoring one:\n{files}"
+    );
+}
+
+#[test]
 fn popping_a_stash_restores_the_changes_and_removes_it() {
     let dir = TempDir::new().unwrap();
     dirty_repo(dir.path());
