@@ -191,15 +191,19 @@ pub struct CommitEditor {
     finish: Option<OpKind>,
 }
 
+pub enum BranchStart {
+    Commit(String),
+    Stash(usize),
+}
+
 pub struct BranchCreate {
     pub name: String,
-    start: String,
-    stash: Option<usize>,
+    start: BranchStart,
 }
 
 impl BranchCreate {
-    pub fn from_stash(&self) -> bool {
-        self.stash.is_some()
+    pub fn is_from_stash(&self) -> bool {
+        matches!(self.start, BranchStart::Stash(_))
     }
 }
 
@@ -729,8 +733,8 @@ impl App {
                 .map(|files| files.len())
                 .unwrap_or(0);
             for lines in self.repo.change_stats(id).values() {
-                stats.added += lines.added;
-                stats.removed += lines.removed;
+                stats.lines.added += lines.added;
+                stats.lines.removed += lines.removed;
             }
         }
         stats
@@ -1683,11 +1687,9 @@ impl App {
         let Some(index) = self.focused_stash() else {
             return;
         };
-        let start = self.branch_start();
         self.branch_create = Some(BranchCreate {
             name: String::new(),
-            start,
-            stash: Some(index),
+            start: BranchStart::Stash(index),
         });
     }
 
@@ -3705,8 +3707,7 @@ impl App {
         let start = self.branch_start();
         self.branch_create = Some(BranchCreate {
             name: String::new(),
-            start,
-            stash: None,
+            start: BranchStart::Commit(start),
         });
     }
 
@@ -3732,12 +3733,15 @@ impl App {
             self.branch_create = Some(editor);
             return;
         }
-        if let Some(index) = editor.stash {
-            self.stash_branch(index, &name);
-            return;
-        }
+        let start = match editor.start {
+            BranchStart::Stash(index) => {
+                self.stash_branch(index, &name);
+                return;
+            }
+            BranchStart::Commit(ref start) => start.clone(),
+        };
         let previous = self.repo.head_ref();
-        match self.cli.create_branch(&name, &editor.start) {
+        match self.cli.create_branch(&name, &start) {
             Ok(()) => {
                 if let Some(previous) = previous {
                     self.last_action = Some(UndoableAction::CreatedBranch { name, previous });

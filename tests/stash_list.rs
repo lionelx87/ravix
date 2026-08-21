@@ -43,7 +43,6 @@ fn an_auto_entry_keeps_the_base_commit_it_was_taken_on() {
         entries[0].message,
         StashMessage::Auto {
             base_id: "c6e62b8".to_string(),
-            base_summary: "fix: select the best match".to_string(),
         }
     );
     assert_eq!(entries[0].message.text(), "no message");

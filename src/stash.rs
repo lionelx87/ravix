@@ -6,10 +6,7 @@ pub const LIST_FORMAT: &str = "%gd%x00%ct%x00%gs%x00%H";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StashMessage {
     Named(String),
-    Auto {
-        base_id: String,
-        base_summary: String,
-    },
+    Auto { base_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,10 +79,9 @@ fn parse_subject(subject: &str) -> Option<(Option<String>, StashMessage)> {
     }
     let branch = (branch != "(no branch)").then(|| branch.to_string());
     let message = if auto {
-        let (base_id, base_summary) = text.split_once(' ').unwrap_or((text, ""));
+        let (base_id, _) = text.split_once(' ').unwrap_or((text, ""));
         StashMessage::Auto {
             base_id: base_id.to_string(),
-            base_summary: base_summary.to_string(),
         }
     } else {
         StashMessage::Named(text.to_string())
@@ -96,8 +92,7 @@ fn parse_subject(subject: &str) -> Option<(Option<String>, StashMessage)> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StashStats {
     pub files: usize,
-    pub added: usize,
-    pub removed: usize,
+    pub lines: LineStats,
 }
 
 #[derive(Debug, Clone)]

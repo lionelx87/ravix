@@ -2102,6 +2102,15 @@ fn m_opens_the_join_menu_with_a_merge_prediction() {
     );
 }
 
+fn git_capture(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
 fn git_run(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
         .current_dir(dir)
@@ -3587,6 +3596,30 @@ fn side_by_side_pans_sideways_in_the_stash_fullscreen() {
     assert!(
         !panned.contains("START"),
         "l should pan the side-by-side diff:\n{panned}"
+    );
+}
+
+#[test]
+fn an_unnamed_card_shows_the_commit_it_was_taken_on() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    git_run(dir.path(), &["stash", "push", "-u"]);
+    let base = git_capture(dir.path(), &["rev-parse", "--short", "HEAD"]);
+    let base = base.trim();
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        screen.contains("no message"),
+        "an unnamed entry should say so:\n{screen}"
+    );
+    assert!(
+        screen.contains(base),
+        "and still show the commit it was taken on ({base}):\n{screen}"
     );
 }
 

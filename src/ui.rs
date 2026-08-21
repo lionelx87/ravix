@@ -17,12 +17,12 @@ use crate::app::{
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
 use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
-use crate::git::{BadgeKind, CONFLICTED, FileStatus, RefBadge};
+use crate::git::{BadgeKind, CONFLICTED, FileStatus, LineStats, RefBadge};
 use crate::help::context_help;
 use crate::join::JoinMenu;
 use crate::slide::SlidePanel;
 use crate::staging::{FileDiff, content_of, marker_of, split_rows};
-use crate::stash::{Focus as StashFocus, StashEntry, StashMessage, StashStats, StashView};
+use crate::stash::{Focus as StashFocus, StashEntry, StashMessage, StashView};
 use crate::submodule::{Submodule, SyncState};
 use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
@@ -32,7 +32,8 @@ mod graph_view;
 use graph_view::display_width;
 
 const SELECTION_MARKER: &str = "❯ ";
-const CARD_ROOM: usize = 8;
+const CARD_ROWS: usize = 2;
+const PANEL_CARD_ROWS: usize = 8;
 const SPLIT_SEPARATOR: &str = " │ ";
 
 pub struct Theme {
@@ -924,7 +925,7 @@ fn padded(spans: Vec<Span<'static>>, width: usize, style: Style) -> Line<'static
     Line::from(spans).style(style)
 }
 
-fn stats_spans(stats: StashStats, theme: &Theme) -> Vec<Span<'static>> {
+fn stats_spans(stats: LineStats, theme: &Theme) -> Vec<Span<'static>> {
     vec![
         Span::styled(
             format!("+{} ", stats.added),
@@ -937,9 +938,23 @@ fn stats_spans(stats: StashStats, theme: &Theme) -> Vec<Span<'static>> {
     ]
 }
 
-fn card_window(view: &StashView, room: usize) -> std::ops::Range<usize> {
+fn right_aligned(
+    mut spans: Vec<Span<'static>>,
+    tail: Vec<Span<'static>>,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let used: usize = spans.iter().map(|span| display_width(&span.content)).sum();
+    let tail_width: usize = tail.iter().map(|span| display_width(&span.content)).sum();
+    if used + tail_width + 2 <= width {
+        spans.push(Span::raw(" ".repeat(width - used - tail_width)));
+        spans.extend(tail);
+    }
+    spans
+}
+
+fn card_window(view: &StashView, rows: usize) -> std::ops::Range<usize> {
     let total = view.panel.entries.len();
-    let visible = (room / 2).clamp(1, total.max(1));
+    let visible = (rows / CARD_ROWS).clamp(1, total.max(1));
     let first = view
         .panel
         .selected
@@ -954,7 +969,7 @@ fn stash_card_lines(
     width: usize,
     theme: &Theme,
     now: i64,
-    room: usize,
+    rows: usize,
 ) -> Vec<Line<'static>> {
     if view.panel.entries.is_empty() {
         return vec![Line::from(Span::styled(
@@ -963,7 +978,7 @@ fn stash_card_lines(
         ))];
     }
 
-    let window = card_window(view, room);
+    let window = card_window(view, rows);
     let mut lines = Vec::new();
     for (index, entry) in view
         .panel
@@ -1011,22 +1026,22 @@ fn stash_card_lines(
             Span::raw("      "),
             Span::styled("⎇ ", Style::default().fg(theme.meta)),
             Span::styled(stash_origin(entry), Style::default().fg(theme.head_badge)),
-            Span::styled(
-                format!(
-                    " · {} · {}",
-                    relative_time(now, entry.time),
-                    file_word(stats.files)
-                ),
-                Style::default().fg(theme.meta),
-            ),
         ];
-        let used: usize = meta.iter().map(|span| display_width(&span.content)).sum();
-        let tail = stats_spans(stats, theme);
-        let tail_width: usize = tail.iter().map(|span| display_width(&span.content)).sum();
-        if used + tail_width + 2 <= width {
-            meta.push(Span::raw(" ".repeat(width - used - tail_width)));
-            meta.extend(tail);
+        if let Some(base) = entry.branch.as_ref().and(entry.message.base_id()) {
+            meta.push(Span::styled(
+                format!(" · {base}"),
+                Style::default().fg(theme.short_id),
+            ));
         }
+        meta.push(Span::styled(
+            format!(
+                " · {} · {}",
+                relative_time(now, entry.time),
+                file_word(stats.files)
+            ),
+            Style::default().fg(theme.meta),
+        ));
+        let meta = right_aligned(meta, stats_spans(stats.lines, theme), width);
         lines.push(padded(meta, width, row));
     }
     lines
@@ -1083,7 +1098,7 @@ fn stash_file_lines(
         } else {
             Style::default()
         };
-        let mut spans = vec![
+        let spans = vec![
             Span::styled(
                 if focused { SELECTION_MARKER } else { "  " },
                 Style::default().fg(theme.marker),
@@ -1094,20 +1109,7 @@ fn stash_file_lines(
                 Style::default().fg(if selected { theme.node } else { theme.summary }),
             ),
         ];
-        let used: usize = spans.iter().map(|span| display_width(&span.content)).sum();
-        let tail = stats_spans(
-            StashStats {
-                files: 0,
-                added: file.stats.added,
-                removed: file.stats.removed,
-            },
-            theme,
-        );
-        let tail_width: usize = tail.iter().map(|span| display_width(&span.content)).sum();
-        if used + tail_width + 2 <= width {
-            spans.push(Span::raw(" ".repeat(width - used - tail_width)));
-            spans.extend(tail);
-        }
+        let spans = right_aligned(spans, stats_spans(file.stats, theme), width);
         lines.push(padded(spans, width, row));
     }
     lines
@@ -1154,7 +1156,7 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 
     let scroll = {
         let view = app.stash_view().unwrap();
-        let mut lines = stash_card_lines(app, view, width, theme, now, CARD_ROOM);
+        let mut lines = stash_card_lines(app, view, width, theme, now, PANEL_CARD_ROWS);
         lines.push(Line::from(""));
         lines.extend(stash_file_lines(view, width, theme, true));
         lines.push(Line::from(""));
@@ -1202,7 +1204,9 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
         let view = app.stash_view().unwrap();
         (view.focus, view.panel.entries.len(), view.files.len())
     };
-    let entry_rows = (count as u16 * 2 + 2).min(area.height / 2).max(3);
+    let entry_rows = (count as u16 * CARD_ROWS as u16 + 2)
+        .min(area.height / 2)
+        .max(3);
     let rows = Layout::vertical([
         Constraint::Length(entry_rows),
         Constraint::Min(0),
@@ -1275,26 +1279,18 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
     let focused_hunk = (view.focus == StashFocus::Hunks).then_some(view.hunk);
     let snap = view.hunk_snap;
     view.hunk_snap = false;
-    let split = view.split;
-    let diff = view.diff.take();
-    let mut diff_scroll = view.diff_scroll;
-    let mut diff_hscroll = view.diff_hscroll;
     render_diff_pane(
         frame,
-        diff.as_ref(),
-        split,
+        view.diff.as_ref(),
+        view.split,
         focused_hunk,
-        &mut diff_scroll,
-        &mut diff_hscroll,
+        &mut view.diff_scroll,
+        &mut view.diff_hscroll,
         snap,
         focus == StashFocus::Hunks,
         theme,
         columns[1],
     );
-    let view = app.stash_view_mut().unwrap();
-    view.diff = diff;
-    view.diff_scroll = diff_scroll;
-    view.diff_hscroll = diff_hscroll;
 }
 
 fn no_stash_diff_lines(theme: &Theme) -> Vec<Line<'static>> {
@@ -2571,7 +2567,7 @@ fn render_branch_create(frame: &mut Frame, editor: &BranchCreate, theme: &Theme,
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.panel_border))
-        .title(if editor.from_stash() {
+        .title(if editor.is_from_stash() {
             " Branch from stash   [Enter] create · [Esc] cancel "
         } else {
             " New branch   [Enter] create · [Esc] cancel "
