@@ -3210,9 +3210,9 @@ fn the_visible_keys_follow_the_focus() {
 
     press(&mut app, &mut input, KeyCode::Char('S'));
     settle(&mut app);
-    let entries = dump(&draw(&mut app, 120, 30));
+    let entries = dump(&draw(&mut app, 120, 24));
     press(&mut app, &mut input, KeyCode::Tab);
-    let files = dump(&draw(&mut app, 120, 30));
+    let files = dump(&draw(&mut app, 120, 24));
 
     assert!(
         entries.contains("[b] branch") && !entries.contains("[x] restore one"),
@@ -3247,6 +3247,10 @@ fn enter_expands_the_stash_and_esc_comes_back_to_the_panel() {
     assert!(
         full.contains("app.txt"),
         "the files of the entry should stay on screen:\n{full}"
+    );
+    assert!(
+        full.contains("[Tab] focus") && full.contains("[Esc] panel"),
+        "the fullscreen should keep its keys on screen:\n{full}"
     );
 
     press(&mut app, &mut input, KeyCode::Esc);

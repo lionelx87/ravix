@@ -1032,7 +1032,7 @@ fn stash_card_lines(
     lines
 }
 
-fn stash_hint_lines(view: &StashView, theme: &Theme) -> Vec<Line<'static>> {
+fn stash_focus_line(view: &StashView, theme: &Theme) -> Line<'static> {
     let label = match view.focus {
         StashFocus::Entries => "stashes ",
         StashFocus::Files => "files ",
@@ -1043,25 +1043,31 @@ fn stash_hint_lines(view: &StashView, theme: &Theme) -> Vec<Line<'static>> {
         StashFocus::Files => "[x] restore one  [p] pop  [a] apply  [d] drop",
         StashFocus::Hunks => "[v] side-by-side  [p] pop  [a] apply",
     };
-    vec![
-        Line::from(vec![
-            Span::styled(
-                label,
-                Style::default()
-                    .fg(theme.branch_badge)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(keys, Style::default().fg(theme.meta)),
-        ]),
-        Line::from(Span::styled(
-            "[Tab] focus  [/] filter  [Enter] fullscreen  [?] help",
-            Style::default().fg(theme.meta),
-        )),
-    ]
+    Line::from(vec![
+        Span::styled(
+            label,
+            Style::default()
+                .fg(theme.branch_badge)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(keys, Style::default().fg(theme.meta)),
+    ])
 }
 
-fn stash_file_lines(view: &StashView, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines = vec![section_title("Files", view.files.len(), theme)];
+fn stash_keys_line(keys: &'static str, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(keys, Style::default().fg(theme.meta)))
+}
+
+fn stash_file_lines(
+    view: &StashView,
+    width: usize,
+    theme: &Theme,
+    heading: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if heading {
+        lines.push(section_title("Files", view.files.len(), theme));
+    }
     if view.files.is_empty() {
         lines.push(Line::from(Span::styled(
             "  nothing in this entry",
@@ -1131,11 +1137,20 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     frame.render_widget(block, rect);
     let width = inner.width as usize;
 
+    const FOOTER: u16 = 3;
+    let (content, footer) = if inner.height > FOOTER + 4 {
+        let chunks =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(FOOTER)]).split(inner);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (inner, None)
+    };
+
     let scroll = {
         let view = app.stash_view().unwrap();
         let mut lines = stash_card_lines(app, view, width, theme, now, CARD_ROOM);
         lines.push(Line::from(""));
-        lines.extend(stash_file_lines(view, width, theme));
+        lines.extend(stash_file_lines(view, width, theme, true));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("── diff {}", "─".repeat(width.saturating_sub(8))),
@@ -1143,17 +1158,28 @@ fn render_stash_panel(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         )));
         let focused_hunk = (view.focus == StashFocus::Hunks).then_some(view.hunk);
         let top = view.diff_scroll as usize;
-        let window = top..top + inner.height as usize;
+        let window = top..top + content.height as usize;
         match view.diff.as_ref() {
             Some(diff) => lines.extend(diff_lines(diff, focused_hunk, width, window, theme).0),
             None => lines.extend(no_stash_diff_lines(theme)),
         }
-        lines.push(Line::from(""));
-        lines.extend(stash_hint_lines(view, theme));
 
-        let max_scroll = lines.len().saturating_sub(inner.height as usize) as u16;
+        let max_scroll = lines.len().saturating_sub(content.height as usize) as u16;
         let scroll = view.diff_scroll.min(max_scroll);
-        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content);
+
+        if let Some(footer) = footer {
+            let mut hints = vec![Line::from(Span::styled(
+                "─".repeat(width),
+                Style::default().fg(theme.panel_border),
+            ))];
+            hints.push(stash_focus_line(view, theme));
+            hints.push(stash_keys_line(
+                "[Tab] focus  [/] filter  [Enter] fullscreen  [?] help",
+                theme,
+            ));
+            frame.render_widget(Paragraph::new(hints), footer);
+        }
         scroll
     };
 
@@ -1166,13 +1192,17 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
     frame.render_widget(Clear, area);
     let columns = Layout::horizontal([Constraint::Length(46), Constraint::Min(0)]).split(area);
 
-    let (focus, count) = {
+    let (focus, count, view_file_count) = {
         let view = app.stash_view().unwrap();
-        (view.focus, view.panel.entries.len())
+        (view.focus, view.panel.entries.len(), view.files.len())
     };
     let entry_rows = (count as u16 * 2 + 2).min(area.height / 2).max(3);
-    let rows =
-        Layout::vertical([Constraint::Length(entry_rows), Constraint::Min(0)]).split(columns[0]);
+    let rows = Layout::vertical([
+        Constraint::Length(entry_rows),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .split(columns[0]);
 
     let entries_block = Block::default()
         .borders(Borders::ALL)
@@ -1181,9 +1211,7 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
         } else {
             theme.label
         }))
-        .title(format!(
-            " Stashes   {count}   [p] pop · [a] apply · [d] drop "
-        ));
+        .title(format!(" Stashes {count} · p pop · a apply · d drop "));
     let files_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if focus == StashFocus::Files {
@@ -1191,7 +1219,10 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
         } else {
             theme.label
         }))
-        .title(" Files   [x] restore one · [b] branch ");
+        .title(format!(
+            " Files {} · x restore one · b branch ",
+            view_file_count
+        ));
 
     let (entry_lines, file_lines) = {
         let view = app.stash_view().unwrap();
@@ -1205,7 +1236,7 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
                 now,
                 rows[0].height.saturating_sub(2) as usize,
             ),
-            stash_file_lines(view, width, theme),
+            stash_file_lines(view, width, theme, false),
         )
     };
     frame.render_widget(Paragraph::new(entry_lines).block(entries_block), rows[0]);
@@ -1217,6 +1248,15 @@ fn render_stash_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, area
             .scroll((files_scroll, 0)),
         rows[1],
     );
+
+    let hints = {
+        let view = app.stash_view().unwrap();
+        vec![
+            stash_focus_line(view, theme),
+            stash_keys_line("[Tab] focus  [v] side-by-side  [Esc] panel", theme),
+        ]
+    };
+    frame.render_widget(Paragraph::new(hints), rows[2]);
 
     let view = app.stash_view_mut().unwrap();
     let focused_hunk = (view.focus == StashFocus::Hunks).then_some(view.hunk);
