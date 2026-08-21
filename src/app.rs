@@ -80,6 +80,9 @@ pub enum Action {
     Pull,
     Push,
     StashSave,
+    StashMessageInput(char),
+    StashMessageBackspace,
+    StashMessageSubmit,
     ToggleStashes,
     StashPop,
     StashApply,
@@ -136,6 +139,7 @@ pub enum InputContext {
     Graph,
     Working,
     Commit,
+    StashMessage,
     Confirm,
     Branch,
     BranchName,
@@ -407,6 +411,7 @@ pub struct App {
     edit_request: Option<String>,
     drag: Option<DragState>,
     stash: Option<StashView>,
+    stash_message: Option<String>,
     stash_conflict: Option<StashConflict>,
     remote: Option<RemoteJob>,
     askpass_sock: Option<PathBuf>,
@@ -491,6 +496,7 @@ impl App {
             edit_request: None,
             drag: None,
             stash: None,
+            stash_message: None,
             stash_conflict: None,
             remote: None,
             askpass_sock: None,
@@ -674,6 +680,10 @@ impl App {
         self.conflict.as_ref()
     }
 
+    pub fn stash_message(&self) -> Option<&str> {
+        self.stash_message.as_deref()
+    }
+
     pub fn stash_panel(&self) -> Option<&StashPanel> {
         self.stash.as_ref().map(|view| &view.panel)
     }
@@ -795,6 +805,8 @@ impl App {
             InputContext::Alert
         } else if self.palette.is_some() {
             InputContext::Palette
+        } else if self.stash_message.is_some() {
+            InputContext::StashMessage
         } else if self.commit.is_some() {
             InputContext::Commit
         } else if self.branch_create.is_some() {
@@ -918,7 +930,18 @@ impl App {
             Action::Fetch => self.fetch(),
             Action::Pull => self.pull(),
             Action::Push => self.push(),
-            Action::StashSave => self.stash_save(),
+            Action::StashSave => self.ask_stash_message(),
+            Action::StashMessageInput(character) => {
+                if let Some(message) = &mut self.stash_message {
+                    message.push(character);
+                }
+            }
+            Action::StashMessageBackspace => {
+                if let Some(message) = &mut self.stash_message {
+                    message.pop();
+                }
+            }
+            Action::StashMessageSubmit => self.stash_save(),
             Action::ToggleStashes => self.toggle_stashes(),
             Action::StashPop => self.stash_pop(),
             Action::StashApply => self.stash_apply(),
@@ -1361,12 +1384,23 @@ impl App {
         }
     }
 
-    fn stash_save(&mut self) {
+    fn ask_stash_message(&mut self) {
         if self.status.is_empty() {
             self.info("Nothing to stash".to_string());
             return;
         }
-        match self.cli.stash_save(None) {
+        self.stash_message = Some(String::new());
+    }
+
+    fn stash_save(&mut self) {
+        let message = self.stash_message.take().unwrap_or_default();
+        if self.status.is_empty() {
+            self.info("Nothing to stash".to_string());
+            return;
+        }
+        let message = message.trim();
+        let message = (!message.is_empty()).then_some(message);
+        match self.cli.stash_save(message) {
             Ok(()) => {
                 self.last_action = Some(UndoableAction::Stashed);
                 self.reload();
@@ -1919,6 +1953,8 @@ impl App {
             self.alert = None;
         } else if self.palette.is_some() {
             self.palette = None;
+        } else if self.stash_message.is_some() {
+            self.stash_message = None;
         } else if self.commit.is_some() {
             self.commit = None;
         } else if self.branch_create.is_some() {

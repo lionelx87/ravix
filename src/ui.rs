@@ -259,6 +259,9 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     if let Some(editor) = app.commit_editor() {
         render_commit_editor(frame, editor, &theme, area);
     }
+    if let Some(message) = app.stash_message() {
+        render_stash_message(frame, message, &theme, area);
+    }
     if let Some(editor) = app.branch_create() {
         render_branch_create(frame, editor, &theme, area);
     }
@@ -2125,6 +2128,33 @@ fn render_commit_editor(frame: &mut Frame, editor: &CommitEditor, theme: &Theme,
         Span::styled("█", Style::default().fg(theme.branch_badge)),
     ]);
     frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_stash_message(frame: &mut Frame, message: &str, theme: &Theme, area: Rect) {
+    let width = 64u16.min(area.width);
+    let height = 5u16.min(area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Stash message   [Enter] stash · [Esc] cancel ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let line = Line::from(vec![
+        Span::styled(message.to_string(), Style::default().fg(theme.node)),
+        Span::styled("█", Style::default().fg(theme.branch_badge)),
+    ]);
+    let hint = Line::from(Span::styled(
+        "an empty message stashes with git's own",
+        Style::default().fg(theme.meta),
+    ));
+    frame.render_widget(
+        Paragraph::new(vec![line, hint]).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 fn render_password_prompt(frame: &mut Frame, prompt: &PasswordPrompt, theme: &Theme, area: Rect) {

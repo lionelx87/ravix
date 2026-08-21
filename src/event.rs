@@ -24,6 +24,7 @@ impl InputMap {
             InputContext::Graph => self.on_graph_key(key),
             InputContext::Working => on_working_key(key),
             InputContext::Commit => on_commit_key(key),
+            InputContext::StashMessage => on_stash_message_key(key),
             InputContext::Confirm => on_confirm_key(key),
             InputContext::Branch => on_branch_key(key),
             InputContext::BranchName => on_branch_name_key(key),
@@ -138,6 +139,17 @@ fn on_commit_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Backspace => Some(Action::CommitBackspace),
         KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char(character) if !ctrl => Some(Action::CommitInput(character)),
+        _ => None,
+    }
+}
+
+fn on_stash_message_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::StashMessageSubmit),
+        KeyCode::Backspace => Some(Action::StashMessageBackspace),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char(character) if !ctrl => Some(Action::StashMessageInput(character)),
         _ => None,
     }
 }

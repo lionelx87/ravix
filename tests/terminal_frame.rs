@@ -3063,6 +3063,7 @@ fn s_stashes_the_working_changes() {
     assert!(app.has_wip(), "the fixture starts dirty");
 
     press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Enter);
 
     assert!(!app.has_wip(), "stashing should clear the working tree");
     assert_eq!(app.notice(), Some("Stashed working changes"));
@@ -3076,6 +3077,7 @@ fn opening_the_stash_list_shows_the_saved_stash() {
     let mut input = InputMap::default();
 
     press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Enter);
     press(&mut app, &mut input, KeyCode::Char('S'));
     settle(&mut app);
     let screen = dump(&draw(&mut app, 100, 24));
@@ -3093,6 +3095,58 @@ fn opening_the_stash_list_shows_the_saved_stash() {
 fn stash_repo(dir: &Path, message: &str) {
     dirty_repo(dir);
     git_run(dir, &["stash", "push", "-u", "-m", message]);
+}
+
+fn type_message(app: &mut App, input: &mut InputMap, message: &str) {
+    for character in message.chars() {
+        press(app, input, KeyCode::Char(character));
+    }
+}
+
+#[test]
+fn s_asks_for_a_message_before_stashing() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    let prompt = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        prompt.contains("Stash message"),
+        "s should ask for a message first:\n{prompt}"
+    );
+    assert!(app.has_wip(), "nothing should be stashed until the prompt is answered");
+
+    type_message(&mut app, &mut input, "fix status refresh race");
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(!app.has_wip(), "answering the prompt should stash");
+
+    press(&mut app, &mut input, KeyCode::Char('S'));
+    settle(&mut app);
+    let screen = dump(&draw(&mut app, 120, 24));
+
+    assert!(
+        screen.contains("fix status refresh race"),
+        "the entry should carry the message it was given:\n{screen}"
+    );
+}
+
+#[test]
+fn esc_on_the_stash_prompt_keeps_the_working_changes() {
+    let dir = TempDir::new().unwrap();
+    dirty_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    press(&mut app, &mut input, KeyCode::Char('s'));
+    type_message(&mut app, &mut input, "never mind");
+    press(&mut app, &mut input, KeyCode::Esc);
+
+    assert!(app.has_wip(), "cancelling should leave the working tree alone");
+    assert_eq!(app.notice(), None);
 }
 
 #[test]
@@ -3210,6 +3264,7 @@ fn popping_a_stash_restores_the_changes_and_removes_it() {
     let mut input = InputMap::default();
 
     press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Enter);
     assert!(!app.has_wip());
     press(&mut app, &mut input, KeyCode::Char('S'));
     press(&mut app, &mut input, KeyCode::Char('p'));
@@ -3230,6 +3285,7 @@ fn applying_a_stash_restores_the_changes_but_keeps_it() {
     let mut input = InputMap::default();
 
     press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Enter);
     press(&mut app, &mut input, KeyCode::Char('S'));
     press(&mut app, &mut input, KeyCode::Char('a'));
 
@@ -3249,6 +3305,7 @@ fn dropping_a_stash_removes_it_after_confirmation() {
     let mut input = InputMap::default();
 
     press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Enter);
     press(&mut app, &mut input, KeyCode::Char('S'));
     press(&mut app, &mut input, KeyCode::Char('d'));
     assert!(app.confirm().is_some(), "drop should ask for confirmation");
@@ -3277,6 +3334,7 @@ fn a_conflicting_pop_surfaces_the_error_and_refreshes_the_working_view() {
     let mut input = InputMap::default();
 
     press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Enter);
     assert!(!app.has_wip());
     std::fs::write(dir.path().join("f.txt"), "conflicting\n").unwrap();
 
@@ -3314,6 +3372,7 @@ fn undo_pops_a_stash_save_back() {
     let mut input = InputMap::default();
 
     press(&mut app, &mut input, KeyCode::Char('s'));
+    press(&mut app, &mut input, KeyCode::Enter);
     assert!(!app.has_wip());
 
     press(&mut app, &mut input, KeyCode::Char('u'));
