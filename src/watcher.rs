@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
@@ -10,20 +12,28 @@ use notify::{EventKind, RecursiveMode, Watcher};
 /// Watches a repository's `.git` directory and working tree, coalescing bursts
 /// of filesystem events into a single debounced reload signal. Worktree events
 /// on git-ignored paths (build artifacts, caches) are dropped so background
-/// tooling never triggers reloads. Watch registration can take seconds on
-/// large worktrees, so the watcher is built entirely on a background thread
-/// and starts signaling once registration completes.
+/// tooling never triggers reloads, while nested `.git` directories stay
+/// relevant so submodule commits still reload. Watch registration can take
+/// seconds on large worktrees, so the watcher is built entirely on a
+/// background thread, and it signals once when registration completes to cover
+/// whatever changed during that blind window.
 pub struct RepoWatcher {
     reloads: Receiver<()>,
+    degraded: Arc<AtomicBool>,
 }
 
 impl RepoWatcher {
     pub fn new(git_dir: &Path, workdir: Option<&Path>, debounce: Duration) -> Self {
         let (reload_tx, reload_rx) = mpsc::channel();
+        let degraded = Arc::new(AtomicBool::new(false));
         let git_dir = git_dir.to_path_buf();
         let workdir = workdir.map(Path::to_path_buf);
-        thread::spawn(move || watch_and_debounce(git_dir, workdir, debounce, reload_tx));
-        Self { reloads: reload_rx }
+        let flag = Arc::clone(&degraded);
+        thread::spawn(move || watch_and_debounce(git_dir, workdir, debounce, reload_tx, flag));
+        Self {
+            reloads: reload_rx,
+            degraded,
+        }
     }
 
     pub fn changed(&self) -> bool {
@@ -33,6 +43,10 @@ impl RepoWatcher {
         }
         changed
     }
+
+    pub fn degraded(&self) -> bool {
+        self.degraded.load(Ordering::Relaxed)
+    }
 }
 
 fn watch_and_debounce(
@@ -40,9 +54,11 @@ fn watch_and_debounce(
     workdir: Option<PathBuf>,
     debounce: Duration,
     reload: mpsc::Sender<()>,
+    degraded: Arc<AtomicBool>,
 ) {
     let filter = EventFilter::new(&git_dir, workdir.as_deref());
     let (raw_tx, raw_rx) = mpsc::channel();
+    let registered_tx = raw_tx.clone();
     let Ok(mut watcher) =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             if event.is_ok_and(|event| filter.should_reload(&event)) {
@@ -50,13 +66,20 @@ fn watch_and_debounce(
             }
         })
     else {
+        degraded.store(true, Ordering::Relaxed);
         return;
     };
     if watcher.watch(&git_dir, RecursiveMode::Recursive).is_err() {
+        degraded.store(true, Ordering::Relaxed);
         return;
     }
-    if let Some(workdir) = &workdir {
-        let _ = watcher.watch(workdir, RecursiveMode::Recursive);
+    if let Some(workdir) = &workdir
+        && watcher.watch(workdir, RecursiveMode::Recursive).is_err()
+    {
+        degraded.store(true, Ordering::Relaxed);
+    }
+    if registered_tx.send(()).is_err() {
+        return;
     }
     debounce_loop(raw_rx, reload, debounce);
 }
@@ -111,11 +134,19 @@ impl WorktreeFilter {
         if relative.as_os_str().is_empty() {
             return true;
         }
+        if holds_git_dir(relative) {
+            return true;
+        }
         match &self.repo {
             Some(repo) => !repo.is_path_ignored(relative).unwrap_or(false),
             None => true,
         }
     }
+}
+
+fn holds_git_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| component == Component::Normal(".git".as_ref()))
 }
 
 fn signals_change(kind: &EventKind) -> bool {
@@ -157,6 +188,14 @@ mod tests {
         assert!(!signals_change(&EventKind::Modify(ModifyKind::Metadata(
             MetadataKind::AccessTime
         ))));
+    }
+
+    #[test]
+    fn nested_git_directories_stay_relevant() {
+        assert!(holds_git_dir(Path::new("sub/.git/index")));
+        assert!(holds_git_dir(Path::new(".git/refs/heads/main")));
+        assert!(!holds_git_dir(Path::new("src/.gitignore")));
+        assert!(!holds_git_dir(Path::new("node_modules/pkg/index.js")));
     }
 
     #[test]

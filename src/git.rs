@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -125,6 +126,26 @@ pub struct RepoMeta {
     pub badges: HashMap<Oid, Vec<RefBadge>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexStamp {
+    seconds: i64,
+    nanoseconds: i64,
+    size: u64,
+    inode: u64,
+}
+
+impl IndexStamp {
+    fn of(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Self {
+            seconds: metadata.mtime(),
+            nanoseconds: metadata.mtime_nsec(),
+            size: metadata.size(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
 pub struct Repo {
     inner: Repository,
     changed_files_cache: Mutex<HashMap<Oid, Vec<FileChange>>>,
@@ -140,6 +161,16 @@ impl Repo {
 
     pub fn git_dir(&self) -> &Path {
         self.inner.path()
+    }
+
+    pub fn index_stamp(&self) -> Option<IndexStamp> {
+        IndexStamp::of(&self.inner.path().join("index"))
+    }
+
+    pub fn reread_index(&self) {
+        if let Ok(mut index) = self.inner.index() {
+            let _ = index.read(true);
+        }
     }
 
     pub fn workdir(&self) -> Option<&Path> {

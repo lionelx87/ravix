@@ -15,6 +15,7 @@ use ravix::watcher::RepoWatcher;
 const IDLE_POLL: Duration = Duration::from_millis(200);
 const FRAME_POLL: Duration = Duration::from_millis(16);
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(120);
+const STATUS_FALLBACK: Duration = Duration::from_millis(500);
 
 fn main() -> io::Result<()> {
     if let Some(prompt) = ravix::askpass::helper_prompt() {
@@ -70,6 +71,8 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     let mut input = InputMap::default();
     let watcher = RepoWatcher::new(&app.git_dir(), app.workdir().as_deref(), WATCH_DEBOUNCE);
     let mut last_tick = Instant::now();
+    let mut last_status = Instant::now();
+    let mut watch_warned = false;
     let mut graph_area = Rect::default();
     let mut perf = PerfLog::from_env();
 
@@ -128,10 +131,21 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         app.poll_remote();
         app.poll_askpass();
 
+        if !watch_warned && watcher.degraded() {
+            app.report_watch_degraded();
+            watch_warned = true;
+        }
+
         if watcher.changed() {
             let reload_started = Instant::now();
             app.update(Action::Reload);
             perf.record("reload", reload_started.elapsed());
+            last_status = Instant::now();
+        } else if last_status.elapsed() >= STATUS_FALLBACK {
+            let poll_started = Instant::now();
+            app.poll_status();
+            perf.record("status", poll_started.elapsed());
+            last_status = Instant::now();
         }
     }
 }

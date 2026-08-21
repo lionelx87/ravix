@@ -13,8 +13,8 @@ use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_coun
 use crate::drag::{DropIntent, RowRef, resolve_drop};
 use crate::focus::{self, FocusSet};
 use crate::git::{
-    BadgeKind, CONFLICTED, CommitInfo, FileChange, Repo, RepoMeta, StageState, WorkingFile,
-    WorkingStatus,
+    BadgeKind, CONFLICTED, CommitInfo, FileChange, IndexStamp, Repo, RepoMeta, StageState,
+    WorkingFile, WorkingStatus,
 };
 use crate::graph::{GraphCommit, GraphLayout, GraphRow};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
@@ -39,6 +39,7 @@ const NAV_TRANSITION: Duration = Duration::from_millis(220);
 const CELEBRATION_DURATION: Duration = Duration::from_millis(350);
 const PEEK_DEBOUNCE: f32 = 0.08;
 const DEFAULT_PAGE: usize = 10;
+const STATUS_RETRIES: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -386,6 +387,8 @@ pub struct App {
     offset: usize,
     page: usize,
     status: WorkingStatus,
+    index_stamp: Option<IndexStamp>,
+    status_retries: u8,
     on_wip: bool,
     visibility: Visibility,
     working: Option<WorkingView>,
@@ -450,6 +453,7 @@ impl App {
         let exhausted = commits.len() >= commit_oids.len();
         let mut graph_layout = GraphLayout::new();
         let rows = graph_layout.extend(&graph_commits(&commits));
+        let index_stamp = repo.index_stamp();
         let status = repo.working_status().unwrap_or_default();
         let mut app = Self {
             repo,
@@ -467,6 +471,8 @@ impl App {
             offset: 0,
             page: DEFAULT_PAGE,
             status,
+            index_stamp,
+            status_retries: 0,
             on_wip: false,
             visibility,
             working: None,
@@ -3348,9 +3354,38 @@ impl App {
         }
     }
 
+    pub fn report_watch_degraded(&mut self) {
+        self.fail("Watching the working tree failed; refreshes may lag".to_string());
+    }
+
+    pub fn poll_status(&mut self) {
+        if self.status_retries == 0 && self.repo.index_stamp() == self.index_stamp {
+            return;
+        }
+        self.refresh_status();
+    }
+
     fn refresh_status(&mut self) {
-        if let Ok(status) = self.repo.working_status() {
-            self.status = status;
+        let stamp = self.repo.index_stamp();
+        let moved = stamp != self.index_stamp;
+        if moved {
+            self.repo.reread_index();
+        }
+        if moved || self.status_retries == 0 {
+            self.status_retries = STATUS_RETRIES;
+        }
+        match self.repo.working_status() {
+            Ok(status) => {
+                self.status = status;
+                self.index_stamp = stamp;
+                self.status_retries = 0;
+            }
+            Err(error) => {
+                self.status_retries -= 1;
+                if self.status_retries == 0 {
+                    self.fail(format!("Could not read the working tree: {error}"));
+                }
+            }
         }
         if self.status.is_empty() {
             self.on_wip = false;

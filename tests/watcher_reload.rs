@@ -23,6 +23,10 @@ fn committed_repo(dir: &TempDir) -> &Path {
 
 fn watcher_for(path: &Path) -> RepoWatcher {
     let watcher = RepoWatcher::new(&path.join(".git"), Some(path), DEBOUNCE);
+    assert!(
+        signals_within(&watcher, SIGNAL_TIMEOUT),
+        "watcher did not signal once registration finished"
+    );
     sleep(SETTLE);
     assert!(!watcher.changed(), "watcher signaled before any change");
     watcher
@@ -96,5 +100,24 @@ fn untracked_file_triggers_reload() {
     assert!(
         signals_within(&watcher, SIGNAL_TIMEOUT),
         "creating an untracked file did not trigger a reload"
+    );
+}
+
+#[test]
+fn nested_git_dir_change_triggers_reload() {
+    let dir = TempDir::new().unwrap();
+    let path = committed_repo(&dir);
+    let nested = path.join("sub");
+    std::fs::create_dir(&nested).unwrap();
+    common::init_repo(&nested);
+    std::fs::write(nested.join("inner.txt"), "v1").unwrap();
+    common::git(&nested, &["add", "-A"]);
+    let watcher = watcher_for(path);
+
+    common::git(&nested, &["commit", "-qm", "inner"]);
+
+    assert!(
+        signals_within(&watcher, SIGNAL_TIMEOUT),
+        "a commit inside a nested repository did not trigger a reload"
     );
 }
