@@ -133,14 +133,14 @@ pub struct RepoMeta {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IndexStamp {
+pub struct FileStamp {
     seconds: i64,
     nanoseconds: i64,
     size: u64,
     inode: u64,
 }
 
-impl IndexStamp {
+impl FileStamp {
     fn of(path: &Path) -> Option<Self> {
         let metadata = std::fs::metadata(path).ok()?;
         Some(Self {
@@ -149,6 +149,33 @@ impl IndexStamp {
             size: metadata.size(),
             inode: metadata.ino(),
         })
+    }
+}
+
+/// Fingerprint of the handful of git files that move whenever the repository
+/// itself moves: staging, commits, checkouts, merges, resets and fetches. A
+/// handful of stats is cheap enough to poll between filesystem events, so the
+/// app still catches up when the watcher is degraded or misses a burst.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepoStamp {
+    git_dir: Option<FileStamp>,
+    index: Option<FileStamp>,
+    head: Option<FileStamp>,
+    head_log: Option<FileStamp>,
+    packed_refs: Option<FileStamp>,
+    fetch_head: Option<FileStamp>,
+}
+
+impl RepoStamp {
+    fn of(git_dir: &Path) -> Self {
+        Self {
+            git_dir: FileStamp::of(git_dir),
+            index: FileStamp::of(&git_dir.join("index")),
+            head: FileStamp::of(&git_dir.join("HEAD")),
+            head_log: FileStamp::of(&git_dir.join("logs").join("HEAD")),
+            packed_refs: FileStamp::of(&git_dir.join("packed-refs")),
+            fetch_head: FileStamp::of(&git_dir.join("FETCH_HEAD")),
+        }
     }
 }
 
@@ -171,8 +198,12 @@ impl Repo {
         self.inner.path()
     }
 
-    pub fn index_stamp(&self) -> Option<IndexStamp> {
-        IndexStamp::of(&self.inner.path().join("index"))
+    pub fn index_stamp(&self) -> Option<FileStamp> {
+        FileStamp::of(&self.inner.path().join("index"))
+    }
+
+    pub fn state_stamp(&self) -> RepoStamp {
+        RepoStamp::of(self.inner.path())
     }
 
     pub fn reread_index(&self) {

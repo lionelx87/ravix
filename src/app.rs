@@ -13,8 +13,8 @@ use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_coun
 use crate::drag::{DropIntent, RowRef, resolve_drop};
 use crate::focus::{self, FocusSet};
 use crate::git::{
-    BadgeKind, CONFLICTED, CommitInfo, FileChange, IndexStamp, Repo, RepoMeta, StageState,
-    WorkingFile, WorkingStatus,
+    BadgeKind, CONFLICTED, CommitInfo, FileChange, FileStamp, Repo, RepoMeta, RepoStamp,
+    StageState, WorkingFile, WorkingStatus,
 };
 use crate::graph::{GraphCommit, GraphLayout, GraphRow};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
@@ -412,7 +412,8 @@ pub struct App {
     offset: usize,
     page: usize,
     status: WorkingStatus,
-    index_stamp: Option<IndexStamp>,
+    index_stamp: Option<FileStamp>,
+    state_stamp: RepoStamp,
     status_retries: u8,
     on_wip: bool,
     visibility: Visibility,
@@ -482,6 +483,7 @@ impl App {
         let mut graph_layout = GraphLayout::new();
         let rows = graph_layout.extend(&graph_commits(&commits));
         let index_stamp = repo.index_stamp();
+        let state_stamp = repo.state_stamp();
         let status = repo.working_status().unwrap_or_default();
         let mut app = Self {
             repo,
@@ -500,6 +502,7 @@ impl App {
             page: DEFAULT_PAGE,
             status,
             index_stamp,
+            state_stamp,
             status_retries: 0,
             on_wip: false,
             visibility,
@@ -3762,10 +3765,13 @@ impl App {
     }
 
     pub fn poll_status(&mut self) {
-        if self.status_retries == 0 && self.repo.index_stamp() == self.index_stamp {
+        if self.repo.state_stamp() != self.state_stamp {
+            self.reload();
             return;
         }
-        self.refresh_status();
+        if self.status_retries > 0 {
+            self.refresh_status();
+        }
     }
 
     fn refresh_status(&mut self) {
@@ -3806,6 +3812,7 @@ impl App {
     }
 
     fn reload(&mut self) {
+        self.state_stamp = self.repo.state_stamp();
         self.graph_dims = None;
         let selected_id = self.commits.get(self.selected).map(|commit| commit.id);
         if let Ok(meta) = self.repo.meta() {
