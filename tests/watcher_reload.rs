@@ -151,3 +151,50 @@ fn a_neighbouring_process_writing_without_pause_still_reloads() {
         "a neighbouring process writing without pause held the reload back"
     );
 }
+
+#[test]
+fn a_directory_created_later_is_watched() {
+    let dir = TempDir::new().unwrap();
+    let path = committed_repo(&dir);
+    let watcher = watcher_for(path);
+
+    let fresh = path.join("fresh");
+    std::fs::create_dir(&fresh).unwrap();
+    assert!(
+        signals_within(&watcher, SIGNAL_TIMEOUT),
+        "creating a directory did not trigger a reload"
+    );
+    sleep(SETTLE);
+    watcher.changed();
+
+    std::fs::write(fresh.join("inside.txt"), "born after the walk").unwrap();
+
+    assert!(
+        signals_within(&watcher, SIGNAL_TIMEOUT),
+        "a file written in a directory born after registration went unnoticed"
+    );
+}
+
+#[test]
+fn nothing_under_an_ignored_directory_triggers_a_reload() {
+    let dir = TempDir::new().unwrap();
+    let path = committed_repo(&dir);
+    std::fs::write(path.join(".gitignore"), "build/\n").unwrap();
+    common::git(path, &["add", ".gitignore"]);
+    common::git(path, &["commit", "-qm", "chore: ignore build"]);
+    std::fs::create_dir_all(path.join("build").join("deep").join("deeper")).unwrap();
+    let watcher = watcher_for(path);
+
+    std::fs::write(
+        path.join("build").join("deep").join("deeper").join("out.o"),
+        "obj",
+    )
+    .unwrap();
+    std::fs::create_dir(path.join("build").join("late")).unwrap();
+    std::fs::write(path.join("build").join("late").join("out.o"), "obj").unwrap();
+
+    assert!(
+        !signals_within(&watcher, Duration::from_millis(600)),
+        "a git-ignored subtree triggered a reload"
+    );
+}

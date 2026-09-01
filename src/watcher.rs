@@ -7,20 +7,21 @@ use std::time::{Duration, Instant};
 
 use git2::Repository;
 use notify::event::ModifyKind;
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 const MAX_COALESCE: Duration = Duration::from_millis(500);
 
 /// Watches a repository's `.git` directory and working tree, coalescing bursts
-/// of filesystem events into a single debounced reload signal. Worktree events
-/// on git-ignored paths (build artifacts, caches) are dropped so background
-/// tooling never triggers reloads, while nested `.git` directories stay
-/// relevant so submodule commits still reload. A burst never coalesces for
-/// longer than [`MAX_COALESCE`], so a neighbouring process writing without
-/// pause cannot hold the reload back forever. Watch registration can take
-/// seconds on large worktrees, so the watcher is built entirely on a
-/// background thread, and it signals once when registration completes to cover
-/// whatever changed during that blind window.
+/// of filesystem events into a single debounced reload signal. Git-ignored
+/// directories are never registered, so build output and dependency trees cost
+/// neither an inotify watch nor an event, while nested `.git` directories are
+/// covered whole so submodule and nested-repository commits still reload.
+/// Directories that appear later are picked up as they are created. A burst
+/// never coalesces for longer than [`MAX_COALESCE`], so a neighbouring process
+/// writing without pause cannot hold the reload back forever. Walking a large
+/// worktree still costs time, so the watcher is built entirely on a background
+/// thread, and it signals once when registration completes to cover whatever
+/// changed during that blind window.
 pub struct RepoWatcher {
     reloads: Receiver<()>,
     degraded: Arc<AtomicBool>,
@@ -53,6 +54,11 @@ impl RepoWatcher {
     }
 }
 
+enum Signal {
+    Changed,
+    Discovered(PathBuf),
+}
+
 fn watch_and_debounce(
     git_dir: PathBuf,
     workdir: Option<PathBuf>,
@@ -64,35 +70,96 @@ fn watch_and_debounce(
     let (raw_tx, raw_rx) = mpsc::channel();
     let registered_tx = raw_tx.clone();
     let event_flag = Arc::clone(&degraded);
-    let Ok(mut watcher) =
+    let Ok(watcher) =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
             Ok(event) => {
-                if filter.should_reload(&event) {
-                    let _ = raw_tx.send(());
+                if !filter.should_reload(&event) {
+                    return;
                 }
+                if opens_directories(&event.kind) {
+                    for path in event.paths.iter().filter(|path| filter.covers_dir(path)) {
+                        let _ = raw_tx.send(Signal::Discovered(path.clone()));
+                    }
+                }
+                let _ = raw_tx.send(Signal::Changed);
             }
             Err(_) => {
                 event_flag.store(true, Ordering::Relaxed);
-                let _ = raw_tx.send(());
+                let _ = raw_tx.send(Signal::Changed);
             }
         })
     else {
         degraded.store(true, Ordering::Relaxed);
         return;
     };
-    if watcher.watch(&git_dir, RecursiveMode::Recursive).is_err() {
-        degraded.store(true, Ordering::Relaxed);
+    let mut registry = WatchRegistry {
+        watcher,
+        filter: EventFilter::new(&git_dir, workdir.as_deref()),
+        degraded: Arc::clone(&degraded),
+    };
+    if !registry.cover_whole(&git_dir) {
         return;
     }
-    if let Some(workdir) = &workdir
-        && watcher.watch(workdir, RecursiveMode::Recursive).is_err()
-    {
-        degraded.store(true, Ordering::Relaxed);
+    if let Some(workdir) = &workdir {
+        registry.cover_unignored(workdir);
     }
-    if registered_tx.send(()).is_err() {
+    if registered_tx.send(Signal::Changed).is_err() {
         return;
     }
-    debounce_loop(raw_rx, reload, debounce, MAX_COALESCE);
+    debounce_loop(raw_rx, reload, debounce, MAX_COALESCE, |path| {
+        registry.cover_unignored(path);
+    });
+}
+
+/// Registers one inotify watch per directory that git actually tracks, so a
+/// dependency or build tree never eats into the per-user watch budget. Nested
+/// `.git` directories are taken whole: they hold the refs and index of
+/// submodules and nested repositories, and none of it is ignorable.
+struct WatchRegistry {
+    watcher: RecommendedWatcher,
+    filter: EventFilter,
+    degraded: Arc<AtomicBool>,
+}
+
+impl WatchRegistry {
+    fn cover_whole(&mut self, root: &Path) -> bool {
+        if self.watcher.watch(root, RecursiveMode::Recursive).is_err() {
+            self.degraded.store(true, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    fn cover_unignored(&mut self, root: &Path) {
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            if self
+                .watcher
+                .watch(&dir, RecursiveMode::NonRecursive)
+                .is_err()
+            {
+                self.degraded.store(true, Ordering::Relaxed);
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    continue;
+                }
+                let path = entry.path();
+                if path.starts_with(&self.filter.git_dir) {
+                    continue;
+                }
+                if is_git_dir(&path) {
+                    self.cover_whole(&path);
+                } else if self.filter.covers_dir(&path) {
+                    pending.push(path);
+                }
+            }
+        }
+    }
 }
 
 struct EventFilter {
@@ -135,6 +202,19 @@ impl EventFilter {
             None => true,
         }
     }
+
+    fn covers_dir(&self, path: &Path) -> bool {
+        if path.starts_with(&self.git_dir) || !path.is_dir() {
+            return false;
+        }
+        if is_git_dir(path) {
+            return true;
+        }
+        match &self.worktree {
+            Some(worktree) => worktree.covers_dir(path),
+            None => true,
+        }
+    }
 }
 
 impl WorktreeFilter {
@@ -153,11 +233,35 @@ impl WorktreeFilter {
             None => true,
         }
     }
+
+    fn covers_dir(&self, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return false;
+        };
+        if relative.as_os_str().is_empty() {
+            return true;
+        }
+        match &self.repo {
+            Some(repo) => !repo.is_path_ignored(relative).unwrap_or(false),
+            None => true,
+        }
+    }
 }
 
 fn holds_git_dir(path: &Path) -> bool {
     path.components()
         .any(|component| component == Component::Normal(".git".as_ref()))
+}
+
+fn is_git_dir(path: &Path) -> bool {
+    path.file_name() == Some(".git".as_ref())
+}
+
+fn opens_directories(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+    )
 }
 
 fn signals_change(kind: &EventKind) -> bool {
@@ -168,12 +272,14 @@ fn signals_change(kind: &EventKind) -> bool {
 }
 
 fn debounce_loop(
-    raw: Receiver<()>,
+    raw: Receiver<Signal>,
     reload: mpsc::Sender<()>,
     debounce: Duration,
     max_coalesce: Duration,
+    mut cover: impl FnMut(&Path),
 ) {
-    while raw.recv().is_ok() {
+    while let Ok(first) = raw.recv() {
+        let mut owed = absorb(first, &mut cover);
         let burst_started = Instant::now();
         loop {
             let quiet = debounce.min(max_coalesce.saturating_sub(burst_started.elapsed()));
@@ -181,13 +287,25 @@ fn debounce_loop(
                 break;
             }
             match raw.recv_timeout(quiet) {
-                Ok(()) => continue,
+                Ok(signal) => {
+                    owed |= absorb(signal, &mut cover);
+                }
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
-        if reload.send(()).is_err() {
+        if owed && reload.send(()).is_err() {
             return;
+        }
+    }
+}
+
+fn absorb(signal: Signal, cover: &mut impl FnMut(&Path)) -> bool {
+    match signal {
+        Signal::Changed => true,
+        Signal::Discovered(path) => {
+            cover(&path);
+            false
         }
     }
 }
@@ -207,7 +325,7 @@ mod tests {
         let churning = Arc::new(AtomicBool::new(true));
         let stop = Arc::clone(&churning);
         let churn = thread::spawn(move || {
-            while stop.load(Ordering::Relaxed) && raw_tx.send(()).is_ok() {
+            while stop.load(Ordering::Relaxed) && raw_tx.send(Signal::Changed).is_ok() {
                 thread::sleep(Duration::from_millis(2));
             }
         });
@@ -217,6 +335,7 @@ mod tests {
                 reload_tx,
                 Duration::from_millis(50),
                 Duration::from_millis(200),
+                |_| {},
             );
         });
 
