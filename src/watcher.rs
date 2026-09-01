@@ -3,17 +3,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use git2::Repository;
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 
+const MAX_COALESCE: Duration = Duration::from_millis(500);
+
 /// Watches a repository's `.git` directory and working tree, coalescing bursts
 /// of filesystem events into a single debounced reload signal. Worktree events
 /// on git-ignored paths (build artifacts, caches) are dropped so background
 /// tooling never triggers reloads, while nested `.git` directories stay
-/// relevant so submodule commits still reload. Watch registration can take
+/// relevant so submodule commits still reload. A burst never coalesces for
+/// longer than [`MAX_COALESCE`], so a neighbouring process writing without
+/// pause cannot hold the reload back forever. Watch registration can take
 /// seconds on large worktrees, so the watcher is built entirely on a
 /// background thread, and it signals once when registration completes to cover
 /// whatever changed during that blind window.
@@ -59,9 +63,16 @@ fn watch_and_debounce(
     let filter = EventFilter::new(&git_dir, workdir.as_deref());
     let (raw_tx, raw_rx) = mpsc::channel();
     let registered_tx = raw_tx.clone();
+    let event_flag = Arc::clone(&degraded);
     let Ok(mut watcher) =
-        notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if event.is_ok_and(|event| filter.should_reload(&event)) {
+        notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+            Ok(event) => {
+                if filter.should_reload(&event) {
+                    let _ = raw_tx.send(());
+                }
+            }
+            Err(_) => {
+                event_flag.store(true, Ordering::Relaxed);
                 let _ = raw_tx.send(());
             }
         })
@@ -81,7 +92,7 @@ fn watch_and_debounce(
     if registered_tx.send(()).is_err() {
         return;
     }
-    debounce_loop(raw_rx, reload, debounce);
+    debounce_loop(raw_rx, reload, debounce, MAX_COALESCE);
 }
 
 struct EventFilter {
@@ -156,10 +167,20 @@ fn signals_change(kind: &EventKind) -> bool {
     )
 }
 
-fn debounce_loop(raw: Receiver<()>, reload: mpsc::Sender<()>, debounce: Duration) {
+fn debounce_loop(
+    raw: Receiver<()>,
+    reload: mpsc::Sender<()>,
+    debounce: Duration,
+    max_coalesce: Duration,
+) {
     while raw.recv().is_ok() {
+        let burst_started = Instant::now();
         loop {
-            match raw.recv_timeout(debounce) {
+            let quiet = debounce.min(max_coalesce.saturating_sub(burst_started.elapsed()));
+            if quiet.is_zero() {
+                break;
+            }
+            match raw.recv_timeout(quiet) {
                 Ok(()) => continue,
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -173,9 +194,43 @@ fn debounce_loop(raw: Receiver<()>, reload: mpsc::Sender<()>, debounce: Duration
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
     use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, RemoveKind};
 
     use super::*;
+
+    #[test]
+    fn an_unbroken_stream_of_events_still_reloads() {
+        let (raw_tx, raw_rx) = mpsc::channel();
+        let (reload_tx, reload_rx) = mpsc::channel();
+        let churning = Arc::new(AtomicBool::new(true));
+        let stop = Arc::clone(&churning);
+        let churn = thread::spawn(move || {
+            while stop.load(Ordering::Relaxed) && raw_tx.send(()).is_ok() {
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let debounce = thread::spawn(move || {
+            debounce_loop(
+                raw_rx,
+                reload_tx,
+                Duration::from_millis(50),
+                Duration::from_millis(200),
+            );
+        });
+
+        let reloaded = reload_rx.recv_timeout(Duration::from_secs(2));
+        churning.store(false, Ordering::Relaxed);
+        churn.join().unwrap();
+        drop(reload_rx);
+        debounce.join().unwrap();
+
+        assert!(
+            reloaded.is_ok(),
+            "a process writing without pause held the reload back"
+        );
+    }
 
     #[test]
     fn read_driven_events_are_ignored() {

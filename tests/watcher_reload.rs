@@ -1,6 +1,8 @@
 mod common;
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -119,5 +121,33 @@ fn nested_git_dir_change_triggers_reload() {
     assert!(
         signals_within(&watcher, SIGNAL_TIMEOUT),
         "a commit inside a nested repository did not trigger a reload"
+    );
+}
+
+#[test]
+fn a_neighbouring_process_writing_without_pause_still_reloads() {
+    let dir = TempDir::new().unwrap();
+    let path = committed_repo(&dir);
+    let watcher = watcher_for(path);
+
+    let churn_path = path.join("file.txt");
+    let churning = Arc::new(AtomicBool::new(true));
+    let stop = Arc::clone(&churning);
+    let churn = std::thread::spawn(move || {
+        let mut revision = 0u32;
+        while stop.load(Ordering::Relaxed) {
+            revision += 1;
+            std::fs::write(&churn_path, format!("v{revision}")).unwrap();
+            sleep(Duration::from_millis(5));
+        }
+    });
+
+    let signaled = signals_within(&watcher, SIGNAL_TIMEOUT);
+    churning.store(false, Ordering::Relaxed);
+    churn.join().unwrap();
+
+    assert!(
+        signaled,
+        "a neighbouring process writing without pause held the reload back"
     );
 }
