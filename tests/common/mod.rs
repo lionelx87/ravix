@@ -58,6 +58,10 @@ pub fn git_stdin(dir: &Path, args: &[&str], input: &str) -> String {
 
 pub fn init_repo(dir: &Path) {
     git(dir, &["init", "-q", "-b", "main"]);
+    configure_identity(dir);
+}
+
+pub fn configure_identity(dir: &Path) {
     git(dir, &["config", "user.email", "test@example.com"]);
     git(dir, &["config", "user.name", "test"]);
 }
@@ -90,6 +94,7 @@ pub fn submodule_fixture(root: &Path) -> PathBuf {
         ],
     );
     git(&main, &["commit", "-qm", "add submodule"]);
+    configure_identity(&main.join("modules/sub"));
     main
 }
 

@@ -26,10 +26,17 @@ const NOW: i64 = 100_000;
 ///   main    ●  Add feature base   (HEAD)
 ///   feature │● Work on feature
 ///           ●  Initial commit      (fork point)
+fn set_identity(repo: &Repository) {
+    let mut config = repo.config().unwrap();
+    config.set_str("user.name", "Ada Lovelace").unwrap();
+    config.set_str("user.email", "ada@example.com").unwrap();
+}
+
 fn fixture_repo(dir: &Path) {
     let mut opts = RepositoryInitOptions::new();
     opts.initial_head("main");
     let repo = Repository::init_opts(dir, &opts).unwrap();
+    set_identity(&repo);
 
     let ada = Signature::new("Ada Lovelace", "ada@example.com", &Time::new(1000, 0)).unwrap();
     let root = commit(
