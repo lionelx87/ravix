@@ -47,8 +47,14 @@ fn detail_card_explains_the_focused_submodule() {
     let screen = dump(&draw(&mut app, 120, 30));
 
     assert!(screen.contains("../sub-origin"), "url missing:\n{screen}");
-    assert!(screen.contains("recorded"), "recorded label missing:\n{screen}");
-    assert!(screen.contains("in sync"), "sync verdict missing:\n{screen}");
+    assert!(
+        screen.contains("recorded"),
+        "recorded label missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("in sync"),
+        "sync verdict missing:\n{screen}"
+    );
     assert!(
         screen.contains("feat: first version"),
         "last commit missing:\n{screen}"
@@ -97,8 +103,14 @@ fn inside_a_submodule_a_persistent_bar_shows_path_status_and_way_back() {
     let screen = dump(&draw(&mut app, 120, 30));
     let bar = screen.lines().next().unwrap();
     assert!(bar.contains("main › sub"), "path missing in bar:\n{screen}");
-    assert!(bar.contains(&format!("@{head}")), "sha missing in bar:\n{screen}");
-    assert!(bar.contains("● in sync"), "sync marker missing in bar:\n{screen}");
+    assert!(
+        bar.contains(&format!("@{head}")),
+        "sha missing in bar:\n{screen}"
+    );
+    assert!(
+        bar.contains("● in sync"),
+        "sync marker missing in bar:\n{screen}"
+    );
     assert!(bar.contains("?1"), "dirty marker missing in bar:\n{screen}");
     assert!(
         bar.contains("< / Esc back"),
@@ -123,7 +135,10 @@ fn the_bar_flags_drift_against_the_parent_recorded_commit() {
 
     let screen = dump(&draw(&mut app, 120, 30));
     let bar = screen.lines().next().unwrap();
-    assert!(bar.contains("◆ drifted"), "drift marker missing in bar:\n{screen}");
+    assert!(
+        bar.contains("◆ drifted"),
+        "drift marker missing in bar:\n{screen}"
+    );
 }
 
 #[test]

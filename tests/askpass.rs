@@ -65,7 +65,11 @@ fn the_cache_key_separates_hosts_and_kinds() {
         PromptKind::Password,
         "pass".to_string(),
     );
-    cache.store("https://dev.azure.com", PromptKind::Username, "user".to_string());
+    cache.store(
+        "https://dev.azure.com",
+        PromptKind::Username,
+        "user".to_string(),
+    );
 
     assert_eq!(
         cache.get("https://dev.azure.com", PromptKind::Username),
@@ -81,14 +85,32 @@ fn the_cache_key_separates_hosts_and_kinds() {
 #[test]
 fn invalidating_a_host_forgets_all_its_kinds_but_leaves_other_hosts() {
     let mut cache = CredentialCache::default();
-    cache.store("https://dev.azure.com", PromptKind::Username, "user".to_string());
-    cache.store("https://dev.azure.com", PromptKind::Password, "pass".to_string());
-    cache.store("https://github.com", PromptKind::Password, "ghp".to_string());
+    cache.store(
+        "https://dev.azure.com",
+        PromptKind::Username,
+        "user".to_string(),
+    );
+    cache.store(
+        "https://dev.azure.com",
+        PromptKind::Password,
+        "pass".to_string(),
+    );
+    cache.store(
+        "https://github.com",
+        PromptKind::Password,
+        "ghp".to_string(),
+    );
 
     cache.invalidate("https://dev.azure.com");
 
-    assert_eq!(cache.get("https://dev.azure.com", PromptKind::Username), None);
-    assert_eq!(cache.get("https://dev.azure.com", PromptKind::Password), None);
+    assert_eq!(
+        cache.get("https://dev.azure.com", PromptKind::Username),
+        None
+    );
+    assert_eq!(
+        cache.get("https://dev.azure.com", PromptKind::Password),
+        None
+    );
     assert_eq!(
         cache.get("https://github.com", PromptKind::Password),
         Some("ghp")

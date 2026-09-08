@@ -55,7 +55,9 @@ fn a_submodule_on_another_commit_reports_drifted() {
     std::fs::write(sub_dir.join("file.txt"), "v2").unwrap();
     git(&sub_dir, &["add", "-A"]);
     git(&sub_dir, &["commit", "-qm", "feat: second version"]);
-    let recorded = git(&main, &["rev-parse", ":modules/sub"]).trim().to_string();
+    let recorded = git(&main, &["rev-parse", ":modules/sub"])
+        .trim()
+        .to_string();
     let checked_out = git(&sub_dir, &["rev-parse", "HEAD"]).trim().to_string();
 
     let repo = Repo::discover(&main).unwrap();
@@ -71,7 +73,9 @@ fn a_submodule_on_another_commit_reports_drifted() {
 fn a_deinitialized_submodule_reports_uninitialized_with_url_and_recorded() {
     let temp = tempfile::tempdir().unwrap();
     let main = submodule_fixture(temp.path());
-    let recorded = git(&main, &["rev-parse", ":modules/sub"]).trim().to_string();
+    let recorded = git(&main, &["rev-parse", ":modules/sub"])
+        .trim()
+        .to_string();
     git(&main, &["submodule", "deinit", "-f", "-q", "modules/sub"]);
 
     let repo = Repo::discover(&main).unwrap();

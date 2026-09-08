@@ -23,10 +23,16 @@ fn entering_a_submodule_plays_a_push_transition_that_ticks_to_completion() {
     let mut input = InputMap::default();
     enter_submodule(&mut app, &mut input);
 
-    assert!(app.breadcrumb().is_some(), "should now be inside the submodule");
+    assert!(
+        app.breadcrumb().is_some(),
+        "should now be inside the submodule"
+    );
     let transition = app.nav_transition().expect("push transition should start");
     assert_eq!(transition.direction, NavDirection::Push);
-    assert!(app.is_animating(), "transition should drive the frame clock");
+    assert!(
+        app.is_animating(),
+        "transition should drive the frame clock"
+    );
 
     app.update(Action::Tick(Duration::from_millis(500)));
     assert!(

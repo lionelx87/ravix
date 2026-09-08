@@ -11,8 +11,7 @@ use syntect::parsing::SyntaxReference;
 
 use crate::app::{
     App, BranchCreate, CommitEditor, Confirm, FocusPanel, InputContext, NavDirection, Palette,
-    Panel,
-    PasswordPrompt, SubmodulePanel,
+    Panel, PasswordPrompt, SubmodulePanel,
 };
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
@@ -448,11 +447,12 @@ fn render_submodule_bar(frame: &mut Frame, app: &App, path: &str, theme: &Theme,
         Span::styled(" ⌂ ", Style::default().fg(theme.marker)),
         Span::styled(
             path.to_string(),
-            Style::default()
-                .fg(theme.node)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.node).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  ⎇ {branch}"), Style::default().fg(theme.head_badge)),
+        Span::styled(
+            format!("  ⎇ {branch}"),
+            Style::default().fg(theme.head_badge),
+        ),
     ];
     if let Some(short_id) = app.head_short_id() {
         spans.push(Span::styled(
@@ -461,10 +461,9 @@ fn render_submodule_bar(frame: &mut Frame, app: &App, path: &str, theme: &Theme,
         ));
     }
     match app.parent_sync() {
-        Some(SyncState::Drifted) => spans.push(Span::styled(
-            "  ◆ drifted",
-            Style::default().fg(theme.warn),
-        )),
+        Some(SyncState::Drifted) => {
+            spans.push(Span::styled("  ◆ drifted", Style::default().fg(theme.warn)))
+        }
         Some(SyncState::Synced) => spans.push(Span::styled(
             "  ● in sync",
             Style::default().fg(theme.added),
@@ -2354,9 +2353,18 @@ fn render_submodule_panel(
     let drifted = count_sync(panel, SyncState::Drifted);
     let uninit = count_sync(panel, SyncState::Uninitialized);
     lines.push(Line::from(vec![
-        Span::styled(format!(" ● {synced} synced"), Style::default().fg(theme.added)),
-        Span::styled(format!("  ◆ {drifted} drifted"), Style::default().fg(theme.warn)),
-        Span::styled(format!("  ○ {uninit} uninit"), Style::default().fg(theme.meta)),
+        Span::styled(
+            format!(" ● {synced} synced"),
+            Style::default().fg(theme.added),
+        ),
+        Span::styled(
+            format!("  ◆ {drifted} drifted"),
+            Style::default().fg(theme.warn),
+        ),
+        Span::styled(
+            format!("  ○ {uninit} uninit"),
+            Style::default().fg(theme.meta),
+        ),
     ]));
 
     let list_height = (lines.len() as u16).min(inner.height);
