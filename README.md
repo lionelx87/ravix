@@ -13,7 +13,7 @@ full mouse support including branch drag & drop.
 > the suite is green, but there is no tagged release yet and the interface still
 > moves. Use it on repositories you have pushed.
 
-<!-- TODO: screenshot or asciinema recording of the graph view goes here -->
+![Ravix browsing the Spartacus repository: the commit graph, the branch column and the detail panel](docs/demo.gif)
 
 ## What makes it different
 
