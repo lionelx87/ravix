@@ -14,4 +14,4 @@ Canonical five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
