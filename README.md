@@ -59,6 +59,8 @@ The binary is called `rx`. Run it inside any git repository:
 rx
 ```
 
+To run the same checks as CI (fmt, clippy, tests) before installing, use `scripts/install.sh` instead of `cargo install`; `scripts/install.sh --skip-checks` installs straight away.
+
 To run without installing: `cargo run --release`.
 
 ## Keys

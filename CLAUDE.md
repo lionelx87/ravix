@@ -2,6 +2,10 @@
 
 A spectacular, animated git TUI (binary `rx`). Rust + Ratatui. See `ROADMAP.md` for design pillars and phases.
 
+## Finishing work
+
+After every implementation or fix, run `/install-rx` (or `scripts/install.sh`) so the `rx` on this machine is the latest build.
+
 ## Agent skills
 
 ### Issue tracker
