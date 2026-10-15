@@ -101,15 +101,17 @@ fn creating_a_branch_inverts_to_dropping_it_and_switching_back() {
 }
 
 #[test]
-fn deleting_a_branch_inverts_to_recreating_it_at_its_tip() {
+fn deleting_a_branch_inverts_to_recreating_it_at_its_tip_with_its_pin() {
     assert_eq!(
         invert(&UndoableAction::DeletedBranch {
             name: "feature".into(),
             oid: "deadbeef".into(),
+            pin_position: Some(2),
         }),
         InversePlan::RestoreBranch {
             name: "feature".into(),
             oid: "deadbeef".into(),
+            pin_position: Some(2),
         }
     );
 }

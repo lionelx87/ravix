@@ -20,6 +20,7 @@ use crate::graph::{GraphCommit, GraphLayout, GraphRow};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
+use crate::pins::{self, PinSwitcherRow};
 use crate::remote::{
     PullAction, PushState, is_auth_failure, is_non_fast_forward, pull_action, push_state,
 };
@@ -105,6 +106,10 @@ pub enum Action {
     DeleteBranch,
     ToggleBranchVisibility,
     SoloBranch,
+    PinsOnly,
+    OpenPinSwitcher,
+    PinSwitcherSubmit,
+    PinSwitcherPick(usize),
     PinBranch,
     StartBranchFilter,
     StartStashFilter,
@@ -163,6 +168,7 @@ pub enum InputContext {
     Conflict,
     Stash,
     Palette,
+    PinSwitcher,
     Password,
 }
 
@@ -329,6 +335,9 @@ impl PasswordPrompt {
     }
 }
 
+const PINS_FILE: &str = "pins";
+const FOCUS_FILE: &str = "focus";
+
 const COMMANDS: &[(&str, &str, Action)] = &[
     ("Fetch", "f", Action::Fetch),
     ("Pull", "p", Action::Pull),
@@ -336,6 +345,7 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("Stash changes", "s", Action::StashSave),
     ("Stash list", "S", Action::ToggleStashes),
     ("Branches", "b", Action::ToggleBranches),
+    ("Pin switcher", "B", Action::OpenPinSwitcher),
     ("Focus sets", "F", Action::ToggleFocusPanel),
     ("Submodules", ">", Action::ToggleSubmodulePanel),
     ("New branch", "n", Action::NewBranch),
@@ -387,6 +397,41 @@ impl Palette {
         }
         let last = (self.matches.len() - 1) as isize;
         self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+    }
+}
+
+pub struct PinSwitcher {
+    pub rows: Vec<PinSwitcherRow>,
+    pub selected: Option<usize>,
+}
+
+impl PinSwitcher {
+    fn opening(rows: Vec<PinSwitcherRow>) -> Self {
+        let selected = rows.iter().position(|row| !row.is_head);
+        Self { rows, selected }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let selectable: Vec<usize> = (0..self.rows.len())
+            .filter(|&index| !self.rows[index].is_head)
+            .collect();
+        let Some(current) = selectable
+            .iter()
+            .position(|&index| Some(index) == self.selected)
+        else {
+            return;
+        };
+        let last = selectable.len() as isize - 1;
+        let next = (current as isize + delta).clamp(0, last) as usize;
+        self.selected = Some(selectable[next]);
+    }
+
+    fn chosen(&self) -> Option<&PinSwitcherRow> {
+        self.rows.get(self.selected?)
+    }
+
+    fn numbered(&self, number: usize) -> Option<&PinSwitcherRow> {
+        self.rows.iter().find(|row| row.number == Some(number))
     }
 }
 
@@ -454,6 +499,7 @@ pub struct App {
     notice: Option<Notice>,
     panel: Option<Panel>,
     palette: Option<Palette>,
+    pin_switcher: Option<PinSwitcher>,
     help_visible: bool,
     should_quit: bool,
 }
@@ -543,11 +589,13 @@ impl App {
             notice: None,
             panel: None,
             palette: None,
+            pin_switcher: None,
             help_visible: false,
             should_quit: false,
         };
         app.detect_conflict();
         app.focus_sets = app.load_focus_sets();
+        app.load_pins();
         Ok(app)
     }
 
@@ -559,22 +607,45 @@ impl App {
         self.repo.workdir().map(Path::to_path_buf)
     }
 
-    fn focus_path(&self) -> std::path::PathBuf {
-        self.repo.git_dir().join("ravix").join("focus")
+    fn state_path(&self, name: &str) -> std::path::PathBuf {
+        self.repo.git_dir().join("ravix").join(name)
     }
 
-    fn load_focus_sets(&self) -> Vec<FocusSet> {
-        std::fs::read_to_string(self.focus_path())
-            .map(|text| focus::parse(&text))
-            .unwrap_or_default()
+    fn read_state(&self, name: &str) -> String {
+        std::fs::read_to_string(self.state_path(name)).unwrap_or_default()
     }
 
-    fn write_focus_sets(&self) {
-        let path = self.focus_path();
+    fn write_state(&self, name: &str, text: String) {
+        let path = self.state_path(name);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(path, focus::serialize(&self.focus_sets));
+        let _ = std::fs::write(path, text);
+    }
+
+    fn load_pins(&mut self) {
+        let pins = pins::parse(&self.read_state(PINS_FILE));
+        self.visibility.set_pins(pins);
+        self.prune_pins();
+    }
+
+    fn prune_pins(&mut self) {
+        let repo = &self.repo;
+        if self.visibility.retain_pins(|pin| repo.branch_exists(pin)) {
+            self.write_pins();
+        }
+    }
+
+    fn write_pins(&self) {
+        self.write_state(PINS_FILE, pins::serialize(self.visibility.pins()));
+    }
+
+    fn load_focus_sets(&self) -> Vec<FocusSet> {
+        focus::parse(&self.read_state(FOCUS_FILE))
+    }
+
+    fn write_focus_sets(&self) {
+        self.write_state(FOCUS_FILE, focus::serialize(&self.focus_sets));
     }
 
     pub fn meta(&self) -> &RepoMeta {
@@ -747,6 +818,10 @@ impl App {
         self.palette.as_ref()
     }
 
+    pub fn pin_switcher(&self) -> Option<&PinSwitcher> {
+        self.pin_switcher.as_ref()
+    }
+
     pub fn password_prompt(&self) -> Option<&PasswordPrompt> {
         self.password.as_ref()
     }
@@ -837,6 +912,8 @@ impl App {
             InputContext::Alert
         } else if self.palette.is_some() {
             InputContext::Palette
+        } else if self.pin_switcher.is_some() {
+            InputContext::PinSwitcher
         } else if self.stash_message.is_some() {
             InputContext::StashMessage
         } else if self.commit.is_some() {
@@ -1008,6 +1085,10 @@ impl App {
             Action::DeleteBranch => self.request_delete_branch(),
             Action::ToggleBranchVisibility => self.toggle_branch_visibility(),
             Action::SoloBranch => self.solo_branch(),
+            Action::PinsOnly => self.pins_only(),
+            Action::OpenPinSwitcher => self.open_pin_switcher(),
+            Action::PinSwitcherSubmit => self.pin_switcher_submit(),
+            Action::PinSwitcherPick(number) => self.pin_switcher_pick(number),
             Action::PinBranch => self.pin_branch(),
             Action::StartBranchFilter => self.start_branch_filter(),
             Action::StartStashFilter => self.start_stash_filter(),
@@ -1055,6 +1136,10 @@ impl App {
         }
         if let Some(palette) = &mut self.palette {
             palette.move_selection(delta);
+            return;
+        }
+        if let Some(switcher) = &mut self.pin_switcher {
+            switcher.move_selection(delta);
             return;
         }
         if let Some(browser) = &mut self.conflict {
@@ -1110,6 +1195,10 @@ impl App {
         }
         if let Some(palette) = &mut self.palette {
             palette.move_selection(-delta);
+            return;
+        }
+        if let Some(switcher) = &mut self.pin_switcher {
+            switcher.move_selection(-delta);
             return;
         }
         if let Some(browser) = &mut self.conflict {
@@ -2167,6 +2256,8 @@ impl App {
             self.alert = None;
         } else if self.palette.is_some() {
             self.palette = None;
+        } else if self.pin_switcher.is_some() {
+            self.pin_switcher = None;
         } else if self.stash_message.is_some() {
             self.stash_message = None;
         } else if self.commit.is_some() {
@@ -2600,10 +2691,18 @@ impl App {
                 self.cli.checkout(&back_to).is_ok() && self.cli.delete_branch(&name).is_ok(),
                 format!("Undid create of {name}"),
             ),
-            InversePlan::RestoreBranch { name, oid } => (
-                self.cli.create_branch_at(&name, &oid).is_ok(),
-                format!("Undid delete of {name}"),
-            ),
+            InversePlan::RestoreBranch {
+                name,
+                oid,
+                pin_position,
+            } => {
+                let restored = self.cli.create_branch_at(&name, &oid).is_ok();
+                if restored && let Some(position) = pin_position {
+                    self.visibility.restore_pin(&name, position);
+                    self.write_pins();
+                }
+                (restored, format!("Undid delete of {name}"))
+            }
             InversePlan::ResetKeep(oid) => (
                 self.cli.reset_keep(&oid).is_ok(),
                 "Undid integration".to_string(),
@@ -2675,6 +2774,64 @@ impl App {
         self.reload();
     }
 
+    fn open_pin_switcher(&mut self) {
+        let rows = pins::switcher_rows(
+            self.visibility.pins(),
+            self.meta.head_branch.as_deref(),
+            &self.repo.checkout_history(),
+            |pin| self.pin_local_name(pin),
+        );
+        self.pin_switcher = Some(PinSwitcher::opening(rows));
+    }
+
+    fn pin_local_name(&self, pin: &str) -> String {
+        match split_remote_ref(pin) {
+            Some((_, branch))
+                if !self.repo.has_local_branch(pin) && self.repo.has_remote_branch(pin) =>
+            {
+                branch
+            }
+            _ => pin.to_string(),
+        }
+    }
+
+    fn pin_switcher_submit(&mut self) {
+        self.checkout_switcher_row(PinSwitcher::chosen);
+    }
+
+    fn pin_switcher_pick(&mut self, number: usize) {
+        self.checkout_switcher_row(|switcher| switcher.numbered(number));
+    }
+
+    fn checkout_switcher_row(&mut self, pick: impl Fn(&PinSwitcher) -> Option<&PinSwitcherRow>) {
+        let Some(pin) = self
+            .pin_switcher
+            .as_ref()
+            .and_then(pick)
+            .map(|row| row.name.clone())
+        else {
+            return;
+        };
+        self.pin_switcher = None;
+        let local = self.pin_local_name(&pin);
+        if local != pin && !self.repo.has_local_branch(&local) {
+            self.perform_checkout_track(local, pin);
+        } else {
+            self.perform_checkout(local, false);
+        }
+    }
+
+    fn pins_only(&mut self) {
+        if self.visibility.pins().is_empty() {
+            self.info("No pins yet — pin a branch with p first".to_string());
+            return;
+        }
+        let names = self.branch_names();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.visibility.pins_only(&refs);
+        self.reload();
+    }
+
     fn solo_branch(&mut self) {
         let Some(name) = self.focused_branch_name() else {
             return;
@@ -2689,7 +2846,8 @@ impl App {
         let Some(name) = self.focused_branch_name() else {
             return;
         };
-        self.visibility.pin(&name);
+        self.visibility.toggle_pin(&name);
+        self.write_pins();
         self.reload();
     }
 
@@ -3665,7 +3823,12 @@ impl App {
         oid: Option<String>,
         upstream: Option<String>,
     ) {
-        self.last_action = oid.map(|oid| UndoableAction::DeletedBranch { name, oid });
+        let pin_position = self.visibility.pins().iter().position(|pin| *pin == name);
+        self.last_action = oid.map(|oid| UndoableAction::DeletedBranch {
+            name,
+            oid,
+            pin_position,
+        });
         self.notice = None;
         self.reload();
         if let Some(upstream) = upstream
@@ -3814,6 +3977,7 @@ impl App {
     fn reload(&mut self) {
         self.state_stamp = self.repo.state_stamp();
         self.graph_dims = None;
+        self.prune_pins();
         let selected_id = self.commits.get(self.selected).map(|commit| commit.id);
         if let Ok(meta) = self.repo.meta() {
             self.meta = meta;

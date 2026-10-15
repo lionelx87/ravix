@@ -25,6 +25,7 @@ pub enum UndoableAction {
     DeletedBranch {
         name: String,
         oid: String,
+        pin_position: Option<usize>,
     },
     Merged {
         previous: String,
@@ -67,6 +68,7 @@ pub enum InversePlan {
     RestoreBranch {
         name: String,
         oid: String,
+        pin_position: Option<usize>,
     },
     ResetKeep(String),
     StashPop,
@@ -98,9 +100,14 @@ pub fn invert(action: &UndoableAction) -> InversePlan {
             name: name.clone(),
             back_to: previous.clone(),
         },
-        UndoableAction::DeletedBranch { name, oid } => InversePlan::RestoreBranch {
+        UndoableAction::DeletedBranch {
+            name,
+            oid,
+            pin_position,
+        } => InversePlan::RestoreBranch {
             name: name.clone(),
             oid: oid.clone(),
+            pin_position: *pin_position,
         },
         UndoableAction::Merged { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::CherryPicked { previous } => InversePlan::ResetKeep(previous.clone()),

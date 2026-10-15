@@ -234,6 +234,41 @@ impl Repo {
         }
     }
 
+    pub fn branch_exists(&self, name: &str) -> bool {
+        self.has_local_branch(name) || self.has_remote_branch(name)
+    }
+
+    pub fn has_local_branch(&self, name: &str) -> bool {
+        self.inner.find_branch(name, BranchType::Local).is_ok()
+    }
+
+    pub fn has_remote_branch(&self, name: &str) -> bool {
+        self.inner.find_branch(name, BranchType::Remote).is_ok()
+    }
+
+    pub fn checkout_history(&self) -> Vec<String> {
+        let Ok(reflog) = self.inner.reflog("HEAD") else {
+            return Vec::new();
+        };
+        let mut history: Vec<String> = Vec::new();
+        for entry in reflog.iter() {
+            let Some(target) = entry
+                .message()
+                .ok()
+                .flatten()
+                .and_then(|message| message.strip_prefix("checkout: moving from "))
+                .and_then(|moves| moves.rsplit_once(" to "))
+                .map(|(_, target)| target.to_string())
+            else {
+                continue;
+            };
+            if !history.contains(&target) {
+                history.push(target);
+            }
+        }
+        history
+    }
+
     pub fn head_ref(&self) -> Option<String> {
         if let Some(branch) = self.head_branch() {
             return Some(branch);

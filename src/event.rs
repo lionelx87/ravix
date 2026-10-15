@@ -39,6 +39,7 @@ impl InputMap {
             InputContext::Conflict => on_conflict_key(key),
             InputContext::Stash => on_stash_key(key),
             InputContext::Palette => on_palette_key(key),
+            InputContext::PinSwitcher => on_pin_switcher_key(key),
             InputContext::Password => on_password_key(key),
         }
     }
@@ -73,6 +74,7 @@ impl InputMap {
             KeyCode::Char('s') => Some(Action::StashSave),
             KeyCode::Char('S') => Some(Action::ToggleStashes),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
+            KeyCode::Char('B') => Some(Action::OpenPinSwitcher),
             KeyCode::Char('F') => Some(Action::ToggleFocusPanel),
             KeyCode::Char('>') => Some(Action::ToggleSubmodulePanel),
             KeyCode::Char('<') => Some(Action::ExitSubmodule),
@@ -173,6 +175,7 @@ fn on_branch_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Enter => Some(Action::Checkout),
         KeyCode::Char(' ') => Some(Action::ToggleBranchVisibility),
         KeyCode::Char('o') => Some(Action::SoloBranch),
+        KeyCode::Char('O') => Some(Action::PinsOnly),
         KeyCode::Char('p') => Some(Action::PinBranch),
         KeyCode::Char('/') => Some(Action::StartBranchFilter),
         KeyCode::Char('M') => Some(Action::OpenJoin),
@@ -292,6 +295,21 @@ fn on_palette_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('n') if ctrl => Some(Action::SelectNext),
         KeyCode::Char('p') if ctrl => Some(Action::SelectPrev),
         KeyCode::Char(character) if !ctrl => Some(Action::PaletteInput(character)),
+        _ => None,
+    }
+}
+
+fn on_pin_switcher_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Enter => Some(Action::PinSwitcherSubmit),
+        KeyCode::Char(digit @ '1'..='9') => digit
+            .to_digit(10)
+            .map(|number| Action::PinSwitcherPick(number as usize)),
+        KeyCode::Char('B') | KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
         _ => None,
     }
 }

@@ -13,6 +13,7 @@ pub mod help;
 pub mod join;
 pub mod mutate;
 pub mod palette;
+pub mod pins;
 pub mod rebase;
 pub mod remote;
 pub mod slide;

@@ -39,6 +39,10 @@ pub fn context_help(context: InputContext) -> HelpPage {
             title: "Submodules",
             bindings: SUBMODULE,
         },
+        InputContext::PinSwitcher => HelpPage {
+            title: "Pin switcher",
+            bindings: PIN_SWITCHER,
+        },
         InputContext::CommitDiff => HelpPage {
             title: "Commit diff",
             bindings: COMMIT_DIFF,
@@ -59,6 +63,7 @@ const GRAPH: &[(&str, &str)] = &[
     ("f / p / P", "fetch / pull / push"),
     ("s / S", "stash changes / stash list"),
     ("b", "branches panel"),
+    ("B", "pin switcher"),
     ("F", "focus sets"),
     ("> / <", "submodules: enter / exit"),
     ("n", "new branch"),
@@ -74,8 +79,16 @@ const BRANCH: &[(&str, &str)] = &[
     ("M", "join into HEAD"),
     ("Space", "hide / show in the graph"),
     ("o", "solo (again to show all)"),
-    ("p", "pin (survives solo)"),
+    ("O", "pins only (again to show all)"),
+    ("p", "pin (survives solo, remembered)"),
     ("/", "fuzzy filter (↵ applies, keys act on matches)"),
+];
+
+const PIN_SWITCHER: &[(&str, &str)] = &[
+    ("j / k", "select next / previous pin"),
+    ("Enter", "checkout the selected pin"),
+    ("1-9", "checkout that numbered pin"),
+    ("B / Esc", "close"),
 ];
 
 const WORKING: &[(&str, &str)] = &[

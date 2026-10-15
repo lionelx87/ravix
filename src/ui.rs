@@ -11,7 +11,7 @@ use syntect::parsing::SyntaxReference;
 
 use crate::app::{
     App, BranchCreate, CommitEditor, Confirm, FocusPanel, InputContext, NavDirection, Palette,
-    Panel, PasswordPrompt, SubmodulePanel,
+    Panel, PasswordPrompt, PinSwitcher, SubmodulePanel,
 };
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
@@ -274,6 +274,9 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     }
     if let Some(palette) = app.palette() {
         render_palette(frame, palette, &theme, area);
+    }
+    if let Some(switcher) = app.pin_switcher() {
+        render_pin_switcher(frame, switcher, &theme, area);
     }
     if let Some(message) = app.alert() {
         render_alert(frame, message, &theme, area);
@@ -729,7 +732,7 @@ fn render_branch_panel(
     } else {
         &[
             "↵ checkout · n new · d delete · M join",
-            "Space hide · o solo/all · p pin · / filter",
+            "Space hide · o solo/all · O pins · p pin · / filter",
         ]
     };
     render_slide_list(
@@ -2299,11 +2302,7 @@ fn render_focus_panel(frame: &mut Frame, panel: &FocusPanel, theme: &Theme, area
                     Style::default().fg(if selected { theme.node } else { theme.summary }),
                 ),
                 Span::styled(
-                    format!(
-                        "  {} hidden · {} pinned",
-                        set.state.hidden.len(),
-                        set.state.pinned.len()
-                    ),
+                    format!("  {} hidden", set.state.hidden.len()),
                     Style::default().fg(theme.meta),
                 ),
             ])
@@ -2665,6 +2664,63 @@ fn render_palette(frame: &mut Frame, palette: &Palette, theme: &Theme, area: Rec
         lines.push(Line::from(spans));
     }
 
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_pin_switcher(frame: &mut Frame, switcher: &PinSwitcher, theme: &Theme, area: Rect) {
+    let width = 48u16.min(area.width);
+    let height = (switcher.rows.len().max(1) as u16 + 2).clamp(3, area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Pins   [1-9/Enter] checkout · [Esc] close ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    if switcher.rows.is_empty() {
+        let hint = Line::from(Span::styled(
+            "  no pins yet — pin with p in the branch panel (b)",
+            Style::default().fg(theme.meta),
+        ));
+        frame.render_widget(Paragraph::new(hint), inner);
+        return;
+    }
+
+    let lines: Vec<Line> = switcher
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let selected = switcher.selected == Some(index);
+            let label = match row.number {
+                Some(number) => format!("{number} "),
+                None if row.is_head => "● ".to_string(),
+                None => "  ".to_string(),
+            };
+            let name_color = if row.is_head {
+                theme.meta
+            } else if selected {
+                theme.node
+            } else {
+                theme.summary
+            };
+            let mut spans = vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(theme.marker),
+                ),
+                Span::styled(label, Style::default().fg(theme.branch_badge)),
+                Span::styled(row.name.clone(), Style::default().fg(name_color)),
+            ];
+            if row.is_head {
+                spans.push(Span::styled("  (here)", Style::default().fg(theme.meta)));
+            }
+            Line::from(spans)
+        })
+        .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

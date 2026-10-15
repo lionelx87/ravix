@@ -17,11 +17,6 @@ pub fn serialize(sets: &[FocusSet]) -> String {
             out.push_str(branch);
             out.push('\n');
         }
-        for branch in &set.state.pinned {
-            out.push_str("pin ");
-            out.push_str(branch);
-            out.push('\n');
-        }
     }
     out
 }
@@ -43,19 +38,12 @@ pub fn parse(text: &str) -> Vec<FocusSet> {
         if let Some(name) = line.strip_prefix("focus ") {
             sets.push(FocusSet {
                 name: name.to_string(),
-                state: VisibilitySnapshot {
-                    hidden: Vec::new(),
-                    pinned: Vec::new(),
-                },
+                state: VisibilitySnapshot { hidden: Vec::new() },
             });
         } else if let Some(branch) = line.strip_prefix("hide ")
             && let Some(set) = sets.last_mut()
         {
             set.state.hidden.push(branch.to_string());
-        } else if let Some(branch) = line.strip_prefix("pin ")
-            && let Some(set) = sets.last_mut()
-        {
-            set.state.pinned.push(branch.to_string());
         }
     }
     sets

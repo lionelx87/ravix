@@ -3,13 +3,12 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibilitySnapshot {
     pub hidden: Vec<String>,
-    pub pinned: Vec<String>,
 }
 
 #[derive(Default)]
 pub struct Visibility {
     hidden: HashSet<String>,
-    pinned: HashSet<String>,
+    pinned: Vec<String>,
 }
 
 impl Visibility {
@@ -19,16 +18,48 @@ impl Visibility {
         }
     }
 
-    pub fn pin(&mut self, name: &str) {
-        if !self.pinned.remove(name) {
-            self.pinned.insert(name.to_string());
+    pub fn toggle_pin(&mut self, name: &str) {
+        match self.pinned.iter().position(|pin| pin == name) {
+            Some(index) => {
+                self.pinned.remove(index);
+            }
+            None => self.pinned.push(name.to_string()),
         }
     }
 
+    pub fn pins(&self) -> &[String] {
+        &self.pinned
+    }
+
+    pub fn set_pins(&mut self, pins: Vec<String>) {
+        self.pinned = pins;
+    }
+
+    pub fn restore_pin(&mut self, name: &str, position: usize) {
+        if !self.is_pinned(name) {
+            let position = position.min(self.pinned.len());
+            self.pinned.insert(position, name.to_string());
+        }
+    }
+
+    pub fn retain_pins(&mut self, keep: impl Fn(&str) -> bool) -> bool {
+        let before = self.pinned.len();
+        self.pinned.retain(|pin| keep(pin));
+        self.pinned.len() != before
+    }
+
     pub fn solo(&mut self, name: &str, all: &[&str]) {
+        self.toggle_hiding_all_but(all, |other| other == name);
+    }
+
+    pub fn pins_only(&mut self, all: &[&str]) {
+        self.toggle_hiding_all_but(all, |_| false);
+    }
+
+    fn toggle_hiding_all_but(&mut self, all: &[&str], kept: impl Fn(&str) -> bool) {
         let target: HashSet<String> = all
             .iter()
-            .filter(|&&other| other != name && !self.pinned.contains(other))
+            .filter(|&&other| !kept(other) && !self.is_pinned(other))
             .map(|&other| other.to_string())
             .collect();
         if self.hidden == target {
@@ -39,23 +70,21 @@ impl Visibility {
     }
 
     pub fn is_visible(&self, name: &str, is_head: bool) -> bool {
-        is_head || self.pinned.contains(name) || !self.hidden.contains(name)
+        is_head || self.is_pinned(name) || !self.hidden.contains(name)
     }
 
     pub fn is_pinned(&self, name: &str) -> bool {
-        self.pinned.contains(name)
+        self.pinned.iter().any(|pin| pin == name)
     }
 
     pub fn snapshot(&self) -> VisibilitySnapshot {
         VisibilitySnapshot {
             hidden: sorted(&self.hidden),
-            pinned: sorted(&self.pinned),
         }
     }
 
     pub fn restore(&mut self, snapshot: VisibilitySnapshot) {
         self.hidden = snapshot.hidden.into_iter().collect();
-        self.pinned = snapshot.pinned.into_iter().collect();
     }
 }
 
