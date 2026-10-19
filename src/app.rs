@@ -24,6 +24,7 @@ use crate::pins::{self, PinSwitcherRow};
 use crate::remote::{
     PullAction, PushState, is_auth_failure, is_non_fast_forward, pull_action, push_state,
 };
+use crate::review::{BasePicker, BranchReview, Refresh, detect_base};
 use crate::slide::{self, SlidePanel, advance};
 use crate::staging::{FileDiff, build_patch};
 use crate::stash::{
@@ -108,6 +109,7 @@ pub enum Action {
     SoloBranch,
     PinsOnly,
     OpenPinSwitcher,
+    Review(ReviewAction),
     PinSwitcherSubmit,
     PinSwitcherPick(usize),
     PinBranch,
@@ -149,6 +151,21 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewAction {
+    Toggle,
+    ChangeBase,
+    BaseInput(char),
+    BaseBackspace,
+    BaseSubmit,
+    StartFilter,
+    FilterInput(char),
+    FilterBackspace,
+    FilterSubmit,
+    ToggleFileFilter,
+    CopyHash,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputContext {
     Graph,
     Working,
@@ -170,6 +187,9 @@ pub enum InputContext {
     Palette,
     PinSwitcher,
     Password,
+    BranchReview,
+    ReviewBase,
+    ReviewFilter,
 }
 
 pub struct Panel {
@@ -346,6 +366,7 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("Stash list", "S", Action::ToggleStashes),
     ("Branches", "b", Action::ToggleBranches),
     ("Pin switcher", "B", Action::OpenPinSwitcher),
+    ("Branch review", "L", Action::Review(ReviewAction::Toggle)),
     ("Focus sets", "F", Action::ToggleFocusPanel),
     ("Submodules", ">", Action::ToggleSubmodulePanel),
     ("New branch", "n", Action::NewBranch),
@@ -476,6 +497,7 @@ pub struct App {
     join: Option<JoinMenu>,
     conflict: Option<ConflictBrowser>,
     edit_request: Option<String>,
+    clipboard: Option<String>,
     drag: Option<DragState>,
     stash: Option<StashView>,
     stash_message: Option<String>,
@@ -500,6 +522,8 @@ pub struct App {
     panel: Option<Panel>,
     palette: Option<Palette>,
     pin_switcher: Option<PinSwitcher>,
+    review: Option<BranchReview>,
+    base_picker: Option<BasePicker>,
     help_visible: bool,
     should_quit: bool,
 }
@@ -566,6 +590,7 @@ impl App {
             join: None,
             conflict: None,
             edit_request: None,
+            clipboard: None,
             drag: None,
             stash: None,
             stash_message: None,
@@ -590,6 +615,8 @@ impl App {
             panel: None,
             palette: None,
             pin_switcher: None,
+            review: None,
+            base_picker: None,
             help_visible: false,
             should_quit: false,
         };
@@ -822,6 +849,22 @@ impl App {
         self.pin_switcher.as_ref()
     }
 
+    pub fn branch_review(&self) -> Option<&BranchReview> {
+        self.review.as_ref()
+    }
+
+    pub fn branch_review_mut(&mut self) -> Option<&mut BranchReview> {
+        self.review.as_mut()
+    }
+
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
+    }
+
+    pub fn base_picker(&self) -> Option<&BasePicker> {
+        self.base_picker.as_ref()
+    }
+
     pub fn password_prompt(&self) -> Option<&PasswordPrompt> {
         self.password.as_ref()
     }
@@ -910,6 +953,16 @@ impl App {
             InputContext::Password
         } else if self.alert.is_some() {
             InputContext::Alert
+        } else if self.base_picker.is_some() {
+            InputContext::ReviewBase
+        } else if self
+            .review
+            .as_ref()
+            .is_some_and(|review| review.query_editing)
+        {
+            InputContext::ReviewFilter
+        } else if self.review.is_some() {
+            InputContext::BranchReview
         } else if self.palette.is_some() {
             InputContext::Palette
         } else if self.pin_switcher.is_some() {
@@ -980,6 +1033,9 @@ impl App {
             || self.remote.is_some()
             || self.nav_transition.is_some()
             || self.peek_debounce.is_some()
+            || self.review.as_ref().is_some_and(|review| {
+                review.summary_pending() || review.diff_pending() || review.is_folding()
+            })
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -989,6 +1045,14 @@ impl App {
     }
 
     pub fn update(&mut self, action: Action) {
+        if self.in_review_context() && !passes_through_review(&action) {
+            if self.help_visible {
+                self.help_visible = action != Action::Dismiss;
+            } else {
+                self.update_review(action);
+            }
+            return;
+        }
         match action {
             Action::SelectNext => self.move_down(1),
             Action::SelectPrev => self.move_up(1),
@@ -1087,6 +1151,7 @@ impl App {
             Action::SoloBranch => self.solo_branch(),
             Action::PinsOnly => self.pins_only(),
             Action::OpenPinSwitcher => self.open_pin_switcher(),
+            review @ Action::Review(_) => self.update_review(review),
             Action::PinSwitcherSubmit => self.pin_switcher_submit(),
             Action::PinSwitcherPick(number) => self.pin_switcher_pick(number),
             Action::PinBranch => self.pin_branch(),
@@ -2774,6 +2839,120 @@ impl App {
         self.reload();
     }
 
+    fn in_review_context(&self) -> bool {
+        matches!(
+            self.input_context(),
+            InputContext::BranchReview | InputContext::ReviewBase | InputContext::ReviewFilter
+        )
+    }
+
+    fn update_review(&mut self, action: Action) {
+        if let Some(picker) = &mut self.base_picker {
+            match action {
+                Action::SelectNext | Action::ScrollDown => picker.move_selection(1),
+                Action::SelectPrev | Action::ScrollUp => picker.move_selection(-1),
+                Action::Review(ReviewAction::BaseInput(character)) => picker.input(character),
+                Action::Review(ReviewAction::BaseBackspace) => picker.backspace(),
+                Action::Review(ReviewAction::BaseSubmit) => self.base_picker_submit(),
+                Action::Dismiss => self.base_picker = None,
+                _ => {}
+            }
+            return;
+        }
+        let Some(review) = &mut self.review else {
+            if action == Action::Review(ReviewAction::Toggle) {
+                self.open_branch_review();
+            }
+            return;
+        };
+        if review.query_editing {
+            match action {
+                Action::Review(ReviewAction::FilterInput(character)) => {
+                    review.query_input(&self.repo, character)
+                }
+                Action::Review(ReviewAction::FilterBackspace) => review.query_backspace(&self.repo),
+                Action::Review(ReviewAction::FilterSubmit) => review.submit_query(),
+                Action::Dismiss => review.clear_query(&self.repo),
+                Action::SelectNext | Action::ScrollDown => review.move_down(&self.repo, 1),
+                Action::SelectPrev | Action::ScrollUp => review.move_down(&self.repo, -1),
+                _ => {}
+            }
+            return;
+        }
+        match action {
+            Action::SelectNext | Action::ScrollDown => review.move_down(&self.repo, 1),
+            Action::SelectPrev | Action::ScrollUp => review.move_down(&self.repo, -1),
+            Action::PageDown => review.move_down(&self.repo, self.page as isize),
+            Action::PageUp => review.move_down(&self.repo, -(self.page as isize)),
+            Action::ToggleFocus => review.rotate_focus(),
+            Action::ToggleFocusBack => review.rotate_focus_back(),
+            Action::ToggleDiffView => review.split = !review.split,
+            Action::Review(ReviewAction::ToggleFileFilter) => review.toggle_file_filter(&self.repo),
+            Action::Review(ReviewAction::StartFilter) => review.start_query(),
+            Action::Review(ReviewAction::ChangeBase) => {
+                let branch = review.branch.clone();
+                self.ask_review_base(&branch);
+            }
+            Action::Review(ReviewAction::CopyHash) => self.copy_selected_hash(),
+            Action::Review(ReviewAction::Toggle) => review.fold(),
+            Action::Dismiss if !review.clear_filters(&self.repo) => review.fold(),
+            _ => {}
+        }
+    }
+
+    fn copy_selected_hash(&mut self) {
+        let Some((hash, short)) = self
+            .review
+            .as_ref()
+            .and_then(BranchReview::selected_commit)
+            .map(|commit| (commit.id.to_string(), commit.short_id.clone()))
+        else {
+            return;
+        };
+        self.clipboard = Some(hash);
+        self.info(format!("Copied {short} to the clipboard"));
+    }
+
+    fn ask_review_base(&mut self, branch: &str) {
+        let names = self
+            .load_branch_entries()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        self.base_picker = Some(BasePicker::opening(branch, names));
+    }
+
+    fn base_picker_submit(&mut self) {
+        let Some(picker) = self.base_picker.take() else {
+            return;
+        };
+        let Some(base) = picker.chosen().map(str::to_string) else {
+            return;
+        };
+        match &mut self.review {
+            Some(review) => review.change_base(&self.repo, &base),
+            None => {
+                self.review =
+                    BranchReview::open(&self.repo, &picker.branch, &base).map(BranchReview::chosen);
+            }
+        }
+    }
+
+    fn open_branch_review(&mut self) {
+        let Some(branch) = self
+            .focused_branch_name()
+            .or_else(|| self.meta.head_branch.clone())
+        else {
+            self.info("Detached HEAD — no branch to review");
+            return;
+        };
+        let Some(base) = detect_base(&self.repo, &branch) else {
+            self.ask_review_base(&branch);
+            return;
+        };
+        self.review = BranchReview::open(&self.repo, &branch, &base);
+    }
+
     fn open_pin_switcher(&mut self) {
         let rows = pins::switcher_rows(
             self.visibility.pins(),
@@ -4008,6 +4187,29 @@ impl App {
         self.refresh_submodule_panel();
         self.refresh_parent_sync();
         self.detect_conflict();
+        self.refresh_review();
+    }
+
+    fn refresh_review(&mut self) {
+        let Some(review) = &mut self.review else {
+            return;
+        };
+        let branch = review.branch.clone();
+        match review.refresh(&self.repo) {
+            Refresh::Kept => {}
+            Refresh::ChosenBaseGone => {
+                self.info("The chosen base is gone — back to the detected one")
+            }
+            Refresh::BranchGone => {
+                self.review = None;
+                self.base_picker = None;
+                self.info(format!("{branch} is gone — left the review"));
+            }
+            Refresh::NoBase => {
+                self.review = None;
+                self.info(format!("No base left to review {branch} against"));
+            }
+        }
     }
 
     fn head_row(&self) -> Option<usize> {
@@ -4107,6 +4309,13 @@ impl App {
             self.focus_name = None;
         }
         slide::advance_panel(&mut self.submodule_panel, step);
+        if let Some(review) = &mut self.review {
+            review.poll_background();
+            let step = dt.as_secs_f32() / NAV_TRANSITION.as_secs_f32();
+            if review.advance_unfold(step) {
+                self.review = None;
+            }
+        }
         if let Some(celebration) = &mut self.celebration {
             celebration.progress -= dt.as_secs_f32() / CELEBRATION_DURATION.as_secs_f32();
             if celebration.progress <= 0.0 {
@@ -4214,4 +4423,11 @@ fn graph_commits(commits: &[CommitInfo]) -> Vec<GraphCommit<Oid>> {
             parents: commit.parents.clone(),
         })
         .collect()
+}
+
+fn passes_through_review(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Tick(_) | Action::Reload | Action::Quit | Action::ToggleHelp
+    )
 }

@@ -27,6 +27,7 @@ use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
 mod graph_view;
+mod review_view;
 
 use graph_view::display_width;
 
@@ -271,6 +272,12 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     }
     if let Some(confirm) = app.confirm() {
         render_confirm(frame, confirm, &theme, area);
+    }
+    if app.branch_review().is_some() {
+        review_view::render(frame, app, &theme, area, now);
+    }
+    if let Some(picker) = app.base_picker() {
+        review_view::render_base_picker(frame, picker, &theme, area);
     }
     if let Some(palette) = app.palette() {
         render_palette(frame, palette, &theme, area);
@@ -520,8 +527,7 @@ fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         ));
     }
     if let Some((verb, spinner)) = app.remote_status() {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let frame = FRAMES[(spinner / 4) % FRAMES.len()];
+        let frame = spinner_frame(spinner);
         spans.push(Span::styled(
             format!("  {frame} {verb}…"),
             Style::default()
@@ -2759,6 +2765,11 @@ fn relative_time(now: i64, then: i64) -> String {
         d if d < 31_557_600 => format!("{}mo", d / 2_629_800),
         d => format!("{}y", d / 31_557_600),
     }
+}
+
+fn spinner_frame(tick: usize) -> &'static str {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    FRAMES[(tick / 4) % FRAMES.len()]
 }
 
 fn ease_out_cubic(t: f32) -> f32 {

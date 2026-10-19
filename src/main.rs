@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
@@ -113,6 +113,11 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                 }
                 _ => {}
             }
+        }
+
+        if let Some(text) = app.take_clipboard() {
+            let _ = io::stdout().write_all(ravix::clipboard::osc52(&text).as_bytes());
+            let _ = io::stdout().flush();
         }
 
         if let Some(path) = app.pending_edit_path() {

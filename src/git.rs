@@ -299,6 +299,46 @@ impl Repo {
         branch.get().target().map(|oid| oid.to_string())
     }
 
+    pub fn branch_oid(&self, name: &str) -> Option<Oid> {
+        self.inner
+            .find_branch(name, BranchType::Local)
+            .or_else(|_| self.inner.find_branch(name, BranchType::Remote))
+            .ok()?
+            .get()
+            .target()
+    }
+
+    pub fn branch_upstream(&self, name: &str) -> Option<String> {
+        let branch = self.inner.find_branch(name, BranchType::Local).ok()?;
+        let upstream = branch.upstream().ok()?;
+        upstream.name().ok().flatten().map(str::to_string)
+    }
+
+    pub fn remote_default(&self) -> Option<String> {
+        let reference = self.inner.find_reference("refs/remotes/origin/HEAD").ok()?;
+        reference
+            .symbolic_target()
+            .ok()
+            .flatten()?
+            .strip_prefix("refs/remotes/")
+            .map(str::to_string)
+    }
+
+    pub fn parent_ids(&self, id: Oid) -> Vec<Oid> {
+        self.inner
+            .find_commit(id)
+            .map(|commit| commit.parent_ids().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn commit_message(&self, id: Oid) -> String {
+        self.inner
+            .find_commit(id)
+            .ok()
+            .and_then(|commit| commit.message().ok().map(str::to_string))
+            .unwrap_or_default()
+    }
+
     pub fn head_oid(&self) -> Option<String> {
         self.inner.head().ok()?.target().map(|oid| oid.to_string())
     }
@@ -732,57 +772,93 @@ impl Repo {
         Self::diff_to_file(&diff, path)
     }
 
+    pub fn commit_diffs(&self, id: Oid, only: Option<&str>) -> Vec<FileDiff> {
+        self.try_commit_diffs(id, only).unwrap_or_default()
+    }
+
+    fn try_commit_diffs(&self, id: Oid, only: Option<&str>) -> Result<Vec<FileDiff>, git2::Error> {
+        let commit = self.inner.find_commit(id)?;
+        let tree = commit.tree()?;
+        let parent_tree = match commit.parents().next() {
+            Some(parent) => Some(parent.tree()?),
+            None => None,
+        };
+        let mut options = DiffOptions::new();
+        options.context_lines(3);
+        if let Some(path) = only {
+            options.pathspec(path).disable_pathspec_match(true);
+        }
+        let diff =
+            self.inner
+                .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))?;
+        let mut files = Vec::new();
+        for index in 0..diff.deltas().count() {
+            if let Some(file) = Self::patch_at(&diff, index, "")? {
+                files.push(file);
+            }
+        }
+        Ok(files)
+    }
+
     fn diff_to_file(diff: &git2::Diff, path: &str) -> Result<Option<FileDiff>, git2::Error> {
         for index in 0..diff.deltas().count() {
-            let Some(patch) = Patch::from_diff(diff, index)? else {
-                continue;
-            };
-            let Some(delta) = diff.get_delta(index) else {
-                continue;
-            };
-            let new_path = delta
-                .new_file()
-                .path()
-                .and_then(Path::to_str)
-                .unwrap_or(path);
-            let old_path = delta
-                .old_file()
-                .path()
-                .and_then(Path::to_str)
-                .unwrap_or(new_path);
-            if new_path != path && old_path != path {
-                continue;
+            if let Some(file) = Self::patch_at(diff, index, path)?
+                && (file.new_path == path || file.old_path == path)
+            {
+                return Ok(Some(file));
             }
+        }
+        Ok(None)
+    }
 
-            let mut hunks = Vec::new();
-            for hunk_index in 0..patch.num_hunks() {
-                let (hunk, line_count) = patch.hunk(hunk_index)?;
-                let header = String::from_utf8_lossy(hunk.header())
-                    .trim_end()
-                    .to_string();
-                let mut lines = Vec::new();
-                for line_index in 0..line_count {
-                    let line = patch.line_in_hunk(hunk_index, line_index)?;
-                    let content = String::from_utf8_lossy(line.content());
-                    let rendered = match line.origin() {
-                        '+' => format!("+{}", content.strip_suffix('\n').unwrap_or(&content)),
-                        '-' => format!("-{}", content.strip_suffix('\n').unwrap_or(&content)),
-                        ' ' => format!(" {}", content.strip_suffix('\n').unwrap_or(&content)),
-                        _ => content.trim_matches('\n').to_string(),
-                    };
-                    lines.push(rendered);
-                }
-                hunks.push(Hunk { header, lines });
+    fn patch_at(
+        diff: &git2::Diff,
+        index: usize,
+        fallback: &str,
+    ) -> Result<Option<FileDiff>, git2::Error> {
+        let Some(patch) = Patch::from_diff(diff, index)? else {
+            return Ok(None);
+        };
+        let Some(delta) = diff.get_delta(index) else {
+            return Ok(None);
+        };
+        let new_path = delta
+            .new_file()
+            .path()
+            .and_then(Path::to_str)
+            .unwrap_or(fallback);
+        let old_path = delta
+            .old_file()
+            .path()
+            .and_then(Path::to_str)
+            .unwrap_or(new_path);
+
+        let mut hunks = Vec::new();
+        for hunk_index in 0..patch.num_hunks() {
+            let (hunk, line_count) = patch.hunk(hunk_index)?;
+            let header = String::from_utf8_lossy(hunk.header())
+                .trim_end()
+                .to_string();
+            let mut lines = Vec::new();
+            for line_index in 0..line_count {
+                let line = patch.line_in_hunk(hunk_index, line_index)?;
+                let content = String::from_utf8_lossy(line.content());
+                let rendered = match line.origin() {
+                    '+' => format!("+{}", content.strip_suffix('\n').unwrap_or(&content)),
+                    '-' => format!("-{}", content.strip_suffix('\n').unwrap_or(&content)),
+                    ' ' => format!(" {}", content.strip_suffix('\n').unwrap_or(&content)),
+                    _ => content.trim_matches('\n').to_string(),
+                };
+                lines.push(rendered);
             }
-
-            return Ok(Some(FileDiff {
-                old_path: old_path.to_string(),
-                new_path: new_path.to_string(),
-                hunks,
-            }));
+            hunks.push(Hunk { header, lines });
         }
 
-        Ok(None)
+        Ok(Some(FileDiff {
+            old_path: old_path.to_string(),
+            new_path: new_path.to_string(),
+            hunks,
+        }))
     }
 
     pub fn submodules(&self) -> Vec<Submodule> {

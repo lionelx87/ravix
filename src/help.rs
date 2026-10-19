@@ -43,6 +43,10 @@ pub fn context_help(context: InputContext) -> HelpPage {
             title: "Pin switcher",
             bindings: PIN_SWITCHER,
         },
+        InputContext::BranchReview => HelpPage {
+            title: "Branch review",
+            bindings: BRANCH_REVIEW,
+        },
         InputContext::CommitDiff => HelpPage {
             title: "Commit diff",
             bindings: COMMIT_DIFF,
@@ -64,6 +68,7 @@ const GRAPH: &[(&str, &str)] = &[
     ("s / S", "stash changes / stash list"),
     ("b", "branches panel"),
     ("B", "pin switcher"),
+    ("L", "review the current branch's own commits"),
     ("F", "focus sets"),
     ("> / <", "submodules: enter / exit"),
     ("n", "new branch"),
@@ -82,6 +87,7 @@ const BRANCH: &[(&str, &str)] = &[
     ("O", "pins only (again to show all)"),
     ("p", "pin (survives solo, remembered)"),
     ("/", "fuzzy filter (↵ applies, keys act on matches)"),
+    ("l", "review the branch's own commits"),
 ];
 
 const PIN_SWITCHER: &[(&str, &str)] = &[
@@ -149,6 +155,21 @@ const SUBMODULE: &[(&str, &str)] = &[
     ("i", "initialize the submodule"),
     ("u", "update the submodule to the recorded commit"),
     ("> / Esc", "close (< or Esc in the graph exits it)"),
+];
+
+const BRANCH_REVIEW: &[(&str, &str)] = &[
+    ("j / k", "move inside the focused zone"),
+    ("Tab / ⇧Tab", "focus commits → files → diff"),
+    (
+        "Enter",
+        "in files: narrow the commits to that file (again to lift)",
+    ),
+    ("v", "toggle side-by-side diff"),
+    ("b", "choose another base (this review only)"),
+    ("/", "filter commits by message or author"),
+    ("y", "copy the commit hash"),
+    ("Esc", "clear filters, then leave the review"),
+    ("L", "leave the review"),
 ];
 
 const COMMIT_DIFF: &[(&str, &str)] = &[

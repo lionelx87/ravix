@@ -3,7 +3,7 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::app::{Action, InputContext};
+use crate::app::{Action, InputContext, ReviewAction};
 
 const FILE_PANE_WIDTH: u16 = 46;
 
@@ -41,6 +41,9 @@ impl InputMap {
             InputContext::Palette => on_palette_key(key),
             InputContext::PinSwitcher => on_pin_switcher_key(key),
             InputContext::Password => on_password_key(key),
+            InputContext::BranchReview => on_review_key(key),
+            InputContext::ReviewBase => on_review_base_key(key),
+            InputContext::ReviewFilter => on_review_filter_key(key),
         }
     }
 
@@ -75,6 +78,7 @@ impl InputMap {
             KeyCode::Char('S') => Some(Action::ToggleStashes),
             KeyCode::Char('b') => Some(Action::ToggleBranches),
             KeyCode::Char('B') => Some(Action::OpenPinSwitcher),
+            KeyCode::Char('L') => Some(Action::Review(ReviewAction::Toggle)),
             KeyCode::Char('F') => Some(Action::ToggleFocusPanel),
             KeyCode::Char('>') => Some(Action::ToggleSubmodulePanel),
             KeyCode::Char('<') => Some(Action::ExitSubmodule),
@@ -92,6 +96,16 @@ impl InputMap {
         graph_area: Rect,
         context: InputContext,
     ) -> Option<Action> {
+        if matches!(
+            context,
+            InputContext::BranchReview | InputContext::ReviewBase | InputContext::ReviewFilter
+        ) {
+            return match mouse.kind {
+                MouseEventKind::ScrollDown => Some(Action::ScrollDown),
+                MouseEventKind::ScrollUp => Some(Action::ScrollUp),
+                _ => None,
+            };
+        }
         let row = || (mouse.row - graph_area.y) as usize;
         let in_graph = contains(graph_area, mouse.column, mouse.row);
         let over_file_list =
@@ -178,6 +192,7 @@ fn on_branch_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('O') => Some(Action::PinsOnly),
         KeyCode::Char('p') => Some(Action::PinBranch),
         KeyCode::Char('/') => Some(Action::StartBranchFilter),
+        KeyCode::Char('l') => Some(Action::Review(ReviewAction::Toggle)),
         KeyCode::Char('M') => Some(Action::OpenJoin),
         KeyCode::Char('n') => Some(Action::NewBranch),
         KeyCode::Char('d') => Some(Action::DeleteBranch),
@@ -310,6 +325,59 @@ fn on_pin_switcher_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('B') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_review_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::PageDown => Some(Action::PageDown),
+        KeyCode::PageUp => Some(Action::PageUp),
+        KeyCode::Tab => Some(Action::ToggleFocus),
+        KeyCode::BackTab => Some(Action::ToggleFocusBack),
+        KeyCode::Char('b') => Some(Action::Review(ReviewAction::ChangeBase)),
+        KeyCode::Char('/') => Some(Action::Review(ReviewAction::StartFilter)),
+        KeyCode::Char('y') => Some(Action::Review(ReviewAction::CopyHash)),
+        KeyCode::Enter => Some(Action::Review(ReviewAction::ToggleFileFilter)),
+        KeyCode::Char('v') => Some(Action::ToggleDiffView),
+        KeyCode::Char('L') => Some(Action::Review(ReviewAction::Toggle)),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_review_base_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::Review(ReviewAction::BaseSubmit)),
+        KeyCode::Backspace => Some(Action::Review(ReviewAction::BaseBackspace)),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('n') if ctrl => Some(Action::SelectNext),
+        KeyCode::Char('p') if ctrl => Some(Action::SelectPrev),
+        KeyCode::Char(character) if !ctrl => {
+            Some(Action::Review(ReviewAction::BaseInput(character)))
+        }
+        _ => None,
+    }
+}
+
+fn on_review_filter_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::Review(ReviewAction::FilterSubmit)),
+        KeyCode::Backspace => Some(Action::Review(ReviewAction::FilterBackspace)),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char(character) if !ctrl => {
+            Some(Action::Review(ReviewAction::FilterInput(character)))
+        }
         _ => None,
     }
 }

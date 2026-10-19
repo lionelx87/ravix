@@ -22,6 +22,20 @@ _Avoid_: Favorites view, solo pins
 A named, saved record of which branches are hidden, restorable later; it never includes pins.
 _Avoid_: Workspace, preset, view
 
+### Branch analysis
+
+**Own commits**:
+The commits created directly on a branch since it left its base, following only its first-parent line and excluding merge commits and everything brought in by merges.
+_Avoid_: Branch commits, branch log, history
+
+**Base**:
+The branch whose first-parent line marks where a branch's own commits end, chosen automatically as the nearest trunk and changeable by the user.
+_Avoid_: Parent branch, upstream, target
+
+**Branch review**:
+A read-only mode with its own identity, dedicated to inspecting one branch's own commits against its base.
+_Avoid_: Branch log, branch lens, history view
+
 ### Navigation
 
 **Pin switcher**:
