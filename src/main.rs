@@ -3,6 +3,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use crossterm::execute;
+use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 
@@ -32,10 +33,11 @@ fn main() -> io::Result<()> {
 
     std::thread::spawn(enrich::warm_up);
 
+    let _ = execute!(io::stdout(), BeginSynchronizedUpdate);
     let mut terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal, app);
-    let _ = execute!(io::stdout(), DisableMouseCapture);
+    let _ = execute!(io::stdout(), EndSynchronizedUpdate, DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -78,10 +80,13 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
 
     loop {
         let draw_started = Instant::now();
-        terminal.draw(|frame| {
+        let _ = execute!(io::stdout(), BeginSynchronizedUpdate);
+        let drawn = terminal.draw(|frame| {
             graph_area = regions(frame.area()).0;
             render(frame, &mut app, now_seconds());
-        })?;
+        });
+        let _ = execute!(io::stdout(), EndSynchronizedUpdate);
+        drawn?;
         perf.record("draw", draw_started.elapsed());
 
         if app.should_quit() {
@@ -162,6 +167,7 @@ fn edit_in_editor(terminal: &mut DefaultTerminal, path: &std::path::Path) -> io:
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
     let status = std::process::Command::new(editor).arg(path).status();
+    let _ = execute!(io::stdout(), BeginSynchronizedUpdate);
     *terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture);
     terminal.clear()?;
