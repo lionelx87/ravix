@@ -40,6 +40,7 @@ impl InputMap {
             InputContext::Stash => on_stash_key(key),
             InputContext::Palette => on_palette_key(key),
             InputContext::PinSwitcher => on_pin_switcher_key(key),
+            InputContext::CopyChooser => on_copy_chooser_key(key),
             InputContext::Password => on_password_key(key),
             InputContext::BranchReview => on_review_key(key),
             InputContext::ReviewBase => on_review_base_key(key),
@@ -70,6 +71,8 @@ impl InputMap {
             KeyCode::Enter => Some(Action::OpenPanel),
             KeyCode::Esc => Some(Action::Dismiss),
             KeyCode::Char(' ') => Some(Action::Checkout),
+            KeyCode::Char('y') => Some(Action::CopyHash),
+            KeyCode::Char('Y') => Some(Action::CopyBranch),
             KeyCode::Char('M') => Some(Action::OpenJoin),
             KeyCode::Char('f') => Some(Action::Fetch),
             KeyCode::Char('p') => Some(Action::Pull),
@@ -191,6 +194,7 @@ fn on_branch_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('o') => Some(Action::SoloBranch),
         KeyCode::Char('O') => Some(Action::PinsOnly),
         KeyCode::Char('p') => Some(Action::PinBranch),
+        KeyCode::Char('Y') => Some(Action::CopyBranch),
         KeyCode::Char('/') => Some(Action::StartBranchFilter),
         KeyCode::Char('l') => Some(Action::Review(ReviewAction::Toggle)),
         KeyCode::Char('M') => Some(Action::OpenJoin),
@@ -228,6 +232,7 @@ fn on_commit_diff_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('l') | KeyCode::Right => Some(Action::ScrollDiffRight),
         KeyCode::Tab | KeyCode::BackTab => Some(Action::ToggleFocus),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
+        KeyCode::Char('y') => Some(Action::CopyHash),
         KeyCode::Enter | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
@@ -314,6 +319,21 @@ fn on_palette_key(key: KeyEvent) -> Option<Action> {
     }
 }
 
+fn on_copy_chooser_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Enter => Some(Action::CopyChooserSubmit),
+        KeyCode::Char(digit @ '1'..='9') => digit
+            .to_digit(10)
+            .map(|number| Action::CopyChooserPick(number as usize)),
+        KeyCode::Char('Y') | KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
 fn on_pin_switcher_key(key: KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
@@ -322,6 +342,7 @@ fn on_pin_switcher_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char(digit @ '1'..='9') => digit
             .to_digit(10)
             .map(|number| Action::PinSwitcherPick(number as usize)),
+        KeyCode::Char('Y') => Some(Action::CopyBranch),
         KeyCode::Char('B') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
@@ -339,7 +360,8 @@ fn on_review_key(key: KeyEvent) -> Option<Action> {
         KeyCode::BackTab => Some(Action::ToggleFocusBack),
         KeyCode::Char('b') => Some(Action::Review(ReviewAction::ChangeBase)),
         KeyCode::Char('/') => Some(Action::Review(ReviewAction::StartFilter)),
-        KeyCode::Char('y') => Some(Action::Review(ReviewAction::CopyHash)),
+        KeyCode::Char('y') => Some(Action::CopyHash),
+        KeyCode::Char('Y') => Some(Action::CopyBranch),
         KeyCode::Enter => Some(Action::Review(ReviewAction::ToggleFileFilter)),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Char('L') => Some(Action::Review(ReviewAction::Toggle)),

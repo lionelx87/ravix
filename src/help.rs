@@ -43,6 +43,10 @@ pub fn context_help(context: InputContext) -> HelpPage {
             title: "Pin switcher",
             bindings: PIN_SWITCHER,
         },
+        InputContext::CopyChooser => HelpPage {
+            title: "Copy branch",
+            bindings: BRANCH_PICKER,
+        },
         InputContext::BranchReview => HelpPage {
             title: "Branch review",
             bindings: BRANCH_REVIEW,
@@ -66,9 +70,9 @@ const GRAPH: &[(&str, &str)] = &[
     ("M", "join: merge / cherry-pick / rebase"),
     ("f / p / P", "fetch / pull / push"),
     ("s / S", "stash changes / stash list"),
-    ("b", "branches panel"),
-    ("B", "pin switcher"),
+    ("b / B", "branches panel / pin switcher"),
     ("L", "review the current branch's own commits"),
+    ("y / Y", "copy the short hash / a branch name"),
     ("F", "focus sets"),
     ("> / <", "submodules: enter / exit"),
     ("n", "new branch"),
@@ -88,13 +92,22 @@ const BRANCH: &[(&str, &str)] = &[
     ("p", "pin (survives solo, remembered)"),
     ("/", "fuzzy filter (↵ applies, keys act on matches)"),
     ("l", "review the branch's own commits"),
+    ("Y", "copy the branch name"),
 ];
 
 const PIN_SWITCHER: &[(&str, &str)] = &[
     ("j / k", "select next / previous pin"),
     ("Enter", "checkout the selected pin"),
     ("1-9", "checkout that numbered pin"),
+    ("Y", "copy the selected pin's name"),
     ("B / Esc", "close"),
+];
+
+const BRANCH_PICKER: &[(&str, &str)] = &[
+    ("j / k", "select next / previous branch"),
+    ("Enter", "copy the selected branch"),
+    ("1-9", "copy that numbered branch"),
+    ("Y / Esc", "close"),
 ];
 
 const WORKING: &[(&str, &str)] = &[
@@ -167,7 +180,8 @@ const BRANCH_REVIEW: &[(&str, &str)] = &[
     ("v", "toggle side-by-side diff"),
     ("b", "choose another base (this review only)"),
     ("/", "filter commits by message or author"),
-    ("y", "copy the commit hash"),
+    ("y", "copy the commit's short hash"),
+    ("Y", "copy the reviewed branch's name"),
     ("Esc", "clear filters, then leave the review"),
     ("L", "leave the review"),
 ];
@@ -175,6 +189,7 @@ const BRANCH_REVIEW: &[(&str, &str)] = &[
 const COMMIT_DIFF: &[(&str, &str)] = &[
     ("j / k", "select next / previous file"),
     ("v", "toggle side-by-side diff"),
+    ("y", "copy the commit's short hash"),
     ("Esc", "collapse to the graph"),
 ];
 

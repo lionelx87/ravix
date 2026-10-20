@@ -41,3 +41,7 @@ _Avoid_: Branch log, branch lens, history view
 **Pin switcher**:
 A modal listing the pins by most recent checkout, used to check one out quickly.
 _Avoid_: Favorites popup, quick switch, branch picker
+
+**Copy chooser**:
+A modal listing the branches on one commit, used to choose which branch name to copy.
+_Avoid_: Branch picker, copy menu

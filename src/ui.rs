@@ -10,8 +10,8 @@ use git2::Oid;
 use syntect::parsing::SyntaxReference;
 
 use crate::app::{
-    App, BranchCreate, CommitEditor, Confirm, FocusPanel, InputContext, NavDirection, Palette,
-    Panel, PasswordPrompt, PinSwitcher, SubmodulePanel,
+    App, BranchCreate, CommitEditor, Confirm, CopyChooser, FocusPanel, InputContext, NavDirection,
+    Palette, Panel, PasswordPrompt, PinSwitcher, SubmodulePanel,
 };
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
@@ -23,7 +23,6 @@ use crate::slide::SlidePanel;
 use crate::staging::{FileDiff, content_of, marker_of, split_rows};
 use crate::stash::{Focus as StashFocus, StashEntry, StashMessage, StashView};
 use crate::submodule::{Submodule, SyncState};
-use crate::visibility::Visibility;
 use crate::working::{Focus, WorkingView};
 
 mod graph_view;
@@ -231,15 +230,7 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
         None => {}
     }
     if let Some(panel) = app.branch_panel() {
-        render_branch_panel(
-            frame,
-            panel,
-            app.visibility(),
-            app.branch_filter_query(),
-            app.branch_filter_editing(),
-            &theme,
-            graph_area,
-        );
+        render_branch_panel(frame, panel, app, &theme, graph_area);
     }
     if let Some(menu) = app.join_menu() {
         render_join_menu(frame, menu, &theme, graph_area);
@@ -283,7 +274,10 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
         render_palette(frame, palette, &theme, area);
     }
     if let Some(switcher) = app.pin_switcher() {
-        render_pin_switcher(frame, switcher, &theme, area);
+        render_pin_switcher(frame, switcher, app, &theme, area);
+    }
+    if let Some(picker) = app.copy_chooser() {
+        render_copy_chooser(frame, picker, &theme, area);
     }
     if let Some(message) = app.alert() {
         render_alert(frame, message, &theme, area);
@@ -592,9 +586,12 @@ fn render_panel(frame: &mut Frame, app: &App, panel: &Panel, theme: &Theme, area
     let mut lines = vec![
         Line::from(Span::styled(
             commit.short_id.clone(),
-            Style::default()
-                .fg(theme.short_id)
-                .add_modifier(Modifier::BOLD),
+            flashed(
+                Style::default()
+                    .fg(theme.short_id)
+                    .add_modifier(Modifier::BOLD),
+                app.flashes_hash(&commit.short_id),
+            ),
         )),
         Line::from(vec![
             Span::styled("Author  ", Style::default().fg(theme.label)),
@@ -719,12 +716,13 @@ fn render_slide_list<T>(
 fn render_branch_panel(
     frame: &mut Frame,
     panel: &BranchPanel,
-    visibility: &Visibility,
-    filter: Option<&str>,
-    filter_editing: bool,
+    app: &App,
     theme: &Theme,
     area: Rect,
 ) {
+    let visibility = app.visibility();
+    let filter = app.branch_filter_query();
+    let filter_editing = app.branch_filter_editing();
     let title = match filter {
         Some(query) if filter_editing => format!(" Branches   /{query}▏"),
         Some(query) => format!(" Branches   /{query} "),
@@ -790,7 +788,10 @@ fn render_branch_panel(
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(mark, Style::default().fg(mark_color)),
-                Span::styled(entry.name.clone(), name_style),
+                Span::styled(
+                    entry.name.clone(),
+                    flashed(name_style, app.flashes_branch(&entry.name)),
+                ),
             ];
             if entry.ahead > 0 || entry.behind > 0 {
                 spans.push(Span::styled(
@@ -1963,8 +1964,17 @@ fn render_commit_fullscreen(frame: &mut Frame, app: &mut App, theme: &Theme, are
         let heading = app
             .commits()
             .get(panel.commit_index)
-            .map(|commit| format!(" {}   {} ", commit.short_id, commit.summary))
-            .unwrap_or_else(|| " Commit ".to_string());
+            .map(|commit| {
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        commit.short_id.clone(),
+                        flashed(Style::default(), app.flashes_hash(&commit.short_id)),
+                    ),
+                    Span::raw(format!("   {} ", commit.summary)),
+                ])
+            })
+            .unwrap_or_else(|| Line::from(" Commit "));
         let file_lines: Vec<Line> = panel
             .changed_files
             .iter()
@@ -2673,7 +2683,13 @@ fn render_palette(frame: &mut Frame, palette: &Palette, theme: &Theme, area: Rec
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_pin_switcher(frame: &mut Frame, switcher: &PinSwitcher, theme: &Theme, area: Rect) {
+fn render_pin_switcher(
+    frame: &mut Frame,
+    switcher: &PinSwitcher,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+) {
     let width = 48u16.min(area.width);
     let height = (switcher.rows.len().max(1) as u16 + 2).clamp(3, area.height);
     let rect = centered(area, width, height);
@@ -2719,12 +2735,56 @@ fn render_pin_switcher(frame: &mut Frame, switcher: &PinSwitcher, theme: &Theme,
                     Style::default().fg(theme.marker),
                 ),
                 Span::styled(label, Style::default().fg(theme.branch_badge)),
-                Span::styled(row.name.clone(), Style::default().fg(name_color)),
+                Span::styled(
+                    row.name.clone(),
+                    flashed(
+                        Style::default().fg(name_color),
+                        app.flashes_branch(&row.name),
+                    ),
+                ),
             ];
             if row.is_head {
                 spans.push(Span::styled("  (here)", Style::default().fg(theme.meta)));
             }
             Line::from(spans)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_copy_chooser(frame: &mut Frame, picker: &CopyChooser, theme: &Theme, area: Rect) {
+    let width = 48u16.min(area.width);
+    let height = (picker.names.len() as u16 + 2).clamp(3, area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.panel_border))
+        .title(" Copy branch   [1-9/Enter] copy · [Y/Esc] close ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let lines: Vec<Line> = picker
+        .names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let selected = picker.selected == index;
+            let label = if index < 9 {
+                format!("{} ", index + 1)
+            } else {
+                "  ".to_string()
+            };
+            let name_color = if selected { theme.node } else { theme.summary };
+            Line::from(vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(theme.marker),
+                ),
+                Span::styled(label, Style::default().fg(theme.branch_badge)),
+                Span::styled(name.clone(), Style::default().fg(name_color)),
+            ])
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -2743,6 +2803,14 @@ fn render_confirm(frame: &mut Frame, confirm: &Confirm, theme: &Theme, area: Rec
         .border_style(Style::default().fg(theme.warn))
         .title(" Confirm ");
     frame.render_widget(Paragraph::new(confirm.message.clone()).block(block), rect);
+}
+
+fn flashed(style: Style, flashing: bool) -> Style {
+    if flashing {
+        style.add_modifier(Modifier::REVERSED)
+    } else {
+        style
+    }
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {

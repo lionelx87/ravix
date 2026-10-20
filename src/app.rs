@@ -10,10 +10,11 @@ use crate::askpass::{
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
 use crate::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
+use crate::copy;
 use crate::drag::{DropIntent, RowRef, resolve_drop};
 use crate::focus::{self, FocusSet};
 use crate::git::{
-    BadgeKind, CONFLICTED, CommitInfo, FileChange, FileStamp, Repo, RepoMeta, RepoStamp,
+    BadgeKind, CONFLICTED, CommitInfo, FileChange, FileStamp, RefBadge, Repo, RepoMeta, RepoStamp,
     StageState, WorkingFile, WorkingStatus,
 };
 use crate::graph::{GraphCommit, GraphLayout, GraphRow};
@@ -41,6 +42,7 @@ const SCROLL_STEP: isize = 3;
 const PANEL_ANIMATION: Duration = Duration::from_millis(160);
 const NAV_TRANSITION: Duration = Duration::from_millis(220);
 const CELEBRATION_DURATION: Duration = Duration::from_millis(350);
+const COPY_FLASH_DURATION: Duration = Duration::from_millis(300);
 const PEEK_DEBOUNCE: f32 = 0.08;
 const DEFAULT_PAGE: usize = 10;
 const STATUS_RETRIES: u8 = 3;
@@ -112,6 +114,8 @@ pub enum Action {
     Review(ReviewAction),
     PinSwitcherSubmit,
     PinSwitcherPick(usize),
+    CopyChooserSubmit,
+    CopyChooserPick(usize),
     PinBranch,
     StartBranchFilter,
     StartStashFilter,
@@ -144,6 +148,8 @@ pub enum Action {
     PasswordBackspace,
     PasswordSubmit,
     CycleCelebrations,
+    CopyHash,
+    CopyBranch,
     Undo,
     Reload,
     Tick(Duration),
@@ -162,7 +168,6 @@ pub enum ReviewAction {
     FilterBackspace,
     FilterSubmit,
     ToggleFileFilter,
-    CopyHash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +191,7 @@ pub enum InputContext {
     Stash,
     Palette,
     PinSwitcher,
+    CopyChooser,
     Password,
     BranchReview,
     ReviewBase,
@@ -456,6 +462,55 @@ impl PinSwitcher {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Copied {
+    Hash(String),
+    Branch(String),
+}
+
+impl Copied {
+    fn text(&self) -> &str {
+        match self {
+            Copied::Hash(text) | Copied::Branch(text) => text,
+        }
+    }
+
+    pub fn hash(&self) -> Option<&str> {
+        match self {
+            Copied::Hash(short) => Some(short),
+            Copied::Branch(_) => None,
+        }
+    }
+
+    pub fn branch(&self) -> Option<&str> {
+        match self {
+            Copied::Branch(name) => Some(name),
+            Copied::Hash(_) => None,
+        }
+    }
+}
+
+struct CopyFlash {
+    copied: Copied,
+    progress: f32,
+}
+
+pub struct CopyChooser {
+    pub names: Vec<String>,
+    pub selected: usize,
+}
+
+impl CopyChooser {
+    fn move_selection(&mut self, delta: isize) {
+        let last = self.names.len().saturating_sub(1) as isize;
+        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+    }
+
+    fn numbered(&self, number: usize) -> Option<&String> {
+        self.names.get(number.checked_sub(1)?)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct GraphDims {
     pub rail: usize,
@@ -516,12 +571,14 @@ pub struct App {
     confirm: Option<Confirm>,
     alert: Option<String>,
     celebration: Option<Celebration>,
+    copy_flash: Option<CopyFlash>,
     intensity: Intensity,
     last_action: Option<UndoableAction>,
     notice: Option<Notice>,
     panel: Option<Panel>,
     palette: Option<Palette>,
     pin_switcher: Option<PinSwitcher>,
+    copy_chooser: Option<CopyChooser>,
     review: Option<BranchReview>,
     base_picker: Option<BasePicker>,
     help_visible: bool,
@@ -609,12 +666,14 @@ impl App {
             confirm: None,
             alert: None,
             celebration: None,
+            copy_flash: None,
             intensity: Intensity::Full,
             last_action: None,
             notice: None,
             panel: None,
             palette: None,
             pin_switcher: None,
+            copy_chooser: None,
             review: None,
             base_picker: None,
             help_visible: false,
@@ -849,6 +908,10 @@ impl App {
         self.pin_switcher.as_ref()
     }
 
+    pub fn copy_chooser(&self) -> Option<&CopyChooser> {
+        self.copy_chooser.as_ref()
+    }
+
     pub fn branch_review(&self) -> Option<&BranchReview> {
         self.review.as_ref()
     }
@@ -889,6 +952,22 @@ impl App {
 
     pub fn alert(&self) -> Option<&str> {
         self.alert.as_deref()
+    }
+
+    pub fn flashed_hash(&self) -> Option<&str> {
+        self.copy_flash.as_ref()?.copied.hash()
+    }
+
+    pub fn flashed_branch(&self) -> Option<&str> {
+        self.copy_flash.as_ref()?.copied.branch()
+    }
+
+    pub fn flashes_hash(&self, short: &str) -> bool {
+        self.flashed_hash() == Some(short)
+    }
+
+    pub fn flashes_branch(&self, name: &str) -> bool {
+        self.flashed_branch() == Some(name)
     }
 
     pub fn celebration(&self) -> Option<&Celebration> {
@@ -967,6 +1046,8 @@ impl App {
             InputContext::Palette
         } else if self.pin_switcher.is_some() {
             InputContext::PinSwitcher
+        } else if self.copy_chooser.is_some() {
+            InputContext::CopyChooser
         } else if self.stash_message.is_some() {
             InputContext::StashMessage
         } else if self.commit.is_some() {
@@ -1030,6 +1111,7 @@ impl App {
             || slide::is_animating(&self.focus_panel)
             || slide::is_animating(&self.submodule_panel)
             || self.celebration.is_some()
+            || self.copy_flash.is_some()
             || self.remote.is_some()
             || self.nav_transition.is_some()
             || self.peek_debounce.is_some()
@@ -1090,6 +1172,8 @@ impl App {
             Action::OpenPanel => self.open_or_expand(),
             Action::Dismiss => self.dismiss(),
             Action::ToggleHelp => self.help_visible = !self.help_visible,
+            Action::CopyHash => self.copy_graph_hash(),
+            Action::CopyBranch => self.copy_branch(),
             Action::ToggleStage => self.toggle_stage(),
             Action::StageAll => self.stage_all(),
             Action::Discard => self.request_discard(),
@@ -1154,6 +1238,12 @@ impl App {
             review @ Action::Review(_) => self.update_review(review),
             Action::PinSwitcherSubmit => self.pin_switcher_submit(),
             Action::PinSwitcherPick(number) => self.pin_switcher_pick(number),
+            Action::CopyChooserSubmit => {
+                self.copy_chooser_copy(|picker| picker.names.get(picker.selected))
+            }
+            Action::CopyChooserPick(number) => {
+                self.copy_chooser_copy(|picker| picker.numbered(number))
+            }
             Action::PinBranch => self.pin_branch(),
             Action::StartBranchFilter => self.start_branch_filter(),
             Action::StartStashFilter => self.start_stash_filter(),
@@ -1205,6 +1295,10 @@ impl App {
         }
         if let Some(switcher) = &mut self.pin_switcher {
             switcher.move_selection(delta);
+            return;
+        }
+        if let Some(picker) = &mut self.copy_chooser {
+            picker.move_selection(delta);
             return;
         }
         if let Some(browser) = &mut self.conflict {
@@ -1264,6 +1358,10 @@ impl App {
         }
         if let Some(switcher) = &mut self.pin_switcher {
             switcher.move_selection(-delta);
+            return;
+        }
+        if let Some(picker) = &mut self.copy_chooser {
+            picker.move_selection(-delta);
             return;
         }
         if let Some(browser) = &mut self.conflict {
@@ -2323,6 +2421,8 @@ impl App {
             self.palette = None;
         } else if self.pin_switcher.is_some() {
             self.pin_switcher = None;
+        } else if self.copy_chooser.is_some() {
+            self.copy_chooser = None;
         } else if self.stash_message.is_some() {
             self.stash_message = None;
         } else if self.commit.is_some() {
@@ -2893,24 +2993,103 @@ impl App {
                 let branch = review.branch.clone();
                 self.ask_review_base(&branch);
             }
-            Action::Review(ReviewAction::CopyHash) => self.copy_selected_hash(),
+            Action::CopyHash => self.copy_review_hash(),
+            Action::CopyBranch => {
+                let branch = review.branch.clone();
+                self.copy(Copied::Branch(branch));
+            }
             Action::Review(ReviewAction::Toggle) => review.fold(),
             Action::Dismiss if !review.clear_filters(&self.repo) => review.fold(),
             _ => {}
         }
     }
 
-    fn copy_selected_hash(&mut self) {
-        let Some((hash, short)) = self
+    fn copy_review_hash(&mut self) {
+        let short = self
             .review
             .as_ref()
             .and_then(BranchReview::selected_commit)
-            .map(|commit| (commit.id.to_string(), commit.short_id.clone()))
-        else {
+            .map(|commit| commit.short_id.clone());
+        if let Some(short) = short {
+            self.copy(Copied::Hash(short));
+        }
+    }
+
+    fn copy_graph_hash(&mut self) {
+        let index = self
+            .panel
+            .as_ref()
+            .filter(|panel| panel.fullscreen)
+            .map_or(self.selected, |panel| panel.commit_index);
+        let short = self
+            .commits
+            .get(index)
+            .map(|commit| commit.short_id.clone());
+        if let Some(short) = short {
+            self.copy(Copied::Hash(short));
+        }
+    }
+
+    fn copy_branch(&mut self) {
+        let name = if let Some(switcher) = &self.pin_switcher {
+            switcher.chosen().map(|row| row.name.clone())
+        } else if self.branch.is_some() {
+            self.focused_branch_name()
+        } else {
+            return self.copy_graph_branch();
+        };
+        if let Some(name) = name {
+            self.copy(Copied::Branch(name));
+        }
+    }
+
+    fn copy_graph_branch(&mut self) {
+        let candidates = self.selected_branch_candidates();
+        match candidates.as_slice() {
+            [] => self.info("No branch on this commit"),
+            [only] => self.copy(Copied::Branch(only.clone())),
+            _ => {
+                self.copy_chooser = Some(CopyChooser {
+                    names: candidates,
+                    selected: 0,
+                })
+            }
+        }
+    }
+
+    fn copy_chooser_copy(&mut self, pick: impl Fn(&CopyChooser) -> Option<&String>) {
+        let Some(name) = self.copy_chooser.as_ref().and_then(pick).cloned() else {
             return;
         };
-        self.clipboard = Some(hash);
-        self.info(format!("Copied {short} to the clipboard"));
+        self.copy_chooser = None;
+        self.copy(Copied::Branch(name));
+    }
+
+    fn selected_branch_candidates(&self) -> Vec<String> {
+        let Some(commit) = self.selected_commit() else {
+            return Vec::new();
+        };
+        let head_branch = self.meta.head_branch.as_deref();
+        let visible: Vec<RefBadge> = self
+            .meta
+            .badges
+            .get(&commit.id)
+            .into_iter()
+            .flatten()
+            .filter(|badge| self.visibility.shows_badge(badge, head_branch))
+            .cloned()
+            .collect();
+        copy::branch_candidates(&visible)
+    }
+
+    fn copy(&mut self, copied: Copied) {
+        let text = copied.text().to_string();
+        self.info(format!("Copied {text} to the clipboard"));
+        self.clipboard = Some(text);
+        self.copy_flash = Some(CopyFlash {
+            copied,
+            progress: 1.0,
+        });
     }
 
     fn ask_review_base(&mut self, branch: &str) {
@@ -4320,6 +4499,12 @@ impl App {
             celebration.progress -= dt.as_secs_f32() / CELEBRATION_DURATION.as_secs_f32();
             if celebration.progress <= 0.0 {
                 self.celebration = None;
+            }
+        }
+        if let Some(flash) = &mut self.copy_flash {
+            flash.progress -= dt.as_secs_f32() / COPY_FLASH_DURATION.as_secs_f32();
+            if flash.progress <= 0.0 {
+                self.copy_flash = None;
             }
         }
         if let Some(job) = &mut self.remote {

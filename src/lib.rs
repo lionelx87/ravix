@@ -4,6 +4,7 @@ pub mod branches;
 pub mod celebrate;
 pub mod clipboard;
 pub mod conflict;
+pub mod copy;
 pub mod drag;
 pub mod enrich;
 pub mod event;

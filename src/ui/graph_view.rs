@@ -11,9 +11,8 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::{App, GraphDims};
 use crate::git::{BadgeKind, RefBadge};
 use crate::graph::GraphRow;
-use crate::visibility::Visibility;
 
-use super::{SELECTION_MARKER, Theme, lane_color, relative_time, sparkle_burst};
+use super::{SELECTION_MARKER, Theme, flashed, lane_color, relative_time, sparkle_burst};
 
 const ZEBRA_BG: Color = Color::Rgb(26, 30, 40);
 const EXPANDED_REFS_BG: Color = Color::Rgb(36, 44, 58);
@@ -133,6 +132,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             rail_width,
             is_head,
             celebration.is_some(),
+            app.flashed_branch(),
             theme,
         ));
         spans.push(Span::styled(RAIL_SEPARATOR, Style::default().fg(RAIL_RULE)));
@@ -162,7 +162,10 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
         spans.push(Span::raw(" ".repeat(COLUMN_GAP)));
         spans.push(Span::styled(
             clip_pad(&commit.short_id, SHA_WIDTH),
-            Style::default().fg(theme.short_id),
+            flashed(
+                Style::default().fg(theme.short_id),
+                app.flashes_hash(&commit.short_id),
+            ),
         ));
 
         buffer.set_line(area.x, y, &Line::from(spans), area.width);
@@ -209,7 +212,14 @@ fn render_expanded_refs(
         let pad = rail_width.saturating_sub(display_width(&pill));
         let spans = vec![
             Span::raw(" ".repeat(pad)),
-            Span::styled(pill, theme.badge_style(reference.kind)),
+            Span::styled(
+                pill,
+                flashed(
+                    theme.badge_style(reference.kind),
+                    app.flashed_branch()
+                        .is_some_and(|branch| reference.names(branch)),
+                ),
+            ),
         ];
         buffer.set_line(area.x, y, &Line::from(spans), rail_width as u16);
     }
@@ -236,24 +246,10 @@ fn rail_refs(app: &App, oid: &Oid) -> Vec<MergedRef> {
     let head_branch = app.meta().head_branch.as_deref();
     let visible: Vec<RefBadge> = list
         .iter()
-        .filter(|badge| badge_is_visible(badge, visibility, head_branch))
+        .filter(|badge| visibility.shows_badge(badge, head_branch))
         .cloned()
         .collect();
     merged_refs(&visible)
-}
-
-fn badge_is_visible(badge: &RefBadge, visibility: &Visibility, head_branch: Option<&str>) -> bool {
-    match badge.kind {
-        BadgeKind::Head | BadgeKind::CurrentBranch => true,
-        BadgeKind::LocalBranch => visibility.is_visible(&badge.label, false),
-        BadgeKind::Upstream => {
-            let local = badge
-                .label
-                .split_once('/')
-                .map_or(badge.label.as_str(), |(_, rest)| rest);
-            visibility.is_visible(local, head_branch == Some(local))
-        }
-    }
 }
 
 fn graph_width(rows: &[GraphRow<Oid>]) -> usize {
@@ -283,6 +279,7 @@ fn rail_cell(
     rail_width: usize,
     is_head: bool,
     celebrating: bool,
+    flashed_branch: Option<&str>,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let Some(reference) = refs.first() else {
@@ -312,6 +309,10 @@ fn rail_cell(
     if is_head && celebrating {
         pill_style = pill_style.add_modifier(Modifier::REVERSED);
     }
+    let pill_style = flashed(
+        pill_style,
+        flashed_branch.is_some_and(|branch| reference.names(branch)),
+    );
 
     let mut spans = vec![Span::raw(" ".repeat(pad)), Span::styled(pill, pill_style)];
     if !extra.is_empty() {
@@ -385,7 +386,17 @@ struct MergedRef {
     label: String,
     kind: BadgeKind,
     local: bool,
-    remote: bool,
+    upstream: Option<String>,
+}
+
+impl MergedRef {
+    fn is_remote(&self) -> bool {
+        self.upstream.is_some()
+    }
+
+    fn names(&self, branch: &str) -> bool {
+        self.label == branch || self.upstream.as_deref() == Some(branch)
+    }
 }
 
 fn merged_refs(list: &[RefBadge]) -> Vec<MergedRef> {
@@ -403,7 +414,7 @@ fn merged_refs(list: &[RefBadge]) -> Vec<MergedRef> {
             label: head.label.clone(),
             kind: BadgeKind::Head,
             local: false,
-            remote: false,
+            upstream: None,
         });
     }
     let mut branches: Vec<&RefBadge> = list
@@ -420,22 +431,20 @@ fn merged_refs(list: &[RefBadge]) -> Vec<MergedRef> {
         let paired = upstreams
             .iter()
             .position(|upstream| upstream.ends_with(&format!("/{}", badge.label)));
-        if let Some(index) = paired {
-            upstreams.remove(index);
-        }
+        let upstream = paired.map(|index| upstreams.remove(index));
         merged.push(MergedRef {
             label: badge.label.clone(),
             kind: badge.kind,
             local: true,
-            remote: paired.is_some(),
+            upstream,
         });
     }
     for label in upstreams {
         merged.push(MergedRef {
+            upstream: Some(label.clone()),
             label,
             kind: BadgeKind::Upstream,
             local: false,
-            remote: true,
         });
     }
     merged
@@ -458,10 +467,10 @@ fn pill_text_with(label: &str, reference: &MergedRef) -> String {
     if reference.local {
         text.push(LOCAL_ICON);
     }
-    if reference.local && reference.remote {
+    if reference.local && reference.is_remote() {
         text.push(' ');
     }
-    if reference.remote {
+    if reference.is_remote() {
         text.push(REMOTE_ICON);
     }
     text.push(' ');
@@ -526,7 +535,7 @@ mod tests {
             badge("origin/main", BadgeKind::Upstream),
         ]);
         assert_eq!(refs.len(), 1);
-        assert!(refs[0].local && refs[0].remote);
+        assert!(refs[0].local && refs[0].is_remote());
         assert_eq!(refs[0].label, "main");
     }
 
@@ -537,8 +546,8 @@ mod tests {
             badge("origin/feature", BadgeKind::Upstream),
         ]);
         assert_eq!(refs.len(), 2);
-        assert!(refs[0].local && !refs[0].remote);
-        assert!(!refs[1].local && refs[1].remote);
+        assert!(refs[0].local && !refs[0].is_remote());
+        assert!(!refs[1].local && refs[1].is_remote());
         assert_eq!(refs[1].label, "origin/feature");
     }
 
@@ -564,7 +573,7 @@ mod tests {
 
     #[test]
     fn hidden_branch_badges_are_filtered_along_with_their_upstreams() {
-        let mut visibility = Visibility::default();
+        let mut visibility = crate::visibility::Visibility::default();
         visibility.toggle("stale");
 
         let hidden_local = badge("stale", BadgeKind::LocalBranch);
@@ -572,18 +581,10 @@ mod tests {
         let current = badge("main", BadgeKind::CurrentBranch);
         let current_upstream = badge("origin/main", BadgeKind::Upstream);
 
-        assert!(!badge_is_visible(&hidden_local, &visibility, Some("main")));
-        assert!(!badge_is_visible(
-            &hidden_upstream,
-            &visibility,
-            Some("main")
-        ));
-        assert!(badge_is_visible(&current, &visibility, Some("main")));
-        assert!(badge_is_visible(
-            &current_upstream,
-            &visibility,
-            Some("main")
-        ));
+        assert!(!visibility.shows_badge(&hidden_local, Some("main")));
+        assert!(!visibility.shows_badge(&hidden_upstream, Some("main")));
+        assert!(visibility.shows_badge(&current, Some("main")));
+        assert!(visibility.shows_badge(&current_upstream, Some("main")));
     }
 
     #[test]

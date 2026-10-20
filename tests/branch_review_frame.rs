@@ -662,13 +662,13 @@ fn slash_filters_the_commits_by_message() {
 }
 
 #[test]
-fn y_hands_the_full_hash_to_the_clipboard() {
+fn y_hands_the_short_hash_to_the_clipboard() {
     let dir = TempDir::new().unwrap();
     review_repo(dir.path());
     let mut app = App::open(dir.path()).unwrap();
     let mut input = InputMap::default();
     open_review_from_panel(&mut app, &mut input, 1);
-    let tip = git(dir.path(), &["rev-parse", "feature/x"])
+    let tip = git(dir.path(), &["rev-parse", "--short", "feature/x"])
         .trim()
         .to_string();
 
@@ -677,11 +677,11 @@ fn y_hands_the_full_hash_to_the_clipboard() {
     assert_eq!(app.take_clipboard().as_deref(), Some(tip.as_str()));
     let view = screen(&mut app);
     assert!(
-        view.contains("y copy hash"),
+        view.contains("y/Y copy"),
         "the key bar stays after copying:\n{view}"
     );
     assert!(
-        view.contains(&format!("Copied {}", &tip[..7])),
+        view.contains(&format!("Copied {tip}")),
         "a notice confirms the copy:\n{view}"
     );
 }
@@ -761,14 +761,14 @@ fn the_mode_has_its_own_help_page() {
         "the help names the mode:\n{help}"
     );
     assert!(
-        help.contains("copy the commit hash"),
+        help.contains("copy the commit's short hash"),
         "and lists its keys:\n{help}"
     );
 
     press(&mut app, &mut input, KeyCode::Esc);
     let view = screen(&mut app);
     assert!(
-        view.contains("BRANCH REVIEW") && !view.contains("copy the commit hash"),
+        view.contains("BRANCH REVIEW") && !view.contains("copy the commit's short hash"),
         "Esc closes the help, not the mode:\n{view}"
     );
 }

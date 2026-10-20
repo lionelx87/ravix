@@ -77,6 +77,7 @@ fn every_panel_help_key_is_actually_bound_by_its_handler() {
         InputContext::Conflict,
         InputContext::CommitDiff,
         InputContext::PinSwitcher,
+        InputContext::CopyChooser,
     ];
     for context in contexts {
         for (keys, description) in context_help(context).bindings {
@@ -94,4 +95,36 @@ fn every_panel_help_key_is_actually_bound_by_its_handler() {
             }
         }
     }
+}
+
+fn lists_key(page: &HelpPage, key: &str) -> bool {
+    page.bindings
+        .iter()
+        .any(|(keys, _)| keys.split(" / ").any(|token| token.trim() == key))
+}
+
+#[test]
+fn every_context_that_copies_lists_its_copy_keys() {
+    for context in [
+        InputContext::Graph,
+        InputContext::CommitDiff,
+        InputContext::BranchReview,
+    ] {
+        assert!(
+            lists_key(&context_help(context), "y"),
+            "{context:?} help lists y"
+        );
+    }
+    for context in [
+        InputContext::Graph,
+        InputContext::Branch,
+        InputContext::PinSwitcher,
+        InputContext::BranchReview,
+    ] {
+        assert!(
+            lists_key(&context_help(context), "Y"),
+            "{context:?} help lists Y"
+        );
+    }
+    assert_eq!(context_help(InputContext::CopyChooser).title, "Copy branch");
 }

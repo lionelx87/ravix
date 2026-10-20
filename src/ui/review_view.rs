@@ -10,7 +10,7 @@ use crate::review::{BasePicker, BranchReview, Listed, ReviewFocus};
 use crate::app::App;
 
 use super::{
-    SELECTION_MARKER, Theme, centered, ease_out_cubic, relative_time, render_diff_pane,
+    SELECTION_MARKER, Theme, centered, ease_out_cubic, flashed, relative_time, render_diff_pane,
     right_aligned, scroll_into_view, spinner_frame, stats_spans,
 };
 
@@ -26,13 +26,18 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     let notice = app
         .notice()
         .map(|text| notice_span(text, app.notice_is_error(), theme));
+    let flashed_hash = app.flashed_hash().map(str::to_string);
+    let flashed_branch = app.flashed_branch().map(str::to_string);
     let Some(review) = app.branch_review_mut() else {
         return;
     };
     let area = unfolded(area, review.unfold);
     frame.render_widget(Clear, area);
     if area.height < 3 {
-        frame.render_widget(Paragraph::new(band_line(review, theme)), area);
+        frame.render_widget(
+            Paragraph::new(band_line(review, flashed_branch.as_deref(), theme)),
+            area,
+        );
         return;
     }
     let rows = Layout::vertical([
@@ -47,7 +52,10 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
         rows[2].width as usize,
     );
     frame.render_widget(Paragraph::new(Line::from(footer)), rows[2]);
-    frame.render_widget(Paragraph::new(band_line(review, theme)), rows[0]);
+    frame.render_widget(
+        Paragraph::new(band_line(review, flashed_branch.as_deref(), theme)),
+        rows[0],
+    );
     let columns =
         Layout::horizontal([Constraint::Length(LIST_WIDTH), Constraint::Min(0)]).split(rows[1]);
     let file_rows = (review.files().len() as u16 + 2)
@@ -62,9 +70,13 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
         .listed()
         .into_iter()
         .map(|line| match line {
-            Listed::Commit(commit) => {
-                commit_line(commit, review.selected == Some(commit.id), theme, now)
-            }
+            Listed::Commit(commit) => commit_line(
+                commit,
+                review.selected == Some(commit.id),
+                flashed_hash.as_deref() == Some(commit.short_id.as_str()),
+                theme,
+                now,
+            ),
             Listed::Merge(commit) => merge_line(&commit.summary, theme),
             Listed::Merges(count) => merge_line(&format!("{count} merges"), theme),
         })
@@ -196,8 +208,9 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     );
 }
 
-fn band_line(review: &BranchReview, theme: &Theme) -> Line<'static> {
+fn band_line(review: &BranchReview, flashed_branch: Option<&str>, theme: &Theme) -> Line<'static> {
     let provenance = if review.base_chosen { "chosen" } else { "auto" };
+    let title = Style::default().fg(theme.node).add_modifier(Modifier::BOLD);
     Line::from(vec![
         Span::styled(
             " BRANCH REVIEW ",
@@ -206,15 +219,23 @@ fn band_line(review: &BranchReview, theme: &Theme) -> Line<'static> {
                 .bg(ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(" ", title),
         Span::styled(
-            format!(" {} vs {} ({provenance}) ", review.branch, review.base),
-            Style::default().fg(theme.node).add_modifier(Modifier::BOLD),
+            review.branch.clone(),
+            flashed(title, flashed_branch == Some(review.branch.as_str())),
         ),
+        Span::styled(format!(" vs {} ({provenance}) ", review.base), title),
         summary_span(review, theme),
     ])
 }
 
-fn commit_line(commit: &CommitInfo, selected: bool, theme: &Theme, now: i64) -> Line<'static> {
+fn commit_line(
+    commit: &CommitInfo,
+    selected: bool,
+    flashing: bool,
+    theme: &Theme,
+    now: i64,
+) -> Line<'static> {
     let marker = if selected { SELECTION_MARKER } else { "  " };
     let summary_style = if selected {
         Style::default().fg(theme.node).add_modifier(Modifier::BOLD)
@@ -224,9 +245,10 @@ fn commit_line(commit: &CommitInfo, selected: bool, theme: &Theme, now: i64) -> 
     Line::from(vec![
         Span::styled(marker, Style::default().fg(ACCENT)),
         Span::styled(
-            format!("{} ", commit.short_id),
-            Style::default().fg(theme.short_id),
+            commit.short_id.clone(),
+            flashed(Style::default().fg(theme.short_id), flashing),
         ),
+        Span::raw(" "),
         Span::styled(
             format!("{:>4} ", relative_time(now, commit.time)),
             Style::default().fg(theme.meta),
@@ -322,7 +344,7 @@ const KEYS: &[(&str, &str)] = &[
     ("v", "side-by-side"),
     ("b", "base"),
     ("/", "filter"),
-    ("y", "copy hash"),
+    ("y/Y", "copy"),
     ("?", "help"),
     ("Esc", "back"),
 ];

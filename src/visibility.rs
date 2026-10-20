@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use crate::git::{BadgeKind, RefBadge};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibilitySnapshot {
     pub hidden: Vec<String>,
@@ -12,6 +14,20 @@ pub struct Visibility {
 }
 
 impl Visibility {
+    pub fn shows_badge(&self, badge: &RefBadge, head_branch: Option<&str>) -> bool {
+        match badge.kind {
+            BadgeKind::Head | BadgeKind::CurrentBranch => true,
+            BadgeKind::LocalBranch => self.is_visible(&badge.label, false),
+            BadgeKind::Upstream => {
+                let local = badge
+                    .label
+                    .split_once('/')
+                    .map_or(badge.label.as_str(), |(_, rest)| rest);
+                self.is_visible(local, head_branch == Some(local))
+            }
+        }
+    }
+
     pub fn toggle(&mut self, name: &str) {
         if !self.hidden.remove(name) {
             self.hidden.insert(name.to_string());
