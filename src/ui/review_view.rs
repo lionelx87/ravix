@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::git::CommitInfo;
-use crate::review::{BasePicker, BranchReview, ReviewFocus, ReviewRow};
+use crate::review::{BasePicker, BranchReview, Listed, ReviewFocus};
 
 use crate::app::App;
 
@@ -59,13 +59,14 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     let title = commits_title(review);
     let commits_block = zone_block(title, review.focus == ReviewFocus::Commits, theme);
     let mut lines: Vec<Line> = review
-        .visible_rows()
+        .listed()
         .into_iter()
-        .map(|row| match row {
-            ReviewRow::Commit(commit) => {
+        .map(|line| match line {
+            Listed::Commit(commit) => {
                 commit_line(commit, review.selected == Some(commit.id), theme, now)
             }
-            ReviewRow::Merge(commit) => merge_line(commit, theme),
+            Listed::Merge(commit) => merge_line(&commit.summary, theme),
+            Listed::Merges(count) => merge_line(&format!("{count} merges"), theme),
         })
         .collect();
     if review.rows.is_empty() {
@@ -74,7 +75,19 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             Style::default().fg(theme.meta),
         )));
     }
-    frame.render_widget(Paragraph::new(lines).block(commits_block), left[0]);
+    let list_height = left[0].height.saturating_sub(2) as usize;
+    review.commits_scroll = scroll_into_view(
+        review.commits_scroll,
+        review.selected_row().unwrap_or(0),
+        list_height,
+        lines.len(),
+    );
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(commits_block)
+            .scroll((review.commits_scroll, 0)),
+        left[0],
+    );
 
     let files_block = zone_block(
         format!(" Files {} · ↵ filter ", review.files().len()),
@@ -226,9 +239,9 @@ fn commit_line(commit: &CommitInfo, selected: bool, theme: &Theme, now: i64) -> 
     ])
 }
 
-fn merge_line(commit: &CommitInfo, theme: &Theme) -> Line<'static> {
+fn merge_line(label: &str, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
-        format!("  {MERGE_RULE} {} {MERGE_RULE}", commit.summary),
+        format!("  {MERGE_RULE} {label} {MERGE_RULE}"),
         Style::default().fg(theme.meta).add_modifier(Modifier::DIM),
     ))
 }

@@ -511,6 +511,45 @@ fn a_huge_commit_shows_a_capped_diff_with_what_was_left_out() {
     );
 }
 
+#[test]
+fn the_selected_commit_stays_in_view_below_a_long_run_of_merges() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    commit_on(dir.path(), "README", "Root");
+    git(dir.path(), &["checkout", "-qb", "feature/x"]);
+    commit_on(dir.path(), "x.rs", "x one");
+    for side in 0..30 {
+        let name = format!("side/{side}");
+        git(dir.path(), &["checkout", "-qb", &name, "main"]);
+        commit_on(
+            dir.path(),
+            &format!("side{side}.rs"),
+            &format!("side {side}"),
+        );
+        git(dir.path(), &["checkout", "-q", "feature/x"]);
+        git(dir.path(), &["merge", "-q", "--no-ff", "--no-edit", &name]);
+    }
+    git(dir.path(), &["checkout", "-q", "main"]);
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_review_from_panel(&mut app, &mut input, 1);
+
+    let view = screen(&mut app);
+    assert!(
+        view.contains("feature/x vs main (auto)"),
+        "the review is on feature/x:\n{view}"
+    );
+    assert!(
+        view.contains("❯ ") && view.contains("x one"),
+        "the list scrolls to the selected own commit:\n{view}"
+    );
+    assert!(
+        view.contains("┈┈ 30 merges ┈┈") && !view.contains("Merge branch 'side/"),
+        "a run of merges collapses into one counted marker:\n{view}"
+    );
+}
+
 fn type_text(app: &mut App, input: &mut InputMap, text: &str) {
     for character in text.chars() {
         press(app, input, KeyCode::Char(character));

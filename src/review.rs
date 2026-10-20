@@ -174,6 +174,12 @@ pub enum Refresh {
     NoBase,
 }
 
+pub enum Listed<'a> {
+    Commit(&'a CommitInfo),
+    Merge(&'a CommitInfo),
+    Merges(usize),
+}
+
 pub struct BranchReview {
     pub branch: String,
     pub base: String,
@@ -190,6 +196,7 @@ pub struct BranchReview {
     diff_key: Option<(Oid, Option<String>)>,
     pub split: bool,
     pub diff_scroll: u16,
+    pub commits_scroll: u16,
     pub diff_hscroll: u16,
     pub stats: Vec<CommitStats<Oid>>,
     pub summary: Option<ReviewSummary>,
@@ -218,6 +225,7 @@ impl BranchReview {
             diff_key: None,
             split: false,
             diff_scroll: 0,
+            commits_scroll: 0,
             diff_hscroll: 0,
             stats: Vec::new(),
             summary: None,
@@ -456,6 +464,25 @@ impl BranchReview {
         self.query = None;
         self.query_editing = false;
         self.reselect(repo);
+    }
+
+    pub fn listed(&self) -> Vec<Listed<'_>> {
+        let mut listed: Vec<Listed> = Vec::new();
+        for row in self.visible_rows() {
+            match (row, listed.last_mut()) {
+                (ReviewRow::Commit(commit), _) => listed.push(Listed::Commit(commit)),
+                (ReviewRow::Merge(_), Some(last @ Listed::Merge(_))) => *last = Listed::Merges(2),
+                (ReviewRow::Merge(_), Some(Listed::Merges(count))) => *count += 1,
+                (ReviewRow::Merge(commit), _) => listed.push(Listed::Merge(commit)),
+            }
+        }
+        listed
+    }
+
+    pub fn selected_row(&self) -> Option<usize> {
+        self.listed().iter().position(
+            |line| matches!(line, Listed::Commit(commit) if Some(commit.id) == self.selected),
+        )
     }
 
     pub fn is_filtered(&self) -> bool {
