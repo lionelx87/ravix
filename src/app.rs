@@ -7,7 +7,9 @@ use git2::Oid;
 use crate::askpass::{
     AskpassConfig, AskpassRequest, AskpassServer, CredentialCache, PromptKind, parse_askpass_prompt,
 };
-use crate::bench::{BenchDraft, BenchEnd, BenchPicker, CherryPickBench, source_candidates};
+use crate::bench::{
+    BenchDraft, BenchEnd, BenchPicker, BenchRequest, CherryPickBench, source_candidates,
+};
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
 use crate::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
@@ -1181,17 +1183,12 @@ impl App {
     }
 
     pub fn update(&mut self, action: Action) {
-        if self.in_bench_context() && !passes_through_review(&action) {
+        let in_bench = self.in_bench_context();
+        if (in_bench || self.in_review_context()) && !passes_through_mode(&action) {
             if self.help_visible {
                 self.help_visible = action != Action::Dismiss;
-            } else {
+            } else if in_bench {
                 self.update_bench(action);
-            }
-            return;
-        }
-        if self.in_review_context() && !passes_through_review(&action) {
-            if self.help_visible {
-                self.help_visible = action != Action::Dismiss;
             } else {
                 self.update_review(action);
             }
@@ -3299,9 +3296,7 @@ impl App {
                     ..draft
                 },
             ),
-            _ => {
-                self.bench_picker = Some(BenchPicker::opening(BenchEnd::Source, candidates, draft))
-            }
+            _ => self.open_bench_picker(BenchEnd::Source, candidates, draft),
         }
     }
 
@@ -3350,7 +3345,11 @@ impl App {
     fn ask_bench_end(&mut self, end: BenchEnd, draft: BenchDraft) {
         let excluded = draft.source.as_deref();
         let names = self.bench_branch_names(end == BenchEnd::Destination, excluded);
-        self.bench_picker = Some(BenchPicker::opening(end, names, draft));
+        self.open_bench_picker(end, names, draft);
+    }
+
+    fn open_bench_picker(&mut self, end: BenchEnd, names: Vec<String>, draft: BenchDraft) {
+        self.bench_picker = Some(BenchPicker::opening(BenchRequest { end, draft }, names));
     }
 
     fn bench_branch_names(&self, local_only: bool, excluded: Option<&str>) -> Vec<String> {
@@ -3386,8 +3385,8 @@ impl App {
         let Some(chosen) = picker.chosen().map(str::to_string) else {
             return;
         };
-        let mut draft = picker.draft;
-        match picker.end {
+        let BenchRequest { end, mut draft } = picker.context;
+        match end {
             BenchEnd::Source => {
                 if draft.destination.as_deref() == Some(chosen.as_str()) {
                     draft.destination = None;
@@ -3557,8 +3556,9 @@ impl App {
             .load_branch_entries()
             .into_iter()
             .map(|entry| entry.name)
+            .filter(|name| name != branch)
             .collect();
-        self.base_picker = Some(BasePicker::opening(branch, names));
+        self.base_picker = Some(BasePicker::opening(branch.to_string(), names));
     }
 
     fn base_picker_submit(&mut self) {
@@ -3571,8 +3571,8 @@ impl App {
         match &mut self.review {
             Some(review) => review.change_base(&self.repo, &base),
             None => {
-                self.review =
-                    BranchReview::open(&self.repo, &picker.branch, &base).map(BranchReview::chosen);
+                self.review = BranchReview::open(&self.repo, &picker.context, &base)
+                    .map(BranchReview::chosen);
             }
         }
     }
@@ -5033,7 +5033,7 @@ fn graph_commits(commits: &[CommitInfo]) -> Vec<GraphCommit<Oid>> {
         .collect()
 }
 
-fn passes_through_review(action: &Action) -> bool {
+fn passes_through_mode(action: &Action) -> bool {
     matches!(
         action,
         Action::Tick(_) | Action::Reload | Action::Quit | Action::ToggleHelp

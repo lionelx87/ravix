@@ -7,6 +7,7 @@ use git2::Oid;
 
 use crate::git::{CommitInfo, Repo};
 use crate::mutate::GitCli;
+use crate::picker::BranchPicker;
 use crate::review::{ReviewRow, detect_base, own_commits};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,56 +589,9 @@ pub struct BenchDraft {
     pub pick: Option<Oid>,
 }
 
-pub struct BenchPicker {
+pub struct BenchRequest {
     pub end: BenchEnd,
-    pub query: String,
     pub draft: BenchDraft,
-    names: Vec<String>,
-    matches: Vec<usize>,
-    pub selected: usize,
 }
 
-impl BenchPicker {
-    pub fn opening(end: BenchEnd, names: Vec<String>, draft: BenchDraft) -> Self {
-        Self {
-            end,
-            query: String::new(),
-            draft,
-            matches: (0..names.len()).collect(),
-            names,
-            selected: 0,
-        }
-    }
-
-    pub fn input(&mut self, character: char) {
-        self.query.push(character);
-        self.refilter();
-    }
-
-    pub fn backspace(&mut self) {
-        self.query.pop();
-        self.refilter();
-    }
-
-    fn refilter(&mut self) {
-        let names: Vec<&str> = self.names.iter().map(String::as_str).collect();
-        self.matches = crate::palette::fuzzy_filter(&self.query, &names);
-        self.selected = 0;
-    }
-
-    pub fn move_selection(&mut self, delta: isize) {
-        self.selected = crate::slide::clamp_index(self.selected, delta, self.matches.len());
-    }
-
-    pub fn rows(&self) -> Vec<&str> {
-        self.matches
-            .iter()
-            .map(|&index| self.names[index].as_str())
-            .collect()
-    }
-
-    pub fn chosen(&self) -> Option<&str> {
-        let index = *self.matches.get(self.selected)?;
-        Some(self.names[index].as_str())
-    }
-}
+pub type BenchPicker = BranchPicker<BenchRequest>;

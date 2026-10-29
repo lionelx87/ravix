@@ -16,6 +16,7 @@ pub mod help;
 pub mod join;
 pub mod mutate;
 pub mod palette;
+pub mod picker;
 pub mod pins;
 pub mod rebase;
 pub mod remote;

@@ -7,6 +7,7 @@ use git2::Oid;
 
 use crate::git::{CommitInfo, LineStats, Repo};
 use crate::palette::fuzzy_filter;
+use crate::picker::BranchPicker;
 use crate::staging::{FileDiff, Hunk};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -693,55 +694,4 @@ fn capped(hunks: impl Iterator<Item = Hunk>, cap: usize) -> Vec<Hunk> {
     kept
 }
 
-pub struct BasePicker {
-    pub branch: String,
-    pub query: String,
-    names: Vec<String>,
-    matches: Vec<usize>,
-    pub selected: usize,
-}
-
-impl BasePicker {
-    pub fn opening(branch: &str, names: Vec<String>) -> Self {
-        let names: Vec<String> = names.into_iter().filter(|name| name != branch).collect();
-        Self {
-            branch: branch.to_string(),
-            query: String::new(),
-            matches: (0..names.len()).collect(),
-            names,
-            selected: 0,
-        }
-    }
-
-    pub fn input(&mut self, character: char) {
-        self.query.push(character);
-        self.refilter();
-    }
-
-    pub fn backspace(&mut self) {
-        self.query.pop();
-        self.refilter();
-    }
-
-    fn refilter(&mut self) {
-        let names: Vec<&str> = self.names.iter().map(String::as_str).collect();
-        self.matches = fuzzy_filter(&self.query, &names);
-        self.selected = 0;
-    }
-
-    pub fn move_selection(&mut self, delta: isize) {
-        self.selected = crate::slide::clamp_index(self.selected, delta, self.matches.len());
-    }
-
-    pub fn rows(&self) -> Vec<&str> {
-        self.matches
-            .iter()
-            .map(|&index| self.names[index].as_str())
-            .collect()
-    }
-
-    pub fn chosen(&self) -> Option<&str> {
-        let index = *self.matches.get(self.selected)?;
-        Some(self.names[index].as_str())
-    }
-}
+pub type BasePicker = BranchPicker<String>;

@@ -2,20 +2,20 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::git::CommitInfo;
 use crate::review::{BasePicker, BranchReview, Listed, ReviewFocus};
 
 use crate::app::App;
 
+use super::mode_chrome::{band_tag, keys_spans, notice_span, render_branch_picker, zone_block};
 use super::{
-    SELECTION_MARKER, Theme, centered, ease_out_cubic, flashed, relative_time, render_diff_pane,
+    SELECTION_MARKER, Theme, ease_out_cubic, flashed, relative_time, render_diff_pane,
     right_aligned, scroll_into_view, spinner_frame, stats_spans,
 };
 
 const ACCENT: Color = Color::Rgb(236, 128, 178);
-const BAND_FG: Color = Color::Rgb(20, 24, 32);
 const MERGE_RULE: &str = "┈┈";
 
 const LIST_WIDTH: u16 = 56;
@@ -25,7 +25,7 @@ const FILTER_MARKER: &str = "● ";
 pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, now: i64) {
     let notice = app
         .notice()
-        .map(|text| notice_span(text, app.notice_is_error(), theme));
+        .map(|text| notice_span(text, app.notice_is_error(), ACCENT, theme));
     let flashed_hash = app.flashed_hash().map(str::to_string);
     let flashed_branch = app.flashed_branch().map(str::to_string);
     let Some(review) = app.branch_review_mut() else {
@@ -47,7 +47,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     ])
     .split(area);
     let footer = right_aligned(
-        keys_spans(review.is_filtered(), theme),
+        keys_spans(&review_keys(review.is_filtered()), ACCENT, theme),
         notice.into_iter().collect(),
         rows[2].width as usize,
     );
@@ -65,7 +65,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
         Layout::vertical([Constraint::Min(0), Constraint::Length(file_rows)]).split(columns[0]);
 
     let title = commits_title(review);
-    let commits_block = zone_block(title, review.focus == ReviewFocus::Commits, theme);
+    let commits_block = zone_block(title, review.focus == ReviewFocus::Commits, ACCENT, theme);
     let mut lines: Vec<Line> = review
         .listed()
         .into_iter()
@@ -104,6 +104,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     let files_block = zone_block(
         format!(" Files {} · ↵ filter ", review.files().len()),
         review.focus == ReviewFocus::Files,
+        ACCENT,
         theme,
     );
     let mut file_lines: Vec<Line> = review
@@ -175,7 +176,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     frame.render_widget(
         Paragraph::new(message_lines)
             .wrap(Wrap { trim: false })
-            .block(zone_block(message_title, false, theme)),
+            .block(zone_block(message_title, false, ACCENT, theme)),
         right[0],
     );
 
@@ -188,6 +189,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             .block(zone_block(
                 " Diff ".to_string(),
                 review.focus == ReviewFocus::Diff,
+                ACCENT,
                 theme,
             )),
             right[1],
@@ -212,13 +214,7 @@ fn band_line(review: &BranchReview, flashed_branch: Option<&str>, theme: &Theme)
     let provenance = if review.base_chosen { "chosen" } else { "auto" };
     let title = Style::default().fg(theme.node).add_modifier(Modifier::BOLD);
     Line::from(vec![
-        Span::styled(
-            " BRANCH REVIEW ",
-            Style::default()
-                .fg(BAND_FG)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
+        band_tag("BRANCH REVIEW", ACCENT),
         Span::styled(" ", title),
         Span::styled(
             review.branch.clone(),
@@ -292,50 +288,23 @@ fn summary_span(review: &BranchReview, theme: &Theme) -> Span<'static> {
     )
 }
 
-fn zone_block(title: String, focused: bool, theme: &Theme) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused { ACCENT } else { theme.label }))
-        .title(title)
-}
-
 pub(super) fn render_base_picker(
     frame: &mut Frame,
     picker: &BasePicker,
     theme: &Theme,
     area: Rect,
 ) {
-    let width = area.width.clamp(20, 60);
-    let height = (picker.rows().len() as u16 + 3)
-        .clamp(5, 16)
-        .min(area.height);
-    let rect = centered(area, width, height);
-    frame.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(format!(" Review {} against… ", picker.branch));
-    let mut lines = vec![Line::from(vec![
-        Span::styled("base ", Style::default().fg(theme.label)),
-        Span::styled(
-            format!("{}▏", picker.query),
-            Style::default().fg(theme.node),
-        ),
-    ])];
-    lines.extend(picker.rows().into_iter().enumerate().map(|(index, name)| {
-        let selected = index == picker.selected;
-        Line::from(vec![
-            Span::styled(
-                if selected { SELECTION_MARKER } else { "  " },
-                Style::default().fg(ACCENT),
-            ),
-            Span::styled(
-                name.to_string(),
-                Style::default().fg(if selected { theme.node } else { theme.summary }),
-            ),
-        ])
-    }));
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    let title = format!(" Review {} against… ", picker.context);
+    render_branch_picker(frame, picker, title, "base", ACCENT, theme, area);
+}
+
+fn review_keys(filtered: bool) -> Vec<(&'static str, &'static str)> {
+    KEYS.iter()
+        .map(|&(key, label)| match key {
+            "Esc" if filtered => (key, "clear filter"),
+            _ => (key, label),
+        })
+        .collect()
 }
 
 const KEYS: &[(&str, &str)] = &[
@@ -348,31 +317,6 @@ const KEYS: &[(&str, &str)] = &[
     ("?", "help"),
     ("Esc", "back"),
 ];
-
-fn keys_spans(filtered: bool, theme: &Theme) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    for (key, label) in KEYS {
-        let label = if *key == "Esc" && filtered {
-            "clear filter"
-        } else {
-            label
-        };
-        spans.push(Span::styled(
-            format!(" {key} "),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!("{label} "),
-            Style::default().fg(theme.meta),
-        ));
-    }
-    spans
-}
-
-fn notice_span(text: &str, error: bool, theme: &Theme) -> Span<'static> {
-    let color = if error { theme.warn } else { ACCENT };
-    Span::styled(format!("{text} "), Style::default().fg(color))
-}
 
 fn unfolded(area: Rect, unfold: f32) -> Rect {
     let height =

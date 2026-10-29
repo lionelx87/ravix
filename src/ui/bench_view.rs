@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::App;
 use crate::bench::{
@@ -11,13 +11,12 @@ use crate::bench::{
 };
 use crate::git::CommitInfo;
 
+use super::mode_chrome::{band_tag, keys_spans, notice_span, render_branch_picker, zone_block};
 use super::{
-    SELECTION_MARKER, Theme, centered, ease_out_cubic, relative_time, right_aligned,
-    scroll_into_view,
+    SELECTION_MARKER, Theme, ease_out_cubic, relative_time, right_aligned, scroll_into_view,
 };
 
 const ACCENT: Color = Color::Rgb(232, 72, 96);
-const BAND_FG: Color = Color::Rgb(20, 24, 32);
 const PICKED: &str = "● ";
 const GHOST: &str = "◌ ";
 const TIP: &str = "◉ ";
@@ -27,7 +26,7 @@ const EQUIVALENT: &str = "≡ ";
 pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, now: i64) {
     let notice = app
         .notice()
-        .map(|text| notice_span(text, app.notice_is_error(), theme));
+        .map(|text| notice_span(text, app.notice_is_error(), ACCENT, theme));
     let Some(bench) = app.cherry_pick_bench_mut() else {
         return;
     };
@@ -45,7 +44,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     .split(area);
     frame.render_widget(Paragraph::new(band_line(bench, theme)), rows[0]);
     let footer = right_aligned(
-        keys_spans(theme),
+        keys_spans(KEYS, ACCENT, theme),
         notice.into_iter().collect(),
         rows[2].width as usize,
     );
@@ -67,6 +66,7 @@ fn render_source(
     let block = zone_block(
         format!(" Source · {} ", bench.source),
         bench.focus == BenchFocus::Source,
+        ACCENT,
         theme,
     );
     let mut lines: Vec<Line> = bench
@@ -163,6 +163,7 @@ fn render_destination(
     let block = zone_block(
         format!(" Destination · {} ", bench.destination),
         bench.focus == BenchFocus::Destination,
+        ACCENT,
         theme,
     );
     let mut lines: Vec<Line> = bench
@@ -298,13 +299,7 @@ fn destination_line(commit: &CommitInfo, tip: bool, theme: &Theme, now: i64) -> 
 fn band_line(bench: &CherryPickBench, theme: &Theme) -> Line<'static> {
     let title = Style::default().fg(theme.node).add_modifier(Modifier::BOLD);
     Line::from(vec![
-        Span::styled(
-            " CHERRY-PICK BENCH ",
-            Style::default()
-                .fg(BAND_FG)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
+        band_tag("CHERRY-PICK BENCH", ACCENT),
         Span::styled(format!(" {} → {} ", bench.source, bench.destination), title),
         picks_span(bench, theme),
     ])
@@ -325,49 +320,20 @@ fn picks_span(bench: &CherryPickBench, theme: &Theme) -> Span<'static> {
     Span::styled(text, Style::default().fg(theme.label))
 }
 
-fn zone_block(title: String, focused: bool, theme: &Theme) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused { ACCENT } else { theme.label }))
-        .title(title)
-}
-
 pub(super) fn render_picker(frame: &mut Frame, picker: &BenchPicker, theme: &Theme, area: Rect) {
-    let width = area.width.clamp(20, 60);
-    let height = (picker.rows().len() as u16 + 3)
-        .clamp(5, 16)
-        .min(area.height);
-    let rect = centered(area, width, height);
-    frame.render_widget(Clear, rect);
-    let (title, prompt) = match picker.end {
-        BenchEnd::Source => (" Cherry-pick from… ", "source "),
-        BenchEnd::Destination => (" Cherry-pick onto… ", "destination "),
+    let (title, prompt) = match picker.context.end {
+        BenchEnd::Source => (" Cherry-pick from… ", "source"),
+        BenchEnd::Destination => (" Cherry-pick onto… ", "destination"),
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(title);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(prompt, Style::default().fg(theme.label)),
-        Span::styled(
-            format!("{}▏", picker.query),
-            Style::default().fg(theme.node),
-        ),
-    ])];
-    lines.extend(picker.rows().into_iter().enumerate().map(|(index, name)| {
-        let selected = index == picker.selected;
-        Line::from(vec![
-            Span::styled(
-                if selected { SELECTION_MARKER } else { "  " },
-                Style::default().fg(ACCENT),
-            ),
-            Span::styled(
-                name.to_string(),
-                Style::default().fg(if selected { theme.node } else { theme.summary }),
-            ),
-        ])
-    }));
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    render_branch_picker(
+        frame,
+        picker,
+        title.to_string(),
+        prompt,
+        ACCENT,
+        theme,
+        area,
+    );
 }
 
 const KEYS: &[(&str, &str)] = &[
@@ -381,26 +347,6 @@ const KEYS: &[(&str, &str)] = &[
     ("?", "help"),
     ("Esc", "back"),
 ];
-
-fn keys_spans(theme: &Theme) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    for (key, label) in KEYS {
-        spans.push(Span::styled(
-            format!(" {key} "),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!("{label} "),
-            Style::default().fg(theme.meta),
-        ));
-    }
-    spans
-}
-
-fn notice_span(text: &str, error: bool, theme: &Theme) -> Span<'static> {
-    let color = if error { theme.warn } else { ACCENT };
-    Span::styled(format!("· {text} "), Style::default().fg(color))
-}
 
 fn unfolded(area: Rect, unfold: f32) -> Rect {
     let width =

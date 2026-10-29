@@ -27,6 +27,7 @@ use crate::working::{Focus, WorkingView};
 
 mod bench_view;
 mod graph_view;
+mod mode_chrome;
 mod review_view;
 
 use graph_view::display_width;
