@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use ravix::bench::{PickRef, Prediction, RowKind, application_order, chain, classify};
+use ravix::bench::{Blocked, PickRef, Prediction, RowKind, application_order, chain, classify};
 use ravix::review::ReviewRow;
 
 #[test]
@@ -54,7 +54,7 @@ fn each_pick_lands_on_the_previous_one_and_a_conflict_leaves_the_rest_pending() 
     let replay = chain("tip".to_string(), &["p1", "p2", "p3"], |onto, pick| {
         seen.push(format!("{pick} onto {onto}"));
         match *pick {
-            "p2" => Err(vec!["src/login.rs".to_string()]),
+            "p2" => Err(Blocked::Conflicts(vec!["src/login.rs".to_string()])),
             _ => Ok(format!("{pick}'")),
         }
     });
@@ -80,4 +80,14 @@ fn a_fully_clean_chain_ends_on_the_last_replayed_commit() {
         vec![Prediction::Clean, Prediction::Clean]
     );
     assert_eq!(replay.tip, Some(12));
+}
+
+#[test]
+fn a_replay_that_git_cannot_run_is_a_failure_not_a_conflict() {
+    let replay = chain(0, &[1, 2], |_, _| Err::<i32, _>(Blocked::Failed));
+
+    assert_eq!(
+        replay.predictions,
+        vec![Prediction::Failed, Prediction::Pending]
+    );
 }

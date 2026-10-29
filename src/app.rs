@@ -337,8 +337,9 @@ enum ConfirmKind {
     BenchCheckout,
 }
 
-struct BenchReturn {
-    original: String,
+struct BenchTrip {
+    checked_out_from: Option<String>,
+    source: String,
     destination: String,
     previous: String,
 }
@@ -584,7 +585,7 @@ pub struct App {
     stash_all: Vec<StashEntry>,
     stash_filter: Option<TextFilter>,
     stash_conflict: Option<StashConflict>,
-    bench_return: Option<BenchReturn>,
+    bench_trip: Option<BenchTrip>,
     remote: Option<RemoteJob>,
     askpass_sock: Option<PathBuf>,
     askpass_requests: Option<mpsc::Receiver<AskpassRequest>>,
@@ -682,7 +683,7 @@ impl App {
             stash_all: Vec::new(),
             stash_filter: None,
             stash_conflict: None,
-            bench_return: None,
+            bench_trip: None,
             remote: None,
             askpass_sock: None,
             askpass_requests: None,
@@ -3035,7 +3036,16 @@ impl App {
                 Action::Bench(BenchAction::PickerInput(character)) => picker.input(character),
                 Action::Bench(BenchAction::PickerBackspace) => picker.backspace(),
                 Action::Bench(BenchAction::PickerSubmit) => self.bench_picker_submit(),
-                Action::Dismiss => self.bench_picker = None,
+                Action::Dismiss => {
+                    self.bench_picker = None;
+                    if self
+                        .bench
+                        .as_mut()
+                        .is_some_and(|bench| bench.reload(&self.repo).is_none())
+                    {
+                        self.leave_bench();
+                    }
+                }
                 _ => {}
             }
             return;
@@ -3063,7 +3073,7 @@ impl App {
                 let draft = bench.draft();
                 self.ask_bench_end(BenchEnd::Destination, draft);
             }
-            Action::Bench(BenchAction::Toggle) | Action::Dismiss => bench.fold(),
+            Action::Bench(BenchAction::Toggle) | Action::Dismiss => self.leave_bench(),
             _ => {}
         }
     }
@@ -3078,6 +3088,10 @@ impl App {
         }
         if bench.analysis_pending() {
             self.info("Still predicting the copy…");
+            return;
+        }
+        if bench.prediction_failed() {
+            self.info("Git could not replay a pick — see the destination column");
             return;
         }
         let count = bench.picks.len();
@@ -3130,24 +3144,18 @@ impl App {
     }
 
     fn cherry_pick_onto_head(&mut self, picks: &[String], count: usize) {
-        let previous = self.repo.head_oid();
+        let Some(previous) = self.repo.head_oid() else {
+            return;
+        };
         let refs: Vec<&str> = picks.iter().map(String::as_str).collect();
         match self.cli.cherry_pick_many(&refs) {
             Ok(()) => {
-                if let Some(previous) = previous {
-                    self.last_action = Some(UndoableAction::CherryPicked { previous });
-                }
+                self.last_action = Some(UndoableAction::CherryPicked { previous });
                 self.land_picks(count);
                 self.celebrate(Event::CherryPick);
                 self.info(format!("Cherry-picked {count} commit(s)"));
             }
-            Err(error) => match self.repo.state_op() {
-                Some(op) => {
-                    self.bench = None;
-                    self.enter_conflict_browser(op);
-                }
-                None => self.fail(error.to_string()),
-            },
+            failed @ Err(_) => self.start_bench_trip(None, previous, failed),
         }
     }
 
@@ -3174,57 +3182,78 @@ impl App {
             self.fail(error.to_string());
             return;
         }
-        self.bench = None;
-        self.bench_return = Some(BenchReturn {
-            original,
-            destination,
+        let refs: Vec<&str> = picks.iter().map(String::as_str).collect();
+        let result = self.cli.cherry_pick_many(&refs);
+        self.start_bench_trip(Some(original), previous, result);
+    }
+
+    fn start_bench_trip(
+        &mut self,
+        checked_out_from: Option<String>,
+        previous: String,
+        result: Result<(), MutationError>,
+    ) {
+        let Some(bench) = self.bench.take() else {
+            return;
+        };
+        self.bench_trip = Some(BenchTrip {
+            checked_out_from,
+            source: bench.source,
+            destination: bench.destination,
             previous,
         });
-        let refs: Vec<&str> = picks.iter().map(String::as_str).collect();
-        match self.cli.cherry_pick_many(&refs) {
-            Ok(()) => self.finish_bench_return(),
-            Err(error) => match self.repo.state_op() {
-                Some(op) => {
-                    self.reload();
-                    self.enter_conflict_browser(op);
-                }
-                None => {
-                    self.fail(error.to_string());
-                    self.return_from_bench_checkout();
-                }
-            },
+        match (result, self.repo.state_op()) {
+            (Ok(()), _) => self.finish_bench_trip(),
+            (Err(_), Some(op)) => {
+                self.reload();
+                self.enter_conflict_browser(op);
+            }
+            (Err(error), None) => {
+                self.fail(error.to_string());
+                self.end_bench_trip();
+            }
         }
     }
 
-    fn finish_bench_return(&mut self) {
+    fn finish_bench_trip(&mut self) {
         self.conflict = None;
-        let Some(trip) = &self.bench_return else {
+        let Some(trip) = &self.bench_trip else {
             return;
         };
-        if let Some(written) = self.repo.branch_tip(&trip.destination) {
-            self.last_action = Some(UndoableAction::CopiedToBranch {
+        self.last_action = Some(match &trip.checked_out_from {
+            Some(_) => UndoableAction::CopiedToBranch {
                 branch: trip.destination.clone(),
                 previous: trip.previous.clone(),
-                written,
-            });
-        }
+                written: self.repo.branch_tip(&trip.destination).unwrap_or_default(),
+            },
+            None => UndoableAction::CherryPicked {
+                previous: trip.previous.clone(),
+            },
+        });
         let destination = trip.destination.clone();
-        self.return_from_bench_checkout();
+        self.end_bench_trip();
         self.celebrate(Event::CherryPick);
         self.info(format!("Copied onto {destination}"));
     }
 
-    fn return_from_bench_checkout(&mut self) {
-        let Some(trip) = self.bench_return.take() else {
+    fn end_bench_trip(&mut self) {
+        let Some(trip) = self.bench_trip.take() else {
             return;
         };
-        if let Err(error) = self.cli.checkout(&trip.original) {
+        if let Some(original) = &trip.checked_out_from
+            && let Err(error) = self.cli.checkout(original)
+        {
             self.fail(format!("Stayed on {} — {error}", trip.destination));
         }
         self.reload();
+        let bench = CherryPickBench::open(&self.repo, &trip.source, &trip.destination);
+        self.place_bench(bench);
     }
 
     fn refresh_bench(&mut self) {
+        if self.bench_picker.is_some() {
+            return;
+        }
         let Some(bench) = &mut self.bench else {
             return;
         };
@@ -3296,28 +3325,35 @@ impl App {
             return;
         };
         if let Some(pick) = draft.pick {
-            bench.select(pick);
-            bench.toggle_pick();
+            bench.pick_once_classified(pick);
         }
-        self.bench = Some(bench);
+        self.place_bench(Some(bench));
+    }
+
+    fn place_bench(&mut self, mut bench: Option<CherryPickBench>) {
+        if self.intensity == Intensity::Off
+            && let Some(bench) = &mut bench
+        {
+            bench.unfold_instantly();
+        }
+        self.bench = bench;
+    }
+
+    fn leave_bench(&mut self) {
+        match &mut self.bench {
+            Some(_) if self.intensity == Intensity::Off => self.bench = None,
+            Some(bench) => bench.fold(),
+            None => {}
+        }
     }
 
     fn ask_bench_end(&mut self, end: BenchEnd, draft: BenchDraft) {
-        let names = match end {
-            BenchEnd::Source => {
-                let current = draft.source.as_deref();
-                self.load_branch_entries()
-                    .into_iter()
-                    .map(|entry| entry.name)
-                    .filter(|name| Some(name.as_str()) != current)
-                    .collect()
-            }
-            BenchEnd::Destination => self.destination_names(draft.source.as_deref()),
-        };
+        let excluded = draft.source.as_deref();
+        let names = self.bench_branch_names(end == BenchEnd::Destination, excluded);
         self.bench_picker = Some(BenchPicker::opening(end, names, draft));
     }
 
-    fn destination_names(&self, source: Option<&str>) -> Vec<String> {
+    fn bench_branch_names(&self, local_only: bool, excluded: Option<&str>) -> Vec<String> {
         let pins: Vec<String> = pins::switcher_rows(
             self.visibility.pins(),
             self.meta.head_branch.as_deref(),
@@ -3326,18 +3362,20 @@ impl App {
         )
         .into_iter()
         .map(|row| row.name)
-        .filter(|name| self.repo.has_local_branch(name))
+        .filter(|name| {
+            self.repo.has_local_branch(name) || (!local_only && self.repo.has_remote_branch(name))
+        })
         .collect();
         let mut rest: Vec<String> = self
             .load_branch_entries()
             .into_iter()
-            .filter(|entry| entry.remote.is_none() && !pins.contains(&entry.name))
+            .filter(|entry| !(local_only && entry.remote.is_some()) && !pins.contains(&entry.name))
             .map(|entry| entry.name)
             .collect();
         rest.sort();
         pins.into_iter()
             .chain(rest)
-            .filter(|name| Some(name.as_str()) != source)
+            .filter(|name| Some(name.as_str()) != excluded)
             .collect()
     }
 
@@ -4383,7 +4421,7 @@ impl App {
         }
         let previous = self.repo.head_oid();
         match self.cli.commit(message) {
-            Ok(()) if self.bench_return.is_some() => self.continue_bench_sequence(),
+            Ok(()) if self.bench_trip.is_some() => self.continue_bench_sequence(),
             Ok(()) => {
                 if let Some(previous) = previous {
                     self.last_action = Some(match op {
@@ -4416,7 +4454,7 @@ impl App {
             }
             return;
         }
-        self.finish_bench_return();
+        self.finish_bench_trip();
     }
 
     fn request_edit(&mut self) {
@@ -4471,7 +4509,7 @@ impl App {
             Ok(()) => self.info(format!("Aborted {}", op.label())),
             Err(error) => self.fail(error.to_string()),
         }
-        self.return_from_bench_checkout();
+        self.end_bench_trip();
         self.reload();
     }
 

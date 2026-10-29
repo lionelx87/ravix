@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::askpass::AskpassConfig;
+use crate::bench::Blocked;
 use crate::git::Authorship;
 use crate::join::MergeTreeResult;
 use crate::stash::{StashEntry, parse_stash_list};
@@ -374,10 +375,11 @@ impl GitCli {
         pick: &str,
         parent: Option<&str>,
         onto: &str,
-    ) -> Result<String, Vec<String>> {
+    ) -> Result<String, Blocked> {
         let base = format!("--merge-base={}", parent.unwrap_or(EMPTY_TREE));
         let output = Command::new("git")
             .current_dir(&self.workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
             .args([
                 "merge-tree",
                 "--write-tree",
@@ -388,14 +390,14 @@ impl GitCli {
                 pick,
             ])
             .output()
-            .map_err(|_| Vec::new())?;
+            .map_err(|_| Blocked::Failed)?;
         let text = String::from_utf8_lossy(&output.stdout);
         let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
         let tree = lines.next().unwrap_or_default().to_string();
-        if output.status.success() && !tree.is_empty() {
-            Ok(tree)
-        } else {
-            Err(lines.map(str::to_string).collect())
+        match output.status.code() {
+            Some(0) if !tree.is_empty() => Ok(tree),
+            Some(1) => Err(Blocked::Conflicts(lines.map(str::to_string).collect())),
+            _ => Err(Blocked::Failed),
         }
     }
 

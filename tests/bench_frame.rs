@@ -60,6 +60,9 @@ fn wait_for(app: &mut App, ready: impl Fn(&str) -> bool) -> String {
 
 fn select(app: &mut App, input: &mut InputMap, summary: &str) {
     for _ in 0..30 {
+        press(app, input, KeyCode::Char('k'));
+    }
+    for _ in 0..30 {
         if app
             .selected_commit()
             .is_some_and(|commit| commit.summary == summary)
@@ -86,7 +89,7 @@ fn pressing_c_on_a_commit_opens_the_bench_with_it_picked_onto_head() {
 
     open_bench_on(&mut app, &mut input, "add remember-me");
 
-    let view = screen(&mut app);
+    let view = wait_for(&mut app, |view| view.contains("1 pick from 1 branch"));
     assert!(
         view.contains("CHERRY-PICK BENCH"),
         "the mode has its own band:\n{view}"
@@ -144,6 +147,9 @@ fn commits_the_destination_already_has_are_dimmed_and_cannot_be_picked() {
 }
 
 fn select_row(app: &mut App, input: &mut InputMap, summary: &str) {
+    for _ in 0..20 {
+        press(app, input, KeyCode::Char('k'));
+    }
     for _ in 0..20 {
         let bench = app.cherry_pick_bench().unwrap();
         if bench.rows[bench.selected].commit.summary == summary {
@@ -281,6 +287,11 @@ fn a_predicted_conflict_checks_out_the_destination_and_returns_once_resolved() {
         "main\n",
         "Ravix returns to the original branch"
     );
+    let view = wait_for(&mut app, |view| view.contains("no picks"));
+    assert!(
+        view.contains("feature/login → release/2.3"),
+        "the bench is back once the copy is done:\n{view}"
+    );
 }
 
 #[test]
@@ -388,7 +399,7 @@ fn copying_from_the_checked_out_branch_asks_for_the_destination() {
     );
 
     choose_in_picker(&mut app, &mut input, "release/2.3");
-    let opened = screen(&mut app);
+    let opened = wait_for(&mut app, |view| view.contains("1 pick from 1 branch"));
     assert!(
         opened.contains("feature/login → release/2.3") && opened.contains("1 pick from 1 branch"),
         "choosing the destination opens the bench with the commit picked:\n{opened}"
@@ -530,5 +541,176 @@ fn copied_picks_fly_in_and_solidify_with_their_new_hashes() {
     assert!(
         row(&calm).contains("◉ "),
         "once landed it is the destination's ordinary tip:\n{calm}"
+    );
+}
+
+#[test]
+fn a_conflict_onto_head_continues_the_rest_of_the_picks_and_keeps_the_bench_open() {
+    let dir = TempDir::new().unwrap();
+    bench_repo(dir.path());
+    git(dir.path(), &["checkout", "-q", "release/2.3"]);
+    let before = git(dir.path(), &["rev-parse", "HEAD"]);
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    open_bench_on(&mut app, &mut input, "initial login form");
+    select_row(&mut app, &mut input, "add remember-me");
+    press(&mut app, &mut input, KeyCode::Char(' '));
+    wait_for(&mut app, |view| view.contains("· pending"));
+
+    press(&mut app, &mut input, KeyCode::Enter);
+    press(&mut app, &mut input, KeyCode::Char('t'));
+    press(&mut app, &mut input, KeyCode::Char('c'));
+    press(&mut app, &mut input, KeyCode::Enter);
+
+    assert!(app.conflict_browser().is_none(), "the sequence finished");
+    assert_eq!(
+        git(dir.path(), &["log", "-2", "--format=%s"]),
+        "add remember-me\ninitial login form\n",
+        "the picks after the conflict are applied too"
+    );
+    let view = wait_for(&mut app, |view| view.contains("no picks"));
+    assert!(
+        view.contains("CHERRY-PICK BENCH") && view.contains("no picks"),
+        "the bench stays open after the copy:\n{view}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+    press(&mut app, &mut input, KeyCode::Char('u'));
+    assert_eq!(
+        git(dir.path(), &["rev-parse", "HEAD"]),
+        before,
+        "undo goes back to before the whole sequence"
+    );
+}
+
+#[test]
+fn both_pickers_list_pins_first() {
+    let dir = TempDir::new().unwrap();
+    bench_repo(dir.path());
+    std::fs::create_dir_all(dir.path().join(".git/ravix")).unwrap();
+    std::fs::write(dir.path().join(".git/ravix/pins"), "release/2.3\n").unwrap();
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    open_bench_on(&mut app, &mut input, "Root");
+    assert_eq!(
+        app.bench_picker().expect("source picker").rows().first(),
+        Some(&"release/2.3"),
+        "the pin leads the source picker"
+    );
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    open_bench_on(&mut app, &mut input, "bump deps");
+    press(&mut app, &mut input, KeyCode::Char('B'));
+    assert_eq!(
+        app.bench_picker()
+            .expect("destination picker")
+            .rows()
+            .first(),
+        Some(&"release/2.3"),
+        "the pin leads the destination picker"
+    );
+}
+
+#[test]
+fn with_animations_off_the_bench_opens_and_closes_instantly() {
+    let dir = TempDir::new().unwrap();
+    bench_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    app.update(Action::CycleCelebrations);
+    app.update(Action::CycleCelebrations);
+    select(&mut app, &mut input, "add remember-me");
+
+    press(&mut app, &mut input, KeyCode::Char('C'));
+    let opened = screen(&mut app);
+    assert!(
+        opened.contains("feature/login → main"),
+        "no unfold animation:\n{opened}"
+    );
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    assert!(app.cherry_pick_bench().is_none(), "no fold animation");
+}
+
+#[test]
+fn the_bench_is_keyboard_only() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    use ravix::app::InputContext;
+
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 10,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    for context in [InputContext::CherryPickBench, InputContext::BenchPicker] {
+        assert_eq!(
+            InputMap::default().on_mouse(wheel, Rect::new(0, 0, 80, 20), context),
+            None,
+            "{context:?} ignores the mouse"
+        );
+    }
+}
+
+#[test]
+fn entering_on_a_commit_the_destination_already_has_picks_nothing() {
+    let dir = TempDir::new().unwrap();
+    bench_repo(dir.path());
+    git(dir.path(), &["checkout", "-q", "release/2.3"]);
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+
+    let token = git(dir.path(), &["rev-parse", "feature/login~2"]);
+    for _ in 0..30 {
+        press(&mut app, &mut input, KeyCode::Char('k'));
+    }
+    while app
+        .selected_commit()
+        .is_some_and(|commit| commit.id.to_string() != token.trim())
+    {
+        press(&mut app, &mut input, KeyCode::Char('j'));
+    }
+    press(&mut app, &mut input, KeyCode::Char('C'));
+    let view = wait_for(&mut app, |view| view.contains("already in destination"));
+
+    assert!(view.contains("no picks"), "nothing is picked:\n{view}");
+    assert!(
+        !app.notice()
+            .is_some_and(|notice| notice.contains("Dropped")),
+        "it is never picked in the first place"
+    );
+}
+
+#[test]
+fn a_vanished_destination_asks_once_and_dismissing_leaves_the_bench() {
+    let dir = TempDir::new().unwrap();
+    bench_repo(dir.path());
+    let mut app = App::open(dir.path()).unwrap();
+    let mut input = InputMap::default();
+    open_bench_on(&mut app, &mut input, "bump deps");
+    choose(&mut app, &mut input, 'B', "release/2.3");
+
+    git(dir.path(), &["branch", "-D", "release/2.3"]);
+    app.update(Action::Reload);
+    assert!(
+        app.bench_picker().is_some(),
+        "a new destination is asked for"
+    );
+    press(&mut app, &mut input, KeyCode::Char('o'));
+    app.update(Action::Reload);
+    assert_eq!(
+        app.bench_picker().map(|picker| picker.query.as_str()),
+        Some("o"),
+        "a later reload keeps what was typed"
+    );
+
+    press(&mut app, &mut input, KeyCode::Esc);
+    settle(&mut app);
+    assert!(
+        app.cherry_pick_bench().is_none(),
+        "without a destination the bench closes"
     );
 }

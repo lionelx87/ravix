@@ -104,11 +104,13 @@ impl InputMap {
     ) -> Option<Action> {
         if matches!(
             context,
-            InputContext::BranchReview
-                | InputContext::ReviewBase
-                | InputContext::ReviewFilter
-                | InputContext::CherryPickBench
-                | InputContext::BenchPicker
+            InputContext::CherryPickBench | InputContext::BenchPicker
+        ) {
+            return None;
+        }
+        if matches!(
+            context,
+            InputContext::BranchReview | InputContext::ReviewBase | InputContext::ReviewFilter
         ) {
             return match mouse.kind {
                 MouseEventKind::ScrollDown => Some(Action::ScrollDown),

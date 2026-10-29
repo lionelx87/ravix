@@ -215,6 +215,7 @@ fn ghost_line(pick: &Pick, prediction: Option<&Prediction>, theme: &Theme) -> Li
                 theme.warn,
             )
         }
+        Some(Prediction::Failed) => ("✗ git could not replay it".to_string(), theme.warn),
         Some(Prediction::Pending) => ("· pending".to_string(), theme.meta),
         None => ("… predicting".to_string(), theme.meta),
     };

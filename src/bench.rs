@@ -71,7 +71,14 @@ pub fn application_order<Id: Clone>(picks: &[PickRef<Id>]) -> Vec<Id> {
 pub enum Prediction {
     Clean,
     Conflicts(Vec<String>),
+    Failed,
     Pending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Blocked {
+    Conflicts(Vec<String>),
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +90,7 @@ pub struct Replay<Tip> {
 pub fn chain<Id, Tip>(
     start: Tip,
     picks: &[Id],
-    mut replay: impl FnMut(&Tip, &Id) -> Result<Tip, Vec<String>>,
+    mut replay: impl FnMut(&Tip, &Id) -> Result<Tip, Blocked>,
 ) -> Replay<Tip> {
     let mut predictions = Vec::with_capacity(picks.len());
     let mut tip = Some(start);
@@ -97,8 +104,11 @@ pub fn chain<Id, Tip>(
                 predictions.push(Prediction::Clean);
                 tip = Some(next);
             }
-            Err(files) => {
-                predictions.push(Prediction::Conflicts(files));
+            Err(blocked) => {
+                predictions.push(match blocked {
+                    Blocked::Conflicts(files) => Prediction::Conflicts(files),
+                    Blocked::Failed => Prediction::Failed,
+                });
                 tip = None;
             }
         }
@@ -172,6 +182,7 @@ pub struct CherryPickBench {
     pub dropped: usize,
     pub predictions: Vec<(Oid, Prediction)>,
     pub landing: Option<Landing>,
+    entry_pick: Option<Oid>,
 }
 
 struct Analysis {
@@ -201,6 +212,7 @@ impl CherryPickBench {
             dropped: 0,
             predictions: Vec::new(),
             landing: None,
+            entry_pick: None,
         };
         bench.reload(repo)?;
         Some(bench)
@@ -302,6 +314,17 @@ impl CherryPickBench {
         self.picks
             .retain(|pick| analysis.missing.contains(&pick.commit.id));
         self.dropped = before - self.picks.len();
+        if let Some(id) = self.entry_pick.take()
+            && self.rows.iter().any(|row| row.commit.id == id)
+        {
+            self.select(id);
+            self.toggle_pick();
+        }
+    }
+
+    pub fn pick_once_classified(&mut self, id: Oid) {
+        self.select(id);
+        self.entry_pick = Some(id);
     }
 
     pub fn select(&mut self, id: Oid) {
@@ -337,6 +360,12 @@ impl CherryPickBench {
             .map(|(_, prediction)| prediction)
     }
 
+    pub fn prediction_failed(&self) -> bool {
+        self.predictions
+            .iter()
+            .any(|(_, prediction)| *prediction == Prediction::Failed)
+    }
+
     pub fn predicted_conflict(&self) -> bool {
         self.predictions
             .iter()
@@ -349,9 +378,9 @@ impl CherryPickBench {
         let replay = chain(previous.clone(), &picks, |onto, pick| {
             let parent = pick.commit.parents.first().map(Oid::to_string);
             let tree = cli.replay_tree(&pick.commit.id.to_string(), parent.as_deref(), onto)?;
-            let authorship = repo.authorship(pick.commit.id).ok_or_else(Vec::new)?;
+            let authorship = repo.authorship(pick.commit.id).ok_or(Blocked::Failed)?;
             cli.commit_tree(&tree, onto, &authorship)
-                .map_err(|_| Vec::new())
+                .map_err(|_| Blocked::Failed)
         });
         let written = replay.tip?;
         cli.update_branch(&self.destination, &written, &previous)
@@ -392,6 +421,10 @@ impl CherryPickBench {
     }
 
     pub fn retarget(&mut self, repo: &Repo, source: &str, destination: &str) {
+        if let Some(id) = self.entry_pick.take() {
+            self.select(id);
+            self.toggle_pick();
+        }
         let previous = (
             std::mem::replace(&mut self.source, source.to_string()),
             std::mem::replace(&mut self.destination, destination.to_string()),
@@ -472,6 +505,10 @@ impl CherryPickBench {
 
     pub fn fold(&mut self) {
         self.unfold_target = 0.0;
+    }
+
+    pub fn unfold_instantly(&mut self) {
+        self.unfold = self.unfold_target;
     }
 
     pub fn is_folding(&self) -> bool {
