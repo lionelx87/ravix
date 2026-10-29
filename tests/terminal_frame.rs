@@ -2218,31 +2218,6 @@ fn a_clean_merge_creates_a_merge_commit() {
 }
 
 #[test]
-fn cherry_pick_lands_the_source_change_on_head() {
-    let dir = TempDir::new().unwrap();
-    merge_repo(dir.path());
-    let mut app = App::open(dir.path()).unwrap();
-    let mut input = InputMap::default();
-
-    open_join_on_feature(&mut app, &mut input);
-    press(&mut app, &mut input, KeyCode::Char('j'));
-    press(&mut app, &mut input, KeyCode::Char('j'));
-    press(&mut app, &mut input, KeyCode::Enter);
-    settle(&mut app);
-
-    let head = app.head_commit().expect("HEAD commit");
-    assert_eq!(
-        head.summary, "feature work",
-        "cherry-pick should replay the source commit onto HEAD"
-    );
-    assert_eq!(
-        head.parents.len(),
-        1,
-        "a cherry-pick is a single-parent commit"
-    );
-}
-
-#[test]
 fn a_conflict_prediction_still_lists_the_files_in_the_menu() {
     let dir = TempDir::new().unwrap();
     conflict_repo(dir.path());
@@ -2414,41 +2389,6 @@ fn aborting_a_conflict_returns_to_the_pre_op_commit() {
         !app.has_wip(),
         "the working tree should be clean after an abort"
     );
-}
-
-#[test]
-fn a_conflict_cherry_pick_resolves_through_the_browser() {
-    let dir = TempDir::new().unwrap();
-    conflict_repo(dir.path());
-    let mut app = App::open(dir.path()).unwrap();
-    let mut input = InputMap::default();
-
-    open_join_on_feature(&mut app, &mut input);
-    press(&mut app, &mut input, KeyCode::Char('j'));
-    press(&mut app, &mut input, KeyCode::Char('j'));
-    press(&mut app, &mut input, KeyCode::Enter);
-
-    assert!(
-        app.conflict_browser().is_some(),
-        "a conflicting cherry-pick should open the browser"
-    );
-    let screen = dump(&draw(&mut app, 100, 28));
-    assert!(
-        screen.contains("cherry-pick in progress"),
-        "the browser should show a cherry-pick in progress:\n{screen}"
-    );
-
-    press(&mut app, &mut input, KeyCode::Char('t'));
-    press(&mut app, &mut input, KeyCode::Char('c'));
-    press(&mut app, &mut input, KeyCode::Enter);
-
-    assert!(app.conflict_browser().is_none());
-    let head = app.head_commit().expect("HEAD commit");
-    assert_eq!(
-        head.summary, "feature edit",
-        "the cherry-picked commit should land on HEAD with its default message"
-    );
-    assert_eq!(head.parents.len(), 1, "a cherry-pick is single-parent");
 }
 
 #[test]

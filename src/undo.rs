@@ -33,6 +33,11 @@ pub enum UndoableAction {
     CherryPicked {
         previous: String,
     },
+    CopiedToBranch {
+        branch: String,
+        previous: String,
+        written: String,
+    },
     Rebased {
         previous: String,
     },
@@ -71,6 +76,11 @@ pub enum InversePlan {
         pin_position: Option<usize>,
     },
     ResetKeep(String),
+    RestoreRef {
+        branch: String,
+        previous: String,
+        written: String,
+    },
     StashPop,
     UndoStashRestore {
         path: String,
@@ -111,6 +121,15 @@ pub fn invert(action: &UndoableAction) -> InversePlan {
         },
         UndoableAction::Merged { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::CherryPicked { previous } => InversePlan::ResetKeep(previous.clone()),
+        UndoableAction::CopiedToBranch {
+            branch,
+            previous,
+            written,
+        } => InversePlan::RestoreRef {
+            branch: branch.clone(),
+            previous: previous.clone(),
+            written: written.clone(),
+        },
         UndoableAction::Rebased { previous } => InversePlan::ResetKeep(previous.clone()),
         UndoableAction::Stashed => InversePlan::StashPop,
         UndoableAction::RestoredFromStash { path, snapshot } => InversePlan::UndoStashRestore {

@@ -339,6 +339,24 @@ impl Repo {
             .unwrap_or_default()
     }
 
+    pub fn authorship(&self, id: Oid) -> Option<Authorship> {
+        let commit = self.inner.find_commit(id).ok()?;
+        let author = commit.author();
+        let offset = author.when().offset_minutes();
+        let sign = if offset < 0 { '-' } else { '+' };
+        Some(Authorship {
+            name: author.name().unwrap_or("").to_string(),
+            email: author.email().unwrap_or("").to_string(),
+            date: format!(
+                "@{} {sign}{:02}{:02}",
+                author.when().seconds(),
+                offset.abs() / 60,
+                offset.abs() % 60
+            ),
+            message: commit.message_raw().unwrap_or("").to_string(),
+        })
+    }
+
     pub fn head_oid(&self) -> Option<String> {
         self.inner.head().ok()?.target().map(|oid| oid.to_string())
     }
@@ -595,6 +613,10 @@ impl Repo {
 
     pub fn is_clean_state(&self) -> bool {
         self.inner.state() == git2::RepositoryState::Clean
+    }
+
+    pub fn sequencer_pending(&self) -> bool {
+        self.git_dir().join("sequencer").join("todo").exists()
     }
 
     pub fn orig_head(&self) -> Option<String> {
@@ -1034,4 +1056,12 @@ fn worktree_status(flags: git2::Status) -> Option<char> {
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Authorship {
+    pub name: String,
+    pub email: String,
+    pub date: String,
+    pub message: String,
 }

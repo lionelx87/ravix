@@ -55,6 +55,7 @@ fn navigation_contexts_are_curated_and_inputs_fall_back() {
         (InputContext::Conflict, "Conflicts"),
         (InputContext::Stash, "Stashes"),
         (InputContext::FocusSets, "Focus sets"),
+        (InputContext::CherryPickBench, "Cherry-pick bench"),
     ] {
         assert_eq!(context_help(context).title, title);
     }
@@ -78,6 +79,7 @@ fn every_panel_help_key_is_actually_bound_by_its_handler() {
         InputContext::CommitDiff,
         InputContext::PinSwitcher,
         InputContext::CopyChooser,
+        InputContext::CherryPickBench,
     ];
     for context in contexts {
         for (keys, description) in context_help(context).bindings {

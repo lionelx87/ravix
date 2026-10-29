@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::askpass::AskpassConfig;
+use crate::git::Authorship;
 use crate::join::MergeTreeResult;
 use crate::stash::{StashEntry, parse_stash_list};
 
 const DETAIL_LIMIT: usize = 160;
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Debug)]
 pub enum MutationError {
@@ -203,8 +205,22 @@ impl GitCli {
         self.run(&["merge", "--no-ff", "--no-edit", source], None)
     }
 
-    pub fn cherry_pick(&self, oid: &str) -> Result<(), MutationError> {
-        self.run(&["cherry-pick", oid], None)
+    pub fn cherry_pick_many(&self, oids: &[&str]) -> Result<(), MutationError> {
+        let mut args = vec!["cherry-pick"];
+        args.extend_from_slice(oids);
+        self.run(&args, None)
+    }
+
+    pub fn update_branch(&self, branch: &str, new: &str, old: &str) -> Result<(), MutationError> {
+        let reference = format!("refs/heads/{branch}");
+        self.run(&["update-ref", &reference, new, old], None)
+    }
+
+    pub fn cherry_pick_continue(&self) -> Result<(), MutationError> {
+        self.run(
+            &["-c", "core.editor=true", "cherry-pick", "--continue"],
+            None,
+        )
     }
 
     pub fn cherry_pick_abort(&self) -> Result<(), MutationError> {
@@ -334,6 +350,96 @@ impl GitCli {
         }
     }
 
+    pub fn branches_containing(&self, oid: &str) -> Vec<String> {
+        let contains = format!("--contains={oid}");
+        self.read(&[
+            "for-each-ref",
+            &contains,
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .lines()
+        .filter(|name| !name.ends_with("/HEAD"))
+        .filter_map(|name| {
+            name.strip_prefix("refs/heads/")
+                .or_else(|| name.strip_prefix("refs/remotes/"))
+        })
+        .map(str::to_string)
+        .collect()
+    }
+
+    pub fn replay_tree(
+        &self,
+        pick: &str,
+        parent: Option<&str>,
+        onto: &str,
+    ) -> Result<String, Vec<String>> {
+        let base = format!("--merge-base={}", parent.unwrap_or(EMPTY_TREE));
+        let output = Command::new("git")
+            .current_dir(&self.workdir)
+            .args([
+                "merge-tree",
+                "--write-tree",
+                "--name-only",
+                "--no-messages",
+                &base,
+                onto,
+                pick,
+            ])
+            .output()
+            .map_err(|_| Vec::new())?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+        let tree = lines.next().unwrap_or_default().to_string();
+        if output.status.success() && !tree.is_empty() {
+            Ok(tree)
+        } else {
+            Err(lines.map(str::to_string).collect())
+        }
+    }
+
+    pub fn commit_tree(
+        &self,
+        tree: &str,
+        parent: &str,
+        authorship: &Authorship,
+    ) -> Result<String, MutationError> {
+        let output = self.execute(
+            &["commit-tree", tree, "-p", parent, "-F", "-"],
+            Some(&authorship.message),
+            &[
+                ("GIT_AUTHOR_NAME", authorship.name.as_str()),
+                ("GIT_AUTHOR_EMAIL", authorship.email.as_str()),
+                ("GIT_AUTHOR_DATE", authorship.date.as_str()),
+            ],
+        )?;
+        Ok(output.trim().to_string())
+    }
+
+    pub fn missing_from(&self, destination: &str, source: &str) -> Vec<String> {
+        let range = format!("{destination}...{source}");
+        self.read(&[
+            "rev-list",
+            "--cherry-pick",
+            "--right-only",
+            "--no-merges",
+            &range,
+        ])
+        .lines()
+        .map(str::to_string)
+        .collect()
+    }
+
+    fn read(&self, args: &[&str]) -> String {
+        Command::new("git")
+            .current_dir(&self.workdir)
+            .args(args)
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default()
+    }
+
     pub fn merge_tree(&self, ours: &str, theirs: &str, base: Option<&str>) -> MergeTreeResult {
         let mut args: Vec<String> = vec![
             "merge-tree".into(),
@@ -374,10 +480,20 @@ impl GitCli {
     }
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<(), MutationError> {
+        self.execute(args, stdin, &[]).map(|_| ())
+    }
+
+    fn execute(
+        &self,
+        args: &[&str],
+        stdin: Option<&str>,
+        envs: &[(&str, &str)],
+    ) -> Result<String, MutationError> {
         let mut command = Command::new("git");
         command
             .current_dir(&self.workdir)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .envs(envs.iter().copied())
             .args(args);
         if let Some(config) = &self.askpass {
             command
@@ -405,7 +521,7 @@ impl GitCli {
 
         let output = child.wait_with_output().map_err(MutationError::Spawn)?;
         if output.status.success() {
-            Ok(())
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
             Err(MutationError::Failed {
                 command: format!("git {}", args.join(" ")),

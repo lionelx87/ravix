@@ -25,6 +25,13 @@ mutation, and buys the guarantee that your hooks and your config keep working
 exactly as they do on the command line. See
 [ADR 0001](docs/adr/0001-hybrid-backend-and-undo.md).
 
+**Cherry-picking has its own bench.** `C` on a commit opens a two-column bench:
+the source branch's own commits on the left, the destination on the right with
+every pick hovering above its tip, each one predicted clean or conflicting. Picks
+can come from several branches and land on any local branch without checking it
+out; clean copies are written through git plumbing, which is the one place
+hooks don't run (see [ADR 0002](docs/adr/0002-plumbing-cherry-pick-without-hooks.md)).
+
 **Merges are predicted before you choose.** Ravix runs `git merge-tree` ahead of
 the join menu, so the strategy list tells you what the merge will actually do
 instead of finding out afterwards.
@@ -93,6 +100,7 @@ src/
   mutate.rs     every write, through the git CLI
   undo.rs       pure action -> inverse-plan mapping
   join.rs       merge-tree prediction and strategy menu
+  bench.rs      cherry-pick bench: picks, ordering, chained prediction
   ui/           ratatui rendering
 ```
 

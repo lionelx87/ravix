@@ -51,6 +51,10 @@ pub fn context_help(context: InputContext) -> HelpPage {
             title: "Branch review",
             bindings: BRANCH_REVIEW,
         },
+        InputContext::CherryPickBench => HelpPage {
+            title: "Cherry-pick bench",
+            bindings: CHERRY_PICK_BENCH,
+        },
         InputContext::CommitDiff => HelpPage {
             title: "Commit diff",
             bindings: COMMIT_DIFF,
@@ -67,11 +71,11 @@ const GRAPH: &[(&str, &str)] = &[
     ("gg / G", "jump to first / last"),
     ("Enter", "open commit detail panel"),
     ("Space", "checkout commit (detached HEAD if no branch)"),
-    ("M", "join: merge / cherry-pick / rebase"),
+    ("M", "join: merge / rebase"),
     ("f / p / P", "fetch / pull / push"),
     ("s / S", "stash changes / stash list"),
     ("b / B", "branches panel / pin switcher"),
-    ("L", "review the current branch's own commits"),
+    ("L / C", "branch review / cherry-pick bench"),
     ("y / Y", "copy the short hash / a branch name"),
     ("F", "focus sets"),
     ("> / <", "submodules: enter / exit"),
@@ -79,6 +83,17 @@ const GRAPH: &[(&str, &str)] = &[
     ("u", "undo last action"),
     ("Esc", "collapse the panel · back to the parent repo"),
     ("Ctrl+P", "command palette"),
+];
+
+const CHERRY_PICK_BENCH: &[(&str, &str)] = &[
+    ("j / k", "select next / previous own commit"),
+    ("Space", "pick / unpick the commit"),
+    ("a", "pick every pickable commit of the source"),
+    ("Tab", "focus source / destination"),
+    ("b", "change the source branch (picks are kept)"),
+    ("B", "change the destination branch"),
+    ("Enter", "copy the picks onto the destination"),
+    ("C / Esc", "leave the bench (picks are dropped)"),
 ];
 
 const BRANCH: &[(&str, &str)] = &[

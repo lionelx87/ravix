@@ -24,7 +24,6 @@ pub struct MergeTreeResult {
 pub enum JoinStrategy {
     FastForward,
     MergeCommit,
-    CherryPick,
     Rebase,
 }
 
@@ -37,7 +36,7 @@ pub struct JoinOption {
 
 pub struct JoinMenu {
     pub title: String,
-    pub source_name: Option<String>,
+    pub source_name: String,
     pub source_oid: String,
     pub panel: SlidePanel<JoinOption>,
     pub conflict_files: Vec<String>,

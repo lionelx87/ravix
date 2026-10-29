@@ -7,6 +7,7 @@ use git2::Oid;
 use crate::askpass::{
     AskpassConfig, AskpassRequest, AskpassServer, CredentialCache, PromptKind, parse_askpass_prompt,
 };
+use crate::bench::{BenchDraft, BenchEnd, BenchPicker, CherryPickBench, source_candidates};
 use crate::branches::{BranchEntry, BranchPanel, branch_list};
 use crate::celebrate::{Event, Intensity, next_intensity, should_celebrate};
 use crate::conflict::{ConflictBrowser, ConflictFile, OpKind, Side, conflict_count, parse};
@@ -112,6 +113,7 @@ pub enum Action {
     PinsOnly,
     OpenPinSwitcher,
     Review(ReviewAction),
+    Bench(BenchAction),
     PinSwitcherSubmit,
     PinSwitcherPick(usize),
     CopyChooserSubmit,
@@ -171,6 +173,19 @@ pub enum ReviewAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchAction {
+    Toggle,
+    TogglePick,
+    PickAll,
+    ChangeSource,
+    ChangeDestination,
+    Apply,
+    PickerInput(char),
+    PickerBackspace,
+    PickerSubmit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputContext {
     Graph,
     Working,
@@ -196,6 +211,8 @@ pub enum InputContext {
     BranchReview,
     ReviewBase,
     ReviewFilter,
+    CherryPickBench,
+    BenchPicker,
 }
 
 pub struct Panel {
@@ -317,6 +334,13 @@ enum ConfirmKind {
     DeleteFocus {
         name: String,
     },
+    BenchCheckout,
+}
+
+struct BenchReturn {
+    original: String,
+    destination: String,
+    previous: String,
 }
 
 pub struct Confirm {
@@ -373,6 +397,7 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("Branches", "b", Action::ToggleBranches),
     ("Pin switcher", "B", Action::OpenPinSwitcher),
     ("Branch review", "L", Action::Review(ReviewAction::Toggle)),
+    ("Cherry-pick bench", "C", Action::Bench(BenchAction::Toggle)),
     ("Focus sets", "F", Action::ToggleFocusPanel),
     ("Submodules", ">", Action::ToggleSubmodulePanel),
     ("New branch", "n", Action::NewBranch),
@@ -559,6 +584,7 @@ pub struct App {
     stash_all: Vec<StashEntry>,
     stash_filter: Option<TextFilter>,
     stash_conflict: Option<StashConflict>,
+    bench_return: Option<BenchReturn>,
     remote: Option<RemoteJob>,
     askpass_sock: Option<PathBuf>,
     askpass_requests: Option<mpsc::Receiver<AskpassRequest>>,
@@ -581,6 +607,8 @@ pub struct App {
     copy_chooser: Option<CopyChooser>,
     review: Option<BranchReview>,
     base_picker: Option<BasePicker>,
+    bench: Option<CherryPickBench>,
+    bench_picker: Option<BenchPicker>,
     help_visible: bool,
     should_quit: bool,
 }
@@ -654,6 +682,7 @@ impl App {
             stash_all: Vec::new(),
             stash_filter: None,
             stash_conflict: None,
+            bench_return: None,
             remote: None,
             askpass_sock: None,
             askpass_requests: None,
@@ -676,6 +705,8 @@ impl App {
             copy_chooser: None,
             review: None,
             base_picker: None,
+            bench: None,
+            bench_picker: None,
             help_visible: false,
             should_quit: false,
         };
@@ -924,6 +955,18 @@ impl App {
         self.clipboard.take()
     }
 
+    pub fn cherry_pick_bench(&self) -> Option<&CherryPickBench> {
+        self.bench.as_ref()
+    }
+
+    pub fn cherry_pick_bench_mut(&mut self) -> Option<&mut CherryPickBench> {
+        self.bench.as_mut()
+    }
+
+    pub fn bench_picker(&self) -> Option<&BenchPicker> {
+        self.bench_picker.as_ref()
+    }
+
     pub fn base_picker(&self) -> Option<&BasePicker> {
         self.base_picker.as_ref()
     }
@@ -1032,6 +1075,12 @@ impl App {
             InputContext::Password
         } else if self.alert.is_some() {
             InputContext::Alert
+        } else if self.confirm.is_some() && self.bench.is_some() {
+            InputContext::Confirm
+        } else if self.bench_picker.is_some() {
+            InputContext::BenchPicker
+        } else if self.bench.is_some() {
+            InputContext::CherryPickBench
         } else if self.base_picker.is_some() {
             InputContext::ReviewBase
         } else if self
@@ -1118,6 +1167,10 @@ impl App {
             || self.review.as_ref().is_some_and(|review| {
                 review.summary_pending() || review.diff_pending() || review.is_folding()
             })
+            || self
+                .bench
+                .as_ref()
+                .is_some_and(CherryPickBench::is_animating)
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -1127,6 +1180,14 @@ impl App {
     }
 
     pub fn update(&mut self, action: Action) {
+        if self.in_bench_context() && !passes_through_review(&action) {
+            if self.help_visible {
+                self.help_visible = action != Action::Dismiss;
+            } else {
+                self.update_bench(action);
+            }
+            return;
+        }
         if self.in_review_context() && !passes_through_review(&action) {
             if self.help_visible {
                 self.help_visible = action != Action::Dismiss;
@@ -1236,6 +1297,7 @@ impl App {
             Action::PinsOnly => self.pins_only(),
             Action::OpenPinSwitcher => self.open_pin_switcher(),
             review @ Action::Review(_) => self.update_review(review),
+            bench @ Action::Bench(_) => self.update_bench(bench),
             Action::PinSwitcherSubmit => self.pin_switcher_submit(),
             Action::PinSwitcherPick(number) => self.pin_switcher_pick(number),
             Action::CopyChooserSubmit => {
@@ -1641,6 +1703,10 @@ impl App {
             self.info("Source is already at HEAD".to_string());
             return;
         }
+        let Some(name) = name else {
+            self.info("Use C to cherry-pick a commit");
+            return;
+        };
         self.join = Some(self.build_join_menu(name, oid, &head));
     }
 
@@ -2630,6 +2696,7 @@ impl App {
                 self.write_focus_sets();
                 self.refresh_focus_panel();
             }
+            ConfirmKind::BenchCheckout => self.copy_through_checkout(),
         }
     }
 
@@ -2872,6 +2939,20 @@ impl App {
                 self.cli.reset_keep(&oid).is_ok(),
                 "Undid integration".to_string(),
             ),
+            InversePlan::RestoreRef {
+                branch,
+                previous,
+                written,
+            } => {
+                if self.repo.branch_tip(&branch).as_deref() != Some(written.as_str()) {
+                    self.info(format!("{branch} moved since the copy; not undone"));
+                    return;
+                }
+                (
+                    self.cli.update_branch(&branch, &previous, &written).is_ok(),
+                    format!("Undid copy onto {branch}"),
+                )
+            }
             InversePlan::StashPop => (self.cli.stash_pop(0).is_ok(), "Undid stash".to_string()),
             InversePlan::CheckoutInSubmodule { path, oid } => (
                 GitCli::new(PathBuf::from(&path))
@@ -2937,6 +3018,347 @@ impl App {
         };
         self.visibility.toggle(&name);
         self.reload();
+    }
+
+    fn in_bench_context(&self) -> bool {
+        matches!(
+            self.input_context(),
+            InputContext::CherryPickBench | InputContext::BenchPicker
+        )
+    }
+
+    fn update_bench(&mut self, action: Action) {
+        if let Some(picker) = &mut self.bench_picker {
+            match action {
+                Action::SelectNext | Action::ScrollDown => picker.move_selection(1),
+                Action::SelectPrev | Action::ScrollUp => picker.move_selection(-1),
+                Action::Bench(BenchAction::PickerInput(character)) => picker.input(character),
+                Action::Bench(BenchAction::PickerBackspace) => picker.backspace(),
+                Action::Bench(BenchAction::PickerSubmit) => self.bench_picker_submit(),
+                Action::Dismiss => self.bench_picker = None,
+                _ => {}
+            }
+            return;
+        }
+        let Some(bench) = &mut self.bench else {
+            if action == Action::Bench(BenchAction::Toggle) {
+                self.open_bench();
+            }
+            return;
+        };
+        match action {
+            Action::SelectNext | Action::ScrollDown => bench.move_down(1),
+            Action::SelectPrev | Action::ScrollUp => bench.move_down(-1),
+            Action::PageDown => bench.move_down(self.page as isize),
+            Action::PageUp => bench.move_down(-(self.page as isize)),
+            Action::ToggleFocus | Action::ToggleFocusBack => bench.rotate_focus(),
+            Action::Bench(BenchAction::TogglePick) => bench.toggle_pick(),
+            Action::Bench(BenchAction::PickAll) => bench.pick_all(),
+            Action::Bench(BenchAction::Apply) => self.apply_bench(),
+            Action::Bench(BenchAction::ChangeSource) => {
+                let draft = bench.draft();
+                self.ask_bench_end(BenchEnd::Source, draft);
+            }
+            Action::Bench(BenchAction::ChangeDestination) => {
+                let draft = bench.draft();
+                self.ask_bench_end(BenchEnd::Destination, draft);
+            }
+            Action::Bench(BenchAction::Toggle) | Action::Dismiss => bench.fold(),
+            _ => {}
+        }
+    }
+
+    fn apply_bench(&mut self) {
+        let Some(bench) = &self.bench else {
+            return;
+        };
+        if bench.picks.is_empty() {
+            self.info("Pick a commit first");
+            return;
+        }
+        if bench.analysis_pending() {
+            self.info("Still predicting the copy…");
+            return;
+        }
+        let count = bench.picks.len();
+        let destination = bench.destination.clone();
+        if self.meta.head_branch.as_deref() == Some(destination.as_str()) {
+            let picks: Vec<String> = bench
+                .ordered_picks()
+                .into_iter()
+                .map(|pick| pick.commit.id.to_string())
+                .collect();
+            self.cherry_pick_onto_head(&picks, count);
+            return;
+        }
+        if bench.predicted_conflict() {
+            if !self.status.unstaged.is_empty() || !self.status.staged.is_empty() {
+                self.info("Commit or stash your changes before resolving conflicts");
+                return;
+            }
+            self.confirm = Some(Confirm {
+                message: format!("Check out {destination} and resolve conflicts? (y/n)"),
+                kind: ConfirmKind::BenchCheckout,
+            });
+            return;
+        }
+        match bench.copy_onto_destination(&self.repo, &self.cli) {
+            Some((previous, written)) => {
+                self.last_action = Some(UndoableAction::CopiedToBranch {
+                    branch: destination.clone(),
+                    previous,
+                    written,
+                });
+                self.land_picks(count);
+                self.celebrate(Event::CherryPick);
+                self.info(format!("Copied {count} commit(s) onto {destination}"));
+            }
+            None => self.fail(format!("Could not copy onto {destination}")),
+        }
+    }
+
+    fn land_picks(&mut self, count: usize) {
+        if let Some(bench) = &mut self.bench {
+            bench.clear_picks();
+        }
+        self.reload();
+        if self.intensity != Intensity::Off
+            && let Some(bench) = &mut self.bench
+        {
+            bench.land(count);
+        }
+    }
+
+    fn cherry_pick_onto_head(&mut self, picks: &[String], count: usize) {
+        let previous = self.repo.head_oid();
+        let refs: Vec<&str> = picks.iter().map(String::as_str).collect();
+        match self.cli.cherry_pick_many(&refs) {
+            Ok(()) => {
+                if let Some(previous) = previous {
+                    self.last_action = Some(UndoableAction::CherryPicked { previous });
+                }
+                self.land_picks(count);
+                self.celebrate(Event::CherryPick);
+                self.info(format!("Cherry-picked {count} commit(s)"));
+            }
+            Err(error) => match self.repo.state_op() {
+                Some(op) => {
+                    self.bench = None;
+                    self.enter_conflict_browser(op);
+                }
+                None => self.fail(error.to_string()),
+            },
+        }
+    }
+
+    fn copy_through_checkout(&mut self) {
+        let Some(bench) = &self.bench else {
+            return;
+        };
+        let destination = bench.destination.clone();
+        let picks: Vec<String> = bench
+            .ordered_picks()
+            .into_iter()
+            .map(|pick| pick.commit.id.to_string())
+            .collect();
+        let (Some(original), Some(previous)) = (
+            self.meta
+                .head_branch
+                .clone()
+                .or_else(|| self.repo.head_oid()),
+            self.repo.branch_tip(&destination),
+        ) else {
+            return;
+        };
+        if let Err(error) = self.cli.switch_branch(&destination) {
+            self.fail(error.to_string());
+            return;
+        }
+        self.bench = None;
+        self.bench_return = Some(BenchReturn {
+            original,
+            destination,
+            previous,
+        });
+        let refs: Vec<&str> = picks.iter().map(String::as_str).collect();
+        match self.cli.cherry_pick_many(&refs) {
+            Ok(()) => self.finish_bench_return(),
+            Err(error) => match self.repo.state_op() {
+                Some(op) => {
+                    self.reload();
+                    self.enter_conflict_browser(op);
+                }
+                None => {
+                    self.fail(error.to_string());
+                    self.return_from_bench_checkout();
+                }
+            },
+        }
+    }
+
+    fn finish_bench_return(&mut self) {
+        self.conflict = None;
+        let Some(trip) = &self.bench_return else {
+            return;
+        };
+        if let Some(written) = self.repo.branch_tip(&trip.destination) {
+            self.last_action = Some(UndoableAction::CopiedToBranch {
+                branch: trip.destination.clone(),
+                previous: trip.previous.clone(),
+                written,
+            });
+        }
+        let destination = trip.destination.clone();
+        self.return_from_bench_checkout();
+        self.celebrate(Event::CherryPick);
+        self.info(format!("Copied onto {destination}"));
+    }
+
+    fn return_from_bench_checkout(&mut self) {
+        let Some(trip) = self.bench_return.take() else {
+            return;
+        };
+        if let Err(error) = self.cli.checkout(&trip.original) {
+            self.fail(format!("Stayed on {} — {error}", trip.destination));
+        }
+        self.reload();
+    }
+
+    fn refresh_bench(&mut self) {
+        let Some(bench) = &mut self.bench else {
+            return;
+        };
+        if bench.reload(&self.repo).is_some() {
+            return;
+        }
+        let gone = if self.repo.branch_oid(&bench.source).is_none() {
+            BenchEnd::Source
+        } else {
+            BenchEnd::Destination
+        };
+        let mut draft = bench.draft();
+        match gone {
+            BenchEnd::Source => draft.source = None,
+            BenchEnd::Destination => draft.destination = None,
+        }
+        self.ask_bench_end(gone, draft);
+    }
+
+    fn open_bench(&mut self) {
+        if self.on_wip {
+            return;
+        }
+        let Some(commit) = self.selected_commit().map(|commit| commit.id) else {
+            return;
+        };
+        let containing = self.cli.branches_containing(&commit.to_string());
+        let candidates = source_candidates(&self.repo, commit, &containing);
+        let draft = BenchDraft {
+            source: None,
+            destination: None,
+            pick: Some(commit),
+        };
+        match candidates.as_slice() {
+            [only] => self.advance_bench_draft(BenchDraft {
+                source: Some(only.clone()),
+                ..draft
+            }),
+            [] => self.ask_bench_end(
+                BenchEnd::Source,
+                BenchDraft {
+                    pick: None,
+                    ..draft
+                },
+            ),
+            _ => {
+                self.bench_picker = Some(BenchPicker::opening(BenchEnd::Source, candidates, draft))
+            }
+        }
+    }
+
+    fn advance_bench_draft(&mut self, mut draft: BenchDraft) {
+        let Some(source) = draft.source.clone() else {
+            self.ask_bench_end(BenchEnd::Source, draft);
+            return;
+        };
+        if draft.destination.is_none() {
+            draft.destination = self.meta.head_branch.clone().filter(|head| *head != source);
+        }
+        let Some(destination) = draft.destination.clone() else {
+            self.ask_bench_end(BenchEnd::Destination, draft);
+            return;
+        };
+        if let Some(bench) = &mut self.bench {
+            bench.retarget(&self.repo, &source, &destination);
+            return;
+        }
+        let Some(mut bench) = CherryPickBench::open(&self.repo, &source, &destination) else {
+            return;
+        };
+        if let Some(pick) = draft.pick {
+            bench.select(pick);
+            bench.toggle_pick();
+        }
+        self.bench = Some(bench);
+    }
+
+    fn ask_bench_end(&mut self, end: BenchEnd, draft: BenchDraft) {
+        let names = match end {
+            BenchEnd::Source => {
+                let current = draft.source.as_deref();
+                self.load_branch_entries()
+                    .into_iter()
+                    .map(|entry| entry.name)
+                    .filter(|name| Some(name.as_str()) != current)
+                    .collect()
+            }
+            BenchEnd::Destination => self.destination_names(draft.source.as_deref()),
+        };
+        self.bench_picker = Some(BenchPicker::opening(end, names, draft));
+    }
+
+    fn destination_names(&self, source: Option<&str>) -> Vec<String> {
+        let pins: Vec<String> = pins::switcher_rows(
+            self.visibility.pins(),
+            self.meta.head_branch.as_deref(),
+            &self.repo.checkout_history(),
+            |pin| self.pin_local_name(pin),
+        )
+        .into_iter()
+        .map(|row| row.name)
+        .filter(|name| self.repo.has_local_branch(name))
+        .collect();
+        let mut rest: Vec<String> = self
+            .load_branch_entries()
+            .into_iter()
+            .filter(|entry| entry.remote.is_none() && !pins.contains(&entry.name))
+            .map(|entry| entry.name)
+            .collect();
+        rest.sort();
+        pins.into_iter()
+            .chain(rest)
+            .filter(|name| Some(name.as_str()) != source)
+            .collect()
+    }
+
+    fn bench_picker_submit(&mut self) {
+        let Some(picker) = self.bench_picker.take() else {
+            return;
+        };
+        let Some(chosen) = picker.chosen().map(str::to_string) else {
+            return;
+        };
+        let mut draft = picker.draft;
+        match picker.end {
+            BenchEnd::Source => {
+                if draft.destination.as_deref() == Some(chosen.as_str()) {
+                    draft.destination = None;
+                }
+                draft.source = Some(chosen);
+            }
+            BenchEnd::Destination => draft.destination = Some(chosen),
+        }
+        self.advance_bench_draft(draft);
     }
 
     fn in_review_context(&self) -> bool {
@@ -3671,74 +4093,39 @@ impl App {
         self.open_join_for(source_name, source_oid);
     }
 
-    fn build_join_menu(
-        &self,
-        source_name: Option<String>,
-        source_oid: String,
-        head: &str,
-    ) -> JoinMenu {
+    fn build_join_menu(&self, source_name: String, source_oid: String, head: &str) -> JoinMenu {
         let merge = self.predict_merge(head, &source_oid);
-        let cherry = self.predict_cherry_pick(head, &source_oid);
-        let mut options = Vec::new();
-        let mut conflict_files = Vec::new();
-
-        if source_name.is_some() {
-            options.push(JoinOption {
+        let attached = self.repo.head_branch().is_some();
+        let ahead = self.repo.outgoing_count(head, &source_oid);
+        let options = vec![
+            JoinOption {
                 strategy: JoinStrategy::FastForward,
                 label: "Fast-forward".to_string(),
                 note: fast_forward_note(&merge),
                 enabled: matches!(merge, MergePrediction::FastForward),
-            });
-            options.push(JoinOption {
+            },
+            JoinOption {
                 strategy: JoinStrategy::MergeCommit,
                 label: "Merge commit".to_string(),
                 note: merge_note(&merge),
                 enabled: !matches!(merge, MergePrediction::UpToDate),
-            });
-            options.push(JoinOption {
-                strategy: JoinStrategy::CherryPick,
-                label: "Cherry-pick tip".to_string(),
-                note: cherry_pick_note(&cherry),
-                enabled: matches!(
-                    cherry,
-                    MergePrediction::Clean | MergePrediction::Conflicts { .. }
-                ),
-            });
-            let attached = self.repo.head_branch().is_some();
-            let ahead = self.repo.outgoing_count(head, &source_oid);
-            options.push(JoinOption {
+            },
+            JoinOption {
                 strategy: JoinStrategy::Rebase,
                 label: "Rebase onto".to_string(),
                 note: rebase_note(&merge, ahead, attached),
                 enabled: attached && !matches!(merge, MergePrediction::UpToDate),
-            });
-            if let MergePrediction::Conflicts { files } = &merge {
-                conflict_files = files.clone();
-            }
-        } else {
-            options.push(JoinOption {
-                strategy: JoinStrategy::CherryPick,
-                label: "Cherry-pick".to_string(),
-                note: cherry_pick_note(&cherry),
-                enabled: matches!(
-                    cherry,
-                    MergePrediction::Clean | MergePrediction::Conflicts { .. }
-                ),
-            });
-            if let MergePrediction::Conflicts { files } = &cherry {
-                conflict_files = files.clone();
-            }
-        }
-
-        let title = match &source_name {
-            Some(name) => format!("Join {name} into HEAD"),
-            None => format!("Cherry-pick {} onto HEAD", short_oid(&source_oid)),
+            },
+        ];
+        let conflict_files = match &merge {
+            MergePrediction::Conflicts { files } => files.clone(),
+            _ => Vec::new(),
         };
         let incoming = self.repo.incoming_count(head, &source_oid);
-        let summary = join_summary(&merge, source_name.is_some(), incoming);
+        let summary = join_summary(&merge, incoming);
 
         JoinMenu {
-            title,
+            title: format!("Join {source_name} into HEAD"),
             source_name,
             source_oid,
             panel: SlidePanel::opening(options),
@@ -3756,16 +4143,6 @@ impl App {
         classify(ancestry, &merge_tree)
     }
 
-    fn predict_cherry_pick(&self, head: &str, commit: &str) -> MergePrediction {
-        let base = self.repo.commit_parent(commit);
-        let merge_tree = self.cli.merge_tree(head, commit, base.as_deref());
-        let ancestry = Ancestry {
-            source_in_head: self.repo.is_ancestor(commit, head),
-            head_in_source: false,
-        };
-        classify(ancestry, &merge_tree)
-    }
-
     fn execute_join(&mut self) {
         let Some(menu) = self.join.as_ref() else {
             return;
@@ -3778,11 +4155,7 @@ impl App {
             return;
         }
         let strategy = option.strategy;
-        let source_ref = menu
-            .source_name
-            .clone()
-            .unwrap_or_else(|| menu.source_oid.clone());
-        let source_oid = menu.source_oid.clone();
+        let source_ref = menu.source_name.clone();
 
         if strategy == JoinStrategy::Rebase {
             self.execute_rebase(&source_ref);
@@ -3793,25 +4166,17 @@ impl App {
         let (result, label) = match strategy {
             JoinStrategy::FastForward => (self.cli.merge_ff(&source_ref), "Fast-forwarded"),
             JoinStrategy::MergeCommit => (self.cli.merge_no_ff(&source_ref), "Merged"),
-            JoinStrategy::CherryPick => (self.cli.cherry_pick(&source_oid), "Cherry-picked"),
             JoinStrategy::Rebase => unreachable!(),
         };
 
         match result {
             Ok(()) => {
                 if let Some(previous) = previous {
-                    self.last_action = Some(match strategy {
-                        JoinStrategy::CherryPick => UndoableAction::CherryPicked { previous },
-                        _ => UndoableAction::Merged { previous },
-                    });
+                    self.last_action = Some(UndoableAction::Merged { previous });
                 }
                 self.close_join_menu();
                 self.reload();
-                self.celebrate(if strategy == JoinStrategy::CherryPick {
-                    Event::CherryPick
-                } else {
-                    Event::Merge
-                });
+                self.celebrate(Event::Merge);
                 self.info(label.to_string());
             }
             Err(error) => match self.repo.state_op() {
@@ -4018,6 +4383,7 @@ impl App {
         }
         let previous = self.repo.head_oid();
         match self.cli.commit(message) {
+            Ok(()) if self.bench_return.is_some() => self.continue_bench_sequence(),
             Ok(()) => {
                 if let Some(previous) = previous {
                     self.last_action = Some(match op {
@@ -4035,6 +4401,22 @@ impl App {
             }
             Err(error) => self.fail(error.to_string()),
         }
+    }
+
+    fn continue_bench_sequence(&mut self) {
+        if self.repo.sequencer_pending()
+            && let Err(error) = self.cli.cherry_pick_continue()
+        {
+            match self.repo.state_op() {
+                Some(op) => {
+                    self.reload();
+                    self.enter_conflict_browser(op);
+                }
+                None => self.fail(error.to_string()),
+            }
+            return;
+        }
+        self.finish_bench_return();
     }
 
     fn request_edit(&mut self) {
@@ -4089,6 +4471,7 @@ impl App {
             Ok(()) => self.info(format!("Aborted {}", op.label())),
             Err(error) => self.fail(error.to_string()),
         }
+        self.return_from_bench_checkout();
         self.reload();
     }
 
@@ -4367,6 +4750,7 @@ impl App {
         self.refresh_parent_sync();
         self.detect_conflict();
         self.refresh_review();
+        self.refresh_bench();
     }
 
     fn refresh_review(&mut self) {
@@ -4488,6 +4872,20 @@ impl App {
             self.focus_name = None;
         }
         slide::advance_panel(&mut self.submodule_panel, step);
+        if let Some(bench) = &mut self.bench {
+            bench.poll_background();
+            bench.advance_landing(dt.as_secs_f32());
+            let dropped = std::mem::take(&mut bench.dropped);
+            let step = dt.as_secs_f32() / NAV_TRANSITION.as_secs_f32();
+            if bench.advance_unfold(step) {
+                self.bench = None;
+            }
+            if dropped > 0 {
+                self.info(format!(
+                    "Dropped {dropped} pick(s) already in the destination"
+                ));
+            }
+        }
         if let Some(review) = &mut self.review {
             review.poll_background();
             let step = dt.as_secs_f32() / NAV_TRANSITION.as_secs_f32();
@@ -4529,10 +4927,6 @@ impl App {
     fn clamp_offset(&mut self) {
         self.offset = self.offset.min(self.last_index());
     }
-}
-
-fn short_oid(oid: &str) -> String {
-    oid.chars().take(7).collect()
 }
 
 fn discard_mode(file: &WorkingFile) -> DiscardMode {
@@ -4578,22 +4972,13 @@ fn rebase_note(prediction: &MergePrediction, ahead: usize, attached: bool) -> St
     format!("replays {ahead} commit{plural}")
 }
 
-fn cherry_pick_note(prediction: &MergePrediction) -> String {
-    match prediction {
-        MergePrediction::Clean | MergePrediction::FastForward => "clean".to_string(),
-        MergePrediction::UpToDate => "already applied".to_string(),
-        MergePrediction::Conflicts { files } => format!("{} conflicts", files.len()),
-    }
-}
-
-fn join_summary(prediction: &MergePrediction, is_branch: bool, incoming: usize) -> String {
+fn join_summary(prediction: &MergePrediction, incoming: usize) -> String {
     match prediction {
         MergePrediction::UpToDate => "already up to date".to_string(),
         MergePrediction::FastForward => format!("+{incoming} commits · fast-forward · linear"),
-        MergePrediction::Clean if is_branch => {
+        MergePrediction::Clean => {
             format!("+{incoming} commits · merge commit · 2 parents · clean")
         }
-        MergePrediction::Clean => "cherry-pick · clean".to_string(),
         MergePrediction::Conflicts { files } => {
             format!("{} conflicting file(s) · resolve in 3.3", files.len())
         }

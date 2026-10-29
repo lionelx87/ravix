@@ -36,6 +36,20 @@ _Avoid_: Parent branch, upstream, target
 A read-only mode with its own identity, dedicated to inspecting one branch's own commits against its base.
 _Avoid_: Branch log, branch lens, history view
 
+### Cherry-picking
+
+**Cherry-pick bench**:
+A mode with its own identity for copying commits from one or more source branches onto a destination branch, leaving the sources untouched.
+_Avoid_: Cherry-pick mode, commit transfer, move commits
+
+**Pick**:
+A commit marked on the cherry-pick bench to be copied onto the destination; picks persist while the source changes.
+_Avoid_: Selection, basket, marked commit
+
+**Destination**:
+The local branch that receives the picks on the cherry-pick bench; never the same branch as the source.
+_Avoid_: Target, onto branch
+
 ### Navigation
 
 **Pin switcher**:

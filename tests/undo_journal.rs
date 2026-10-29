@@ -164,3 +164,19 @@ fn updating_a_submodule_inverts_to_a_checkout_inside_it() {
         }
     );
 }
+
+#[test]
+fn copying_picks_onto_another_branch_inverts_to_a_guarded_ref_restore() {
+    assert_eq!(
+        invert(&UndoableAction::CopiedToBranch {
+            branch: "release/2.3".into(),
+            previous: "aaa".into(),
+            written: "bbb".into(),
+        }),
+        InversePlan::RestoreRef {
+            branch: "release/2.3".into(),
+            previous: "aaa".into(),
+            written: "bbb".into(),
+        }
+    );
+}

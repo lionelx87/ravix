@@ -3,7 +3,7 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::app::{Action, InputContext, ReviewAction};
+use crate::app::{Action, BenchAction, InputContext, ReviewAction};
 
 const FILE_PANE_WIDTH: u16 = 46;
 
@@ -45,6 +45,8 @@ impl InputMap {
             InputContext::BranchReview => on_review_key(key),
             InputContext::ReviewBase => on_review_base_key(key),
             InputContext::ReviewFilter => on_review_filter_key(key),
+            InputContext::CherryPickBench => on_bench_key(key),
+            InputContext::BenchPicker => on_bench_picker_key(key),
         }
     }
 
@@ -82,6 +84,7 @@ impl InputMap {
             KeyCode::Char('b') => Some(Action::ToggleBranches),
             KeyCode::Char('B') => Some(Action::OpenPinSwitcher),
             KeyCode::Char('L') => Some(Action::Review(ReviewAction::Toggle)),
+            KeyCode::Char('C') => Some(Action::Bench(BenchAction::Toggle)),
             KeyCode::Char('F') => Some(Action::ToggleFocusPanel),
             KeyCode::Char('>') => Some(Action::ToggleSubmodulePanel),
             KeyCode::Char('<') => Some(Action::ExitSubmodule),
@@ -101,7 +104,11 @@ impl InputMap {
     ) -> Option<Action> {
         if matches!(
             context,
-            InputContext::BranchReview | InputContext::ReviewBase | InputContext::ReviewFilter
+            InputContext::BranchReview
+                | InputContext::ReviewBase
+                | InputContext::ReviewFilter
+                | InputContext::CherryPickBench
+                | InputContext::BenchPicker
         ) {
             return match mouse.kind {
                 MouseEventKind::ScrollDown => Some(Action::ScrollDown),
@@ -399,6 +406,44 @@ fn on_review_filter_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Down => Some(Action::SelectNext),
         KeyCode::Char(character) if !ctrl => {
             Some(Action::Review(ReviewAction::FilterInput(character)))
+        }
+        _ => None,
+    }
+}
+
+fn on_bench_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::PageDown => Some(Action::PageDown),
+        KeyCode::PageUp => Some(Action::PageUp),
+        KeyCode::Tab => Some(Action::ToggleFocus),
+        KeyCode::BackTab => Some(Action::ToggleFocusBack),
+        KeyCode::Char(' ') => Some(Action::Bench(BenchAction::TogglePick)),
+        KeyCode::Char('a') => Some(Action::Bench(BenchAction::PickAll)),
+        KeyCode::Char('b') => Some(Action::Bench(BenchAction::ChangeSource)),
+        KeyCode::Char('B') => Some(Action::Bench(BenchAction::ChangeDestination)),
+        KeyCode::Enter => Some(Action::Bench(BenchAction::Apply)),
+        KeyCode::Char('C') => Some(Action::Bench(BenchAction::Toggle)),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_bench_picker_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::Bench(BenchAction::PickerSubmit)),
+        KeyCode::Backspace => Some(Action::Bench(BenchAction::PickerBackspace)),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('n') if ctrl => Some(Action::SelectNext),
+        KeyCode::Char('p') if ctrl => Some(Action::SelectPrev),
+        KeyCode::Char(character) if !ctrl => {
+            Some(Action::Bench(BenchAction::PickerInput(character)))
         }
         _ => None,
     }

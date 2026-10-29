@@ -25,6 +25,7 @@ use crate::stash::{Focus as StashFocus, StashEntry, StashMessage, StashView};
 use crate::submodule::{Submodule, SyncState};
 use crate::working::{Focus, WorkingView};
 
+mod bench_view;
 mod graph_view;
 mod review_view;
 
@@ -261,6 +262,9 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     if let Some(name) = app.focus_name() {
         render_focus_name(frame, name, &theme, area);
     }
+    if app.cherry_pick_bench().is_some() {
+        bench_view::render(frame, app, &theme, area, now);
+    }
     if let Some(confirm) = app.confirm() {
         render_confirm(frame, confirm, &theme, area);
     }
@@ -269,6 +273,9 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     }
     if let Some(picker) = app.base_picker() {
         review_view::render_base_picker(frame, picker, &theme, area);
+    }
+    if let Some(picker) = app.bench_picker() {
+        bench_view::render_picker(frame, picker, &theme, area);
     }
     if let Some(palette) = app.palette() {
         render_palette(frame, palette, &theme, area);
@@ -816,7 +823,7 @@ fn render_ghost_preview(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area:
             ghost.add_modifier(Modifier::ITALIC),
         ),
     ]);
-    let source = menu.source_name.as_deref().unwrap_or("source");
+    let source = menu.source_name.as_str();
     let edge_line = Line::from(vec![
         Span::styled(" ╱ ╲", ghost),
         Span::styled(

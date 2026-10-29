@@ -1,5 +1,6 @@
 pub mod app;
 pub mod askpass;
+pub mod bench;
 pub mod branches;
 pub mod celebrate;
 pub mod clipboard;
