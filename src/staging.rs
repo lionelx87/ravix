@@ -89,3 +89,29 @@ pub fn build_patch(diff: &FileDiff, selected: &[usize]) -> String {
 
     patch
 }
+
+pub const DIFF_LINE_CAP: usize = 4_000;
+
+pub fn capped(hunks: impl Iterator<Item = Hunk>, cap: usize) -> Vec<Hunk> {
+    let mut kept = Vec::new();
+    let mut shown = 0;
+    let mut hidden = 0;
+    for mut hunk in hunks {
+        let room = cap.saturating_sub(shown);
+        if hunk.lines.len() > room {
+            hidden += hunk.lines.len() - room;
+            hunk.lines.truncate(room);
+        }
+        shown += hunk.lines.len();
+        if !hunk.lines.is_empty() {
+            kept.push(hunk);
+        }
+    }
+    if hidden > 0 {
+        kept.push(Hunk {
+            header: format!("… {hidden} more lines not shown"),
+            lines: Vec::new(),
+        });
+    }
+    kept
+}

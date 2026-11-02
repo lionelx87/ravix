@@ -2,12 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use git2::{BranchType, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions};
 
 use crate::branches::BranchInput;
 use crate::conflict::OpKind;
+use crate::history::Rev;
 use crate::staging::{FileDiff, Hunk};
 use crate::submodule::{Submodule, SyncState};
 use crate::visibility::Visibility;
@@ -179,6 +181,12 @@ impl RepoStamp {
     }
 }
 
+pub enum FileVersion {
+    Absent,
+    Blob(Vec<u8>),
+    Submodule(Oid),
+}
+
 pub struct Repo {
     inner: Repository,
     changed_files_cache: Mutex<HashMap<Oid, Vec<FileChange>>>,
@@ -240,6 +248,22 @@ impl Repo {
 
     pub fn has_local_branch(&self, name: &str) -> bool {
         self.inner.find_branch(name, BranchType::Local).is_ok()
+    }
+
+    pub fn nearest_branch_containing(&self, id: Oid) -> Option<String> {
+        let branches = self.inner.branches(Some(BranchType::Local)).ok()?;
+        branches
+            .filter_map(Result::ok)
+            .filter_map(|(branch, _)| {
+                let name = branch.name().ok().flatten()?.to_string();
+                let tip = branch.get().target()?;
+                let contains =
+                    tip == id || self.inner.graph_descendant_of(tip, id).unwrap_or(false);
+                let (ahead, _) = self.inner.graph_ahead_behind(tip, id).ok()?;
+                contains.then_some((ahead, name))
+            })
+            .min()
+            .map(|(_, name)| name)
     }
 
     pub fn has_remote_branch(&self, name: &str) -> bool {
@@ -822,6 +846,84 @@ impl Repo {
         Ok(files)
     }
 
+    pub fn head_files(&self) -> Vec<String> {
+        let Some(tree) = self
+            .inner
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_tree().ok())
+        else {
+            return Vec::new();
+        };
+        let mut files = Vec::new();
+        let _ = tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+            if matches!(
+                entry.kind(),
+                Some(git2::ObjectType::Blob | git2::ObjectType::Commit)
+            ) && let Ok(name) = entry.name()
+            {
+                files.push(format!("{root}{name}"));
+            }
+            git2::TreeWalkResult::Ok
+        });
+        files
+    }
+
+    pub fn file_version(&self, rev: &Rev<Oid>, path: &str) -> FileVersion {
+        self.try_file_version(rev, path)
+            .unwrap_or(FileVersion::Absent)
+    }
+
+    fn try_file_version(&self, rev: &Rev<Oid>, path: &str) -> Option<FileVersion> {
+        let commit = match rev {
+            Rev::Worktree => {
+                let bytes = std::fs::read(self.inner.workdir()?.join(path)).ok()?;
+                return Some(FileVersion::Blob(bytes));
+            }
+            Rev::Head => self.inner.head().ok()?.peel_to_commit().ok()?,
+            Rev::Commit(id) => self.inner.find_commit(*id).ok()?,
+            Rev::FirstParent(id) => self.inner.find_commit(*id).ok()?.parent(0).ok()?,
+        };
+        let entry = commit.tree().ok()?.get_path(Path::new(path)).ok()?;
+        if entry.kind() == Some(git2::ObjectType::Commit) {
+            return Some(FileVersion::Submodule(entry.id()));
+        }
+        let blob = self.inner.find_blob(entry.id()).ok()?;
+        Some(FileVersion::Blob(blob.content().to_vec()))
+    }
+
+    pub fn blob_diff(
+        &self,
+        old: (&[u8], &str),
+        new: (&[u8], &str),
+        context: u32,
+    ) -> Result<Option<Vec<Hunk>>, git2::Error> {
+        let mut options = DiffOptions::new();
+        options.context_lines(context);
+        let patch = Patch::from_buffers(
+            old.0,
+            Some(Path::new(old.1)),
+            new.0,
+            Some(Path::new(new.1)),
+            Some(&mut options),
+        )?;
+        if patch.delta().flags().is_binary() {
+            return Ok(None);
+        }
+        Self::patch_hunks(&patch).map(Some)
+    }
+
+    pub fn is_head_ancestor(&self, id: Oid) -> bool {
+        self.head_oid()
+            .is_some_and(|head| self.is_ancestor(&id.to_string(), &head))
+    }
+
+    pub fn path_is_dirty(&self, path: &str) -> bool {
+        self.inner
+            .status_file(Path::new(path))
+            .is_ok_and(|status| !status.is_empty() && !status.is_ignored())
+    }
+
     fn diff_to_file(diff: &git2::Diff, path: &str) -> Result<Option<FileDiff>, git2::Error> {
         for index in 0..diff.deltas().count() {
             if let Some(file) = Self::patch_at(diff, index, path)?
@@ -855,6 +957,14 @@ impl Repo {
             .and_then(Path::to_str)
             .unwrap_or(new_path);
 
+        Ok(Some(FileDiff {
+            old_path: old_path.to_string(),
+            new_path: new_path.to_string(),
+            hunks: Self::patch_hunks(&patch)?,
+        }))
+    }
+
+    fn patch_hunks(patch: &Patch) -> Result<Vec<Hunk>, git2::Error> {
         let mut hunks = Vec::new();
         for hunk_index in 0..patch.num_hunks() {
             let (hunk, line_count) = patch.hunk(hunk_index)?;
@@ -875,12 +985,7 @@ impl Repo {
             }
             hunks.push(Hunk { header, lines });
         }
-
-        Ok(Some(FileDiff {
-            old_path: old_path.to_string(),
-            new_path: new_path.to_string(),
-            hunks,
-        }))
+        Ok(hunks)
     }
 
     pub fn submodules(&self) -> Vec<Submodule> {
@@ -1064,4 +1169,42 @@ pub struct Authorship {
     pub email: String,
     pub date: String,
     pub message: String,
+}
+
+pub fn follow_file_log(workdir: &Path, tip: &str, path: &str) -> std::io::Result<Child> {
+    Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "log",
+            "--follow",
+            "-z",
+            "--no-color",
+            "--diff-merges=first-parent",
+            crate::history::LOG_FORMAT,
+            "--numstat",
+            "-M",
+            tip,
+            "--",
+            path,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+pub fn merge_changes_file(workdir: &Path, merge: &str, path: &str) -> bool {
+    Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "diff-tree",
+            "--cc",
+            "-p",
+            "--no-commit-id",
+            merge,
+            "--",
+            path,
+        ])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|output| !output.stdout.is_empty())
 }

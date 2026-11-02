@@ -511,7 +511,7 @@ fn clip(text: &str, width: usize) -> String {
     clipped
 }
 
-fn clip_pad(text: &str, width: usize) -> String {
+pub(super) fn clip_pad(text: &str, width: usize) -> String {
     let clipped = clip(text, width);
     let pad = width.saturating_sub(display_width(&clipped));
     format!("{clipped}{}", " ".repeat(pad))

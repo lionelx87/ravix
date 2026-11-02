@@ -59,6 +59,10 @@ pub fn context_help(context: InputContext) -> HelpPage {
             title: "Commit diff",
             bindings: COMMIT_DIFF,
         },
+        InputContext::FileHistory => HelpPage {
+            title: "File history",
+            bindings: FILE_HISTORY,
+        },
         _ => HelpPage {
             title: "Keys",
             bindings: FALLBACK,
@@ -75,7 +79,10 @@ const GRAPH: &[(&str, &str)] = &[
     ("f / p / P", "fetch / pull / push"),
     ("s / S", "stash changes / stash list"),
     ("b / B", "branches panel / pin switcher"),
-    ("L / C", "branch review / cherry-pick bench"),
+    (
+        "L / C / H",
+        "branch review / cherry-pick bench / file history",
+    ),
     ("y / Y", "copy the short hash / a branch name"),
     ("F", "focus sets"),
     ("> / <", "submodules: enter / exit"),
@@ -132,6 +139,7 @@ const WORKING: &[(&str, &str)] = &[
     ("Tab", "focus files / hunks"),
     ("v", "toggle side-by-side diff"),
     ("c", "commit staged changes"),
+    ("H", "history of the focused file"),
     ("d", "discard file or hunk"),
     ("s", "stash changes"),
     ("b", "branches panel"),
@@ -194,6 +202,7 @@ const BRANCH_REVIEW: &[(&str, &str)] = &[
     ),
     ("v", "toggle side-by-side diff"),
     ("b", "choose another base (this review only)"),
+    ("H", "in files: history of that file"),
     ("/", "filter commits by message or author"),
     ("y", "copy the commit's short hash"),
     ("Y", "copy the reviewed branch's name"),
@@ -201,10 +210,26 @@ const BRANCH_REVIEW: &[(&str, &str)] = &[
     ("L", "leave the review"),
 ];
 
+const FILE_HISTORY: &[(&str, &str)] = &[
+    ("j / k", "move inside the focused zone"),
+    ("gg / G", "newest / oldest commit"),
+    ("Tab", "focus commits ↔ diff"),
+    ("Space", "anchor this version (on the anchor: drop it)"),
+    ("f", "toggle the diff / the full file at that version"),
+    ("n / N", "next / previous change"),
+    ("v", "toggle side-by-side diff"),
+    ("/", "filter commits by message or author"),
+    ("y", "copy the commit's short hash"),
+    ("Enter", "show the commit in the graph"),
+    ("Esc", "clear the filter, then the anchor, then leave"),
+    ("H", "leave the file history"),
+];
+
 const COMMIT_DIFF: &[(&str, &str)] = &[
     ("j / k", "select next / previous file"),
     ("v", "toggle side-by-side diff"),
     ("y", "copy the commit's short hash"),
+    ("H", "history of the selected file"),
     ("Esc", "collapse to the graph"),
 ];
 

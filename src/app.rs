@@ -21,6 +21,7 @@ use crate::git::{
     StageState, WorkingFile, WorkingStatus,
 };
 use crate::graph::{GraphCommit, GraphLayout, GraphRow};
+use crate::history::{FileFinder, FileHistory, Origin, RowKey};
 use crate::join::{Ancestry, JoinMenu, JoinOption, JoinStrategy, MergePrediction, classify};
 use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
@@ -116,6 +117,7 @@ pub enum Action {
     OpenPinSwitcher,
     Review(ReviewAction),
     Bench(BenchAction),
+    History(HistoryAction),
     PinSwitcherSubmit,
     PinSwitcherPick(usize),
     CopyChooserSubmit,
@@ -175,6 +177,23 @@ pub enum ReviewAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryAction {
+    Open,
+    FinderInput(char),
+    FinderBackspace,
+    FinderSubmit,
+    ToggleAnchor,
+    ToggleFullFile,
+    NextHunk,
+    PrevHunk,
+    StartFilter,
+    FilterInput(char),
+    FilterBackspace,
+    FilterSubmit,
+    JumpToGraph,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BenchAction {
     Toggle,
     TogglePick,
@@ -215,6 +234,9 @@ pub enum InputContext {
     ReviewFilter,
     CherryPickBench,
     BenchPicker,
+    FileHistory,
+    FileFinder,
+    HistoryFilter,
 }
 
 pub struct Panel {
@@ -401,6 +423,7 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("Pin switcher", "B", Action::OpenPinSwitcher),
     ("Branch review", "L", Action::Review(ReviewAction::Toggle)),
     ("Cherry-pick bench", "C", Action::Bench(BenchAction::Toggle)),
+    ("File history", "H", Action::History(HistoryAction::Open)),
     ("Focus sets", "F", Action::ToggleFocusPanel),
     ("Submodules", ">", Action::ToggleSubmodulePanel),
     ("New branch", "n", Action::NewBranch),
@@ -410,6 +433,12 @@ const COMMANDS: &[(&str, &str, Action)] = &[
     ("Help", "?", Action::ToggleHelp),
     ("Quit", "q", Action::Quit),
 ];
+
+struct HistorySource {
+    path: String,
+    commit: Oid,
+    from: String,
+}
 
 pub struct Celebration {
     pub progress: f32,
@@ -612,6 +641,8 @@ pub struct App {
     base_picker: Option<BasePicker>,
     bench: Option<CherryPickBench>,
     bench_picker: Option<BenchPicker>,
+    history: Option<FileHistory>,
+    file_finder: Option<FileFinder>,
     help_visible: bool,
     should_quit: bool,
 }
@@ -710,6 +741,8 @@ impl App {
             base_picker: None,
             bench: None,
             bench_picker: None,
+            history: None,
+            file_finder: None,
             help_visible: false,
             should_quit: false,
         };
@@ -970,6 +1003,18 @@ impl App {
         self.bench_picker.as_ref()
     }
 
+    pub fn file_history(&self) -> Option<&FileHistory> {
+        self.history.as_ref()
+    }
+
+    pub fn file_history_mut(&mut self) -> Option<&mut FileHistory> {
+        self.history.as_mut()
+    }
+
+    pub fn file_finder(&self) -> Option<&FileFinder> {
+        self.file_finder.as_ref()
+    }
+
     pub fn base_picker(&self) -> Option<&BasePicker> {
         self.base_picker.as_ref()
     }
@@ -1078,6 +1123,16 @@ impl App {
             InputContext::Password
         } else if self.alert.is_some() {
             InputContext::Alert
+        } else if self.file_finder.is_some() {
+            InputContext::FileFinder
+        } else if self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.query_editing)
+        {
+            InputContext::HistoryFilter
+        } else if self.history.is_some() {
+            InputContext::FileHistory
         } else if self.confirm.is_some() && self.bench.is_some() {
             InputContext::Confirm
         } else if self.bench_picker.is_some() {
@@ -1174,6 +1229,9 @@ impl App {
                 .bench
                 .as_ref()
                 .is_some_and(CherryPickBench::is_animating)
+            || self.history.as_ref().is_some_and(|history| {
+                history.loading() || history.diff_pending() || history.is_folding()
+            })
     }
 
     pub fn set_viewport(&mut self, height: usize) {
@@ -1183,6 +1241,14 @@ impl App {
     }
 
     pub fn update(&mut self, action: Action) {
+        if self.in_history_context() && !passes_through_mode(&action) {
+            if self.help_visible {
+                self.help_visible = action != Action::Dismiss;
+            } else {
+                self.update_history(action);
+            }
+            return;
+        }
         let in_bench = self.in_bench_context();
         if (in_bench || self.in_review_context()) && !passes_through_mode(&action) {
             if self.help_visible {
@@ -1296,6 +1362,7 @@ impl App {
             Action::OpenPinSwitcher => self.open_pin_switcher(),
             review @ Action::Review(_) => self.update_review(review),
             bench @ Action::Bench(_) => self.update_bench(bench),
+            history @ Action::History(_) => self.update_history(history),
             Action::PinSwitcherSubmit => self.pin_switcher_submit(),
             Action::PinSwitcherPick(number) => self.pin_switcher_pick(number),
             Action::CopyChooserSubmit => {
@@ -3458,7 +3525,187 @@ impl App {
                 self.copy(Copied::Branch(branch));
             }
             Action::Review(ReviewAction::Toggle) => review.fold(),
+            Action::History(HistoryAction::Open) => self.open_file_history(),
             Action::Dismiss if !review.clear_filters(&self.repo) => review.fold(),
+            _ => {}
+        }
+    }
+
+    fn in_history_context(&self) -> bool {
+        matches!(
+            self.input_context(),
+            InputContext::FileHistory | InputContext::FileFinder | InputContext::HistoryFilter
+        )
+    }
+
+    fn update_history(&mut self, action: Action) {
+        if let Some(finder) = &mut self.file_finder {
+            match action {
+                Action::SelectNext | Action::ScrollDown => finder.move_selection(1),
+                Action::SelectPrev | Action::ScrollUp => finder.move_selection(-1),
+                Action::History(HistoryAction::FinderInput(character)) => finder.input(character),
+                Action::History(HistoryAction::FinderBackspace) => finder.backspace(),
+                Action::History(HistoryAction::FinderSubmit) => self.finder_submit(),
+                Action::Dismiss => self.file_finder = None,
+                _ => {}
+            }
+            return;
+        }
+        let Some(history) = &mut self.history else {
+            if action == Action::History(HistoryAction::Open) {
+                self.open_file_history();
+            }
+            return;
+        };
+        let repo = &self.repo;
+        if history.query_editing {
+            match action {
+                Action::History(HistoryAction::FilterInput(character)) => {
+                    history.query_input(repo, character)
+                }
+                Action::History(HistoryAction::FilterBackspace) => history.query_backspace(repo),
+                Action::History(HistoryAction::FilterSubmit) => history.submit_query(),
+                Action::Dismiss => history.clear_query(repo),
+                Action::SelectNext | Action::ScrollDown => history.move_down(repo, 1),
+                Action::SelectPrev | Action::ScrollUp => history.move_down(repo, -1),
+                _ => {}
+            }
+            return;
+        }
+        match action {
+            Action::SelectNext | Action::ScrollDown => history.move_down(repo, 1),
+            Action::SelectPrev | Action::ScrollUp => history.move_down(repo, -1),
+            Action::PageDown => history.move_down(repo, self.page as isize),
+            Action::PageUp => history.move_down(repo, -(self.page as isize)),
+            Action::SelectFirst => history.select_newest(repo),
+            Action::SelectLast => history.select_oldest(repo),
+            Action::ScrollDiffLeft => {
+                history.diff_hscroll = history.diff_hscroll.saturating_sub(SCROLL_STEP as u16)
+            }
+            Action::ScrollDiffRight => {
+                history.diff_hscroll = history.diff_hscroll.saturating_add(SCROLL_STEP as u16)
+            }
+            Action::ToggleFocus | Action::ToggleFocusBack => history.toggle_focus(),
+            Action::ToggleDiffView => history.split = !history.split,
+            Action::History(HistoryAction::ToggleAnchor) => history.toggle_anchor(repo),
+            Action::History(HistoryAction::ToggleFullFile) => history.toggle_full_file(repo),
+            Action::History(HistoryAction::NextHunk) => history.jump_hunk(1),
+            Action::History(HistoryAction::PrevHunk) => history.jump_hunk(-1),
+            Action::History(HistoryAction::StartFilter) => history.start_query(),
+            Action::History(HistoryAction::JumpToGraph) => self.jump_to_graph(),
+            Action::CopyHash => self.copy_history_hash(),
+            Action::History(HistoryAction::Open) => history.fold(),
+            Action::Dismiss if !history.clear_layer(repo) => history.fold(),
+            _ => {}
+        }
+    }
+
+    fn open_file_history(&mut self) {
+        if let Some(file) = self.focused_working_file() {
+            self.history = Some(FileHistory::open(
+                &self.repo,
+                &file.path,
+                Origin::Head,
+                None,
+            ));
+            return;
+        }
+        if let Some(source) = self
+            .review_focused_file()
+            .or_else(|| self.commit_diff_focused_file())
+        {
+            self.history = Some(FileHistory::open(
+                &self.repo,
+                &source.path,
+                Origin::Commit(source.commit),
+                Some(source.from),
+            ));
+            return;
+        }
+        let mut files = self.repo.head_files();
+        let modified: Vec<String> = self
+            .working_files()
+            .into_iter()
+            .map(|file| file.path)
+            .filter(|path| files.contains(path))
+            .collect();
+        files.retain(|path| !modified.contains(path));
+        let names = modified.into_iter().chain(files).collect();
+        self.file_finder = Some(FileFinder::opening((), names));
+    }
+
+    fn review_focused_file(&self) -> Option<HistorySource> {
+        let review = self.review.as_ref()?;
+        let (path, commit) = review.focused_file()?;
+        Some(HistorySource {
+            path: path.to_string(),
+            commit: commit.id,
+            from: format!("{} · {}", review.branch, commit.short_id),
+        })
+    }
+
+    fn commit_diff_focused_file(&self) -> Option<HistorySource> {
+        let panel = self.panel.as_ref().filter(|panel| panel.fullscreen)?;
+        let path = panel.changed_files.get(panel.file)?.path.clone();
+        let commit = self.commits.get(panel.commit_index)?;
+        let from = self
+            .branch_candidates_of(commit.id)
+            .into_iter()
+            .next()
+            .or_else(|| self.repo.nearest_branch_containing(commit.id))
+            .map_or_else(
+                || commit.short_id.clone(),
+                |branch| format!("{branch} · {}", commit.short_id),
+            );
+        Some(HistorySource {
+            path,
+            commit: commit.id,
+            from,
+        })
+    }
+
+    fn finder_submit(&mut self) {
+        let Some(finder) = self.file_finder.take() else {
+            return;
+        };
+        if let Some(path) = finder.chosen() {
+            self.history = Some(FileHistory::open(&self.repo, path, Origin::Head, None));
+        }
+    }
+
+    fn copy_history_hash(&mut self) {
+        let short = self
+            .history
+            .as_ref()
+            .and_then(FileHistory::selected_row)
+            .filter(|row| row.id.is_some())
+            .map(|row| row.short_id());
+        if let Some(short) = short {
+            self.copy(Copied::Hash(short));
+        }
+    }
+
+    fn jump_to_graph(&mut self) {
+        let Some(history) = self.history.take() else {
+            return;
+        };
+        self.review = None;
+        self.base_picker = None;
+        self.working = None;
+        self.panel = None;
+        match history.selected {
+            Some(RowKey::Commit(id)) => match self.find_loading(id) {
+                Some(index) => {
+                    self.on_wip = false;
+                    self.select(index);
+                    self.open_panel();
+                }
+                None => self.info("That commit is hidden in the graph"),
+            },
+            Some(RowKey::Uncommitted) if self.has_wip() => {
+                self.on_wip = true;
+                self.scroll_into_view();
+            }
             _ => {}
         }
     }
@@ -3528,11 +3775,15 @@ impl App {
         let Some(commit) = self.selected_commit() else {
             return Vec::new();
         };
+        self.branch_candidates_of(commit.id)
+    }
+
+    fn branch_candidates_of(&self, id: Oid) -> Vec<String> {
         let head_branch = self.meta.head_branch.as_deref();
         let visible: Vec<RefBadge> = self
             .meta
             .badges
-            .get(&commit.id)
+            .get(&id)
             .into_iter()
             .flatten()
             .filter(|badge| self.visibility.shows_badge(badge, head_branch))
@@ -4789,6 +5040,9 @@ impl App {
         self.detect_conflict();
         self.refresh_review();
         self.refresh_bench();
+        if let Some(history) = &mut self.history {
+            history.refresh(&self.repo);
+        }
     }
 
     fn refresh_review(&mut self) {
@@ -4922,6 +5176,13 @@ impl App {
                 self.info(format!(
                     "Dropped {dropped} pick(s) already in the destination"
                 ));
+            }
+        }
+        if let Some(history) = &mut self.history {
+            history.poll_background(&self.repo);
+            let step = dt.as_secs_f32() / NAV_TRANSITION.as_secs_f32();
+            if history.advance_unfold(step) {
+                self.history = None;
             }
         }
         if let Some(review) = &mut self.review {

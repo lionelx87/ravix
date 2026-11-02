@@ -13,6 +13,7 @@ pub mod focus;
 pub mod git;
 pub mod graph;
 pub mod help;
+pub mod history;
 pub mod join;
 pub mod mutate;
 pub mod palette;

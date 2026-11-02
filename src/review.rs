@@ -8,7 +8,7 @@ use git2::Oid;
 use crate::git::{CommitInfo, LineStats, Repo};
 use crate::palette::fuzzy_filter;
 use crate::picker::BranchPicker;
-use crate::staging::{FileDiff, Hunk};
+use crate::staging::{DIFF_LINE_CAP, FileDiff, Hunk, capped};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewRow<Id> {
@@ -585,6 +585,14 @@ impl BranchReview {
             .unwrap_or(0)
     }
 
+    pub fn focused_file(&self) -> Option<(&str, &CommitInfo)> {
+        if self.focus != ReviewFocus::Files {
+            return None;
+        }
+        let path = self.files().get(self.file)?.path.as_str();
+        Some((path, self.selected_commit()?))
+    }
+
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
         self.commits()
             .find(|commit| Some(commit.id) == self.selected)
@@ -666,32 +674,6 @@ fn commit_diff(repo: &Repo, id: Oid, only: Option<&str>) -> FileDiff {
         new_path: format!("{file_count} file{plural}"),
         hunks,
     }
-}
-
-const DIFF_LINE_CAP: usize = 4_000;
-
-fn capped(hunks: impl Iterator<Item = Hunk>, cap: usize) -> Vec<Hunk> {
-    let mut kept = Vec::new();
-    let mut shown = 0;
-    let mut hidden = 0;
-    for mut hunk in hunks {
-        let room = cap.saturating_sub(shown);
-        if hunk.lines.len() > room {
-            hidden += hunk.lines.len() - room;
-            hunk.lines.truncate(room);
-        }
-        shown += hunk.lines.len();
-        if !hunk.lines.is_empty() {
-            kept.push(hunk);
-        }
-    }
-    if hidden > 0 {
-        kept.push(Hunk {
-            header: format!("… {hidden} more lines not shown"),
-            lines: Vec::new(),
-        });
-    }
-    kept
 }
 
 pub type BasePicker = BranchPicker<String>;

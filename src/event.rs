@@ -3,7 +3,7 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::app::{Action, BenchAction, InputContext, ReviewAction};
+use crate::app::{Action, BenchAction, HistoryAction, InputContext, ReviewAction};
 
 const FILE_PANE_WIDTH: u16 = 46;
 
@@ -47,6 +47,9 @@ impl InputMap {
             InputContext::ReviewFilter => on_review_filter_key(key),
             InputContext::CherryPickBench => on_bench_key(key),
             InputContext::BenchPicker => on_bench_picker_key(key),
+            InputContext::FileHistory => self.on_history_key(key),
+            InputContext::FileFinder => on_finder_key(key),
+            InputContext::HistoryFilter => on_history_filter_key(key),
         }
     }
 
@@ -85,11 +88,48 @@ impl InputMap {
             KeyCode::Char('B') => Some(Action::OpenPinSwitcher),
             KeyCode::Char('L') => Some(Action::Review(ReviewAction::Toggle)),
             KeyCode::Char('C') => Some(Action::Bench(BenchAction::Toggle)),
+            KeyCode::Char('H') => Some(Action::History(HistoryAction::Open)),
             KeyCode::Char('F') => Some(Action::ToggleFocusPanel),
             KeyCode::Char('>') => Some(Action::ToggleSubmodulePanel),
             KeyCode::Char('<') => Some(Action::ExitSubmodule),
             KeyCode::Char('n') => Some(Action::NewBranch),
             KeyCode::Char('u') => Some(Action::Undo),
+            KeyCode::Char('?') => Some(Action::ToggleHelp),
+            KeyCode::Char('q') => Some(Action::Quit),
+            _ => None,
+        }
+    }
+
+    fn on_history_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
+            if self.pending_g {
+                self.pending_g = false;
+                return Some(Action::SelectFirst);
+            }
+            self.pending_g = true;
+            return None;
+        }
+        self.pending_g = false;
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+            KeyCode::Char('G') => Some(Action::SelectLast),
+            KeyCode::PageDown => Some(Action::PageDown),
+            KeyCode::PageUp => Some(Action::PageUp),
+            KeyCode::Char('h') | KeyCode::Left => Some(Action::ScrollDiffLeft),
+            KeyCode::Char('l') | KeyCode::Right => Some(Action::ScrollDiffRight),
+            KeyCode::Tab => Some(Action::ToggleFocus),
+            KeyCode::BackTab => Some(Action::ToggleFocusBack),
+            KeyCode::Char(' ') => Some(Action::History(HistoryAction::ToggleAnchor)),
+            KeyCode::Char('f') => Some(Action::History(HistoryAction::ToggleFullFile)),
+            KeyCode::Char('n') => Some(Action::History(HistoryAction::NextHunk)),
+            KeyCode::Char('N') => Some(Action::History(HistoryAction::PrevHunk)),
+            KeyCode::Char('/') => Some(Action::History(HistoryAction::StartFilter)),
+            KeyCode::Char('v') => Some(Action::ToggleDiffView),
+            KeyCode::Char('y') => Some(Action::CopyHash),
+            KeyCode::Enter => Some(Action::History(HistoryAction::JumpToGraph)),
+            KeyCode::Char('H') => Some(Action::History(HistoryAction::Open)),
+            KeyCode::Esc => Some(Action::Dismiss),
             KeyCode::Char('?') => Some(Action::ToggleHelp),
             KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
@@ -104,7 +144,11 @@ impl InputMap {
     ) -> Option<Action> {
         if matches!(
             context,
-            InputContext::CherryPickBench | InputContext::BenchPicker
+            InputContext::CherryPickBench
+                | InputContext::BenchPicker
+                | InputContext::FileHistory
+                | InputContext::FileFinder
+                | InputContext::HistoryFilter
         ) {
             return None;
         }
@@ -152,6 +196,7 @@ fn on_working_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('b') => Some(Action::ToggleBranches),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Char('u') => Some(Action::Undo),
+        KeyCode::Char('H') => Some(Action::History(HistoryAction::Open)),
         KeyCode::Tab | KeyCode::BackTab => Some(Action::ToggleFocus),
         KeyCode::Enter => Some(Action::OpenPanel),
         KeyCode::Esc => Some(Action::Dismiss),
@@ -242,6 +287,7 @@ fn on_commit_diff_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Tab | KeyCode::BackTab => Some(Action::ToggleFocus),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Char('y') => Some(Action::CopyHash),
+        KeyCode::Char('H') => Some(Action::History(HistoryAction::Open)),
         KeyCode::Enter | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
@@ -374,6 +420,7 @@ fn on_review_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Enter => Some(Action::Review(ReviewAction::ToggleFileFilter)),
         KeyCode::Char('v') => Some(Action::ToggleDiffView),
         KeyCode::Char('L') => Some(Action::Review(ReviewAction::Toggle)),
+        KeyCode::Char('H') => Some(Action::History(HistoryAction::Open)),
         KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
@@ -430,6 +477,38 @@ fn on_bench_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_finder_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::History(HistoryAction::FinderSubmit)),
+        KeyCode::Backspace => Some(Action::History(HistoryAction::FinderBackspace)),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('n') if ctrl => Some(Action::SelectNext),
+        KeyCode::Char('p') if ctrl => Some(Action::SelectPrev),
+        KeyCode::Char(character) if !ctrl => {
+            Some(Action::History(HistoryAction::FinderInput(character)))
+        }
+        _ => None,
+    }
+}
+
+fn on_history_filter_key(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => Some(Action::History(HistoryAction::FilterSubmit)),
+        KeyCode::Backspace => Some(Action::History(HistoryAction::FilterBackspace)),
+        KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char(character) if !ctrl => {
+            Some(Action::History(HistoryAction::FilterInput(character)))
+        }
         _ => None,
     }
 }

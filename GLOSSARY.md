@@ -36,6 +36,16 @@ _Avoid_: Parent branch, upstream, target
 A read-only mode with its own identity, dedicated to inspecting one branch's own commits against its base.
 _Avoid_: Branch log, branch lens, history view
 
+### File analysis
+
+**File history**:
+A read-only mode with its own identity, dedicated to walking the commits that changed one file, following it across renames, each shown with its author and that file's change.
+_Avoid_: File log, file timeline, blame
+
+**Anchor**:
+A version of the file marked in file history so the change shown is the accumulated one between it and the selected version.
+_Avoid_: Pin, base, mark
+
 ### Cherry-picking
 
 **Cherry-pick bench**:

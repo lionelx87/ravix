@@ -27,6 +27,7 @@ use crate::working::{Focus, WorkingView};
 
 mod bench_view;
 mod graph_view;
+mod history_view;
 mod mode_chrome;
 mod review_view;
 
@@ -274,6 +275,12 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     }
     if let Some(picker) = app.base_picker() {
         review_view::render_base_picker(frame, picker, &theme, area);
+    }
+    if app.file_history().is_some() {
+        history_view::render(frame, app, &theme, area, now);
+    }
+    if let Some(finder) = app.file_finder() {
+        history_view::render_finder(frame, finder, &theme, area);
     }
     if let Some(picker) = app.bench_picker() {
         bench_view::render_picker(frame, picker, &theme, area);
