@@ -27,7 +27,8 @@ use crate::mutate::{GitCli, MutationError};
 use crate::palette::fuzzy_filter;
 use crate::pins::{self, PinSwitcherRow};
 use crate::remote::{
-    PullAction, PushState, is_auth_failure, is_non_fast_forward, pull_action, push_state,
+    PullAction, PushChoice, PushState, PushTarget, Upstream, head_push_state, is_auth_failure,
+    is_non_fast_forward, mismatched_upstream, pull_action, push_choices,
 };
 use crate::review::{BasePicker, BranchReview, Refresh, detect_base};
 use crate::slide::{self, SlidePanel, advance};
@@ -122,6 +123,7 @@ pub enum Action {
     PinSwitcherPick(usize),
     CopyChooserSubmit,
     CopyChooserPick(usize),
+    PushChooserSubmit,
     PinBranch,
     StartBranchFilter,
     StartStashFilter,
@@ -228,6 +230,7 @@ pub enum InputContext {
     Palette,
     PinSwitcher,
     CopyChooser,
+    PushChooser,
     Password,
     BranchReview,
     ReviewBase,
@@ -309,7 +312,7 @@ pub struct DragState {
 #[derive(Clone, Copy)]
 enum OnComplete {
     Notice(&'static str),
-    Push,
+    Push { offer_force: bool },
     Pull,
 }
 
@@ -351,6 +354,9 @@ enum ConfirmKind {
         remote_branch: String,
     },
     ForcePush,
+    PushIntoUpstream {
+        upstream: Upstream,
+    },
     DropStash {
         index: usize,
     },
@@ -552,6 +558,20 @@ struct CopyFlash {
     progress: f32,
 }
 
+pub struct PushChooser {
+    pub local: String,
+    pub upstream: Upstream,
+    pub choices: Vec<PushChoice>,
+    pub selected: usize,
+    pub ahead: usize,
+}
+
+impl PushChooser {
+    fn move_selection(&mut self, delta: isize) {
+        self.selected = slide::clamp_index(self.selected, delta, self.choices.len());
+    }
+}
+
 pub struct CopyChooser {
     pub names: Vec<String>,
     pub selected: usize,
@@ -559,8 +579,7 @@ pub struct CopyChooser {
 
 impl CopyChooser {
     fn move_selection(&mut self, delta: isize) {
-        let last = self.names.len().saturating_sub(1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+        self.selected = slide::clamp_index(self.selected, delta, self.names.len());
     }
 
     fn numbered(&self, number: usize) -> Option<&String> {
@@ -637,6 +656,7 @@ pub struct App {
     palette: Option<Palette>,
     pin_switcher: Option<PinSwitcher>,
     copy_chooser: Option<CopyChooser>,
+    push_chooser: Option<PushChooser>,
     review: Option<BranchReview>,
     base_picker: Option<BasePicker>,
     bench: Option<CherryPickBench>,
@@ -737,6 +757,7 @@ impl App {
             palette: None,
             pin_switcher: None,
             copy_chooser: None,
+            push_chooser: None,
             review: None,
             base_picker: None,
             bench: None,
@@ -979,6 +1000,10 @@ impl App {
         self.copy_chooser.as_ref()
     }
 
+    pub fn push_chooser(&self) -> Option<&PushChooser> {
+        self.push_chooser.as_ref()
+    }
+
     pub fn branch_review(&self) -> Option<&BranchReview> {
         self.review.as_ref()
     }
@@ -1099,6 +1124,16 @@ impl App {
         self.repo.head_tracking()
     }
 
+    pub fn mismatched_upstream_of(&self, local: &str, upstream: &str) -> Option<Upstream> {
+        mismatched_upstream(local, upstream, &self.meta.remotes)
+    }
+
+    pub fn head_mismatched_upstream(&self) -> Option<Upstream> {
+        let local = self.meta.head_branch.as_deref()?;
+        let (upstream, _) = self.repo.head_upstream()?;
+        self.mismatched_upstream_of(local, &upstream)
+    }
+
     pub fn working_files(&self) -> Vec<WorkingFile> {
         let mut files = Vec::with_capacity(self.status.total());
         files.extend(self.status.unstaged.iter().cloned());
@@ -1155,6 +1190,8 @@ impl App {
             InputContext::PinSwitcher
         } else if self.copy_chooser.is_some() {
             InputContext::CopyChooser
+        } else if self.push_chooser.is_some() {
+            InputContext::PushChooser
         } else if self.stash_message.is_some() {
             InputContext::StashMessage
         } else if self.commit.is_some() {
@@ -1365,6 +1402,7 @@ impl App {
             history @ Action::History(_) => self.update_history(history),
             Action::PinSwitcherSubmit => self.pin_switcher_submit(),
             Action::PinSwitcherPick(number) => self.pin_switcher_pick(number),
+            Action::PushChooserSubmit => self.submit_push_chooser(),
             Action::CopyChooserSubmit => {
                 self.copy_chooser_copy(|picker| picker.names.get(picker.selected))
             }
@@ -1428,6 +1466,10 @@ impl App {
             picker.move_selection(delta);
             return;
         }
+        if let Some(chooser) = &mut self.push_chooser {
+            chooser.move_selection(delta);
+            return;
+        }
         if let Some(browser) = &mut self.conflict {
             browser.move_block(delta);
             return;
@@ -1489,6 +1531,10 @@ impl App {
         }
         if let Some(picker) = &mut self.copy_chooser {
             picker.move_selection(-delta);
+            return;
+        }
+        if let Some(chooser) = &mut self.push_chooser {
+            chooser.move_selection(-delta);
             return;
         }
         if let Some(browser) = &mut self.conflict {
@@ -2225,7 +2271,14 @@ impl App {
             self.info("Detached HEAD — nothing to push".to_string());
             return;
         };
-        match push_state(self.repo.head_tracking()) {
+        let upstream = self.repo.head_upstream().map(|(name, _)| name);
+        let state = head_push_state(
+            &branch,
+            upstream.as_deref(),
+            &self.meta.remotes,
+            self.repo.head_tracking(),
+        );
+        match state {
             PushState::UpToDate => self.info("Nothing to push".to_string()),
             PushState::Diverged { .. } => {
                 self.confirm = Some(Confirm {
@@ -2237,6 +2290,56 @@ impl App {
                 self.spawn_push(move |cli| cli.push_set_upstream("origin", &branch));
             }
             PushState::Ahead(_) => self.spawn_push(|cli| cli.push()),
+            PushState::Mismatched {
+                upstream,
+                ahead,
+                behind,
+            } => {
+                self.push_chooser = Some(PushChooser {
+                    choices: push_choices(&branch, &upstream, ahead, behind),
+                    local: branch,
+                    upstream,
+                    selected: 0,
+                    ahead,
+                });
+            }
+        }
+    }
+
+    fn submit_push_chooser(&mut self) {
+        let Some(chooser) = self.push_chooser.as_ref() else {
+            return;
+        };
+        let Some(choice) = chooser.choices.get(chooser.selected) else {
+            return;
+        };
+        if !choice.enabled {
+            self.info(format!("Not available: {}", choice.note));
+            return;
+        }
+        let target = choice.target;
+        let Some(PushChooser {
+            local,
+            upstream,
+            ahead,
+            ..
+        }) = self.push_chooser.take()
+        else {
+            return;
+        };
+        match target {
+            PushTarget::Relink => self.spawn_push_without_force_offer(move |cli| {
+                cli.push_set_upstream(&upstream.remote, &local)
+            }),
+            PushTarget::IntoUpstream => {
+                self.confirm = Some(Confirm {
+                    message: format!(
+                        "Push {ahead} commit(s) into {}/{}? (y/n)",
+                        upstream.remote, upstream.branch
+                    ),
+                    kind: ConfirmKind::PushIntoUpstream { upstream },
+                });
+            }
         }
     }
 
@@ -2244,7 +2347,14 @@ impl App {
         &mut self,
         op: impl FnOnce(&GitCli) -> Result<(), MutationError> + Send + 'static,
     ) {
-        self.spawn_remote("pushing", OnComplete::Push, op);
+        self.spawn_remote("pushing", OnComplete::Push { offer_force: true }, op);
+    }
+
+    fn spawn_push_without_force_offer(
+        &mut self,
+        op: impl FnOnce(&GitCli) -> Result<(), MutationError> + Send + 'static,
+    ) {
+        self.spawn_remote("pushing", OnComplete::Push { offer_force: false }, op);
     }
 
     fn spawn_remote(
@@ -2291,7 +2401,7 @@ impl App {
                         self.reload();
                         match on_complete {
                             OnComplete::Notice(message) => self.info(message.to_string()),
-                            OnComplete::Push => {
+                            OnComplete::Push { .. } => {
                                 self.celebrate(Event::Push);
                                 self.info("Pushed".to_string());
                             }
@@ -2305,7 +2415,7 @@ impl App {
                         } else if is_auth_failure(&text) {
                             self.forget_used_credentials();
                             self.fail(text);
-                        } else if matches!(on_complete, OnComplete::Push)
+                        } else if matches!(on_complete, OnComplete::Push { offer_force: true })
                             && is_non_fast_forward(&text)
                         {
                             self.confirm = Some(Confirm {
@@ -2554,6 +2664,8 @@ impl App {
             self.pin_switcher = None;
         } else if self.copy_chooser.is_some() {
             self.copy_chooser = None;
+        } else if self.push_chooser.is_some() {
+            self.push_chooser = None;
         } else if self.stash_message.is_some() {
             self.stash_message = None;
         } else if self.commit.is_some() {
@@ -2750,6 +2862,11 @@ impl App {
             } => self.spawn_delete_remote(remote, remote_branch),
             ConfirmKind::ForcePush => {
                 self.spawn_push(|cli| cli.push_force_with_lease());
+            }
+            ConfirmKind::PushIntoUpstream { upstream } => {
+                self.spawn_push_without_force_offer(move |cli| {
+                    cli.push_into(&upstream.remote, &upstream.branch)
+                });
             }
             ConfirmKind::DropStash { index } => {
                 let result = self.cli.stash_drop(index);

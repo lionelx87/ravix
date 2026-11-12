@@ -11,7 +11,7 @@ use syntect::parsing::SyntaxReference;
 
 use crate::app::{
     App, BranchCreate, CommitEditor, Confirm, CopyChooser, FocusPanel, InputContext, NavDirection,
-    Palette, Panel, PasswordPrompt, PinSwitcher, SubmodulePanel,
+    Palette, Panel, PasswordPrompt, PinSwitcher, PushChooser, SubmodulePanel,
 };
 use crate::branches::BranchPanel;
 use crate::conflict::{ConflictBrowser, OpKind, Segment, Side};
@@ -19,6 +19,7 @@ use crate::enrich::{self, emphasis_added, emphasis_removed, word_diff};
 use crate::git::{BadgeKind, CONFLICTED, FileStatus, LineStats, RefBadge};
 use crate::help::context_help;
 use crate::join::JoinMenu;
+use crate::remote::Upstream;
 use crate::slide::SlidePanel;
 use crate::staging::{FileDiff, content_of, marker_of, split_rows};
 use crate::stash::{Focus as StashFocus, StashEntry, StashMessage, StashView};
@@ -294,6 +295,9 @@ fn render_app(frame: &mut Frame, app: &mut App, now: i64, area: Rect) {
     if let Some(picker) = app.copy_chooser() {
         render_copy_chooser(frame, picker, &theme, area);
     }
+    if let Some(chooser) = app.push_chooser() {
+        render_push_chooser(frame, chooser, &theme, area);
+    }
     if let Some(message) = app.alert() {
         render_alert(frame, message, &theme, area);
     }
@@ -534,6 +538,9 @@ fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             format!("  ↑{ahead} ↓{behind}"),
             Style::default().fg(theme.meta),
         ));
+    }
+    if let Some(upstream) = app.head_mismatched_upstream() {
+        spans.push(upstream_mark(&upstream, theme));
     }
     if let Some((verb, spinner)) = app.remote_status() {
         let frame = spinner_frame(spinner);
@@ -814,9 +821,23 @@ fn render_branch_panel(
                     Style::default().fg(theme.meta),
                 ));
             }
+            if let Some(upstream) = entry
+                .upstream
+                .as_deref()
+                .and_then(|upstream| app.mismatched_upstream_of(&entry.name, upstream))
+            {
+                spans.push(upstream_mark(&upstream, theme));
+            }
             Line::from(spans)
         },
     );
+}
+
+fn upstream_mark(upstream: &Upstream, theme: &Theme) -> Span<'static> {
+    Span::styled(
+        format!("  → {}/{}", upstream.remote, upstream.branch),
+        Style::default().fg(theme.warn),
+    )
 }
 
 fn render_ghost_preview(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rect) {
@@ -844,6 +865,39 @@ fn render_ghost_preview(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area:
     buffer.set_line(area.x, area.y + 1, &edge_line, area.width);
 }
 
+fn option_row(
+    label: &str,
+    note: &str,
+    selected: bool,
+    enabled: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let label_color = if !enabled {
+        theme.meta
+    } else if selected {
+        theme.node
+    } else {
+        theme.summary
+    };
+    let mut spans = vec![
+        Span::styled(
+            if selected { "❯ " } else { "  " },
+            Style::default().fg(theme.marker),
+        ),
+        Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(label_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  [{note}]"), Style::default().fg(theme.meta)),
+    ];
+    if !enabled {
+        spans.push(Span::styled("  blocked", Style::default().fg(theme.warn)));
+    }
+    Line::from(spans)
+}
+
 fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rect) {
     let Some(rect) = slide_rect(area, menu.panel.slide, 0.45, 40.0) else {
         return;
@@ -860,33 +914,13 @@ fn render_join_menu(frame: &mut Frame, menu: &JoinMenu, theme: &Theme, area: Rec
     let mut lines = Vec::new();
     for (index, option) in menu.panel.entries.iter().enumerate() {
         let selected = index == menu.panel.selected;
-        let label_color = if !option.enabled {
-            theme.meta
-        } else if selected {
-            theme.node
-        } else {
-            theme.summary
-        };
-        let mut spans = vec![
-            Span::styled(
-                if selected { "❯ " } else { "  " },
-                Style::default().fg(theme.marker),
-            ),
-            Span::styled(
-                option.label.clone(),
-                Style::default()
-                    .fg(label_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  [{}]", option.note),
-                Style::default().fg(theme.meta),
-            ),
-        ];
-        if !option.enabled {
-            spans.push(Span::styled("  blocked", Style::default().fg(theme.warn)));
-        }
-        lines.push(Line::from(spans));
+        lines.push(option_row(
+            &option.label,
+            &option.note,
+            selected,
+            option.enabled,
+            theme,
+        ));
     }
 
     lines.push(Line::from(""));
@@ -2802,6 +2836,45 @@ fn render_copy_chooser(frame: &mut Frame, picker: &CopyChooser, theme: &Theme, a
             ])
         })
         .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_push_chooser(frame: &mut Frame, chooser: &PushChooser, theme: &Theme, area: Rect) {
+    let lines: Vec<Line> = chooser
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| {
+            option_row(
+                &choice.label,
+                &choice.note,
+                chooser.selected == index,
+                choice.enabled,
+                theme,
+            )
+        })
+        .collect();
+    let title = format!(
+        " {} is linked to {}/{}   [Enter] push · [Esc] close ",
+        chooser.local, chooser.upstream.remote, chooser.upstream.branch
+    );
+    let widest = lines
+        .iter()
+        .map(Line::width)
+        .chain([title.chars().count()])
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (widest + 2).clamp(40, area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.warn))
+        .title(title);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

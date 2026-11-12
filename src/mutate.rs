@@ -244,6 +244,10 @@ impl GitCli {
         self.run(&["push", "-u", remote, branch], None)
     }
 
+    pub fn push_into(&self, remote: &str, branch: &str) -> Result<(), MutationError> {
+        self.run(&["push", remote, &format!("HEAD:{branch}")], None)
+    }
+
     pub fn push_force_with_lease(&self) -> Result<(), MutationError> {
         self.run(&["push", "--force-with-lease"], None)
     }

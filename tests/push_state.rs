@@ -38,3 +38,46 @@ fn a_rejected_push_is_recognised_as_non_fast_forward() {
         "fatal: unable to access 'origin': Could not resolve host"
     ));
 }
+
+fn origin() -> Vec<String> {
+    vec!["origin".to_string()]
+}
+
+#[test]
+fn a_mismatched_upstream_is_decided_before_ahead_behind() {
+    use ravix::remote::{Upstream, head_push_state};
+
+    let staging = Upstream {
+        remote: "origin".to_string(),
+        branch: "staging".to_string(),
+    };
+    for tracking in [(0, 0), (2, 0), (2, 3)] {
+        assert_eq!(
+            head_push_state(
+                "release/x",
+                Some("origin/staging"),
+                &origin(),
+                Some(tracking)
+            ),
+            PushState::Mismatched {
+                upstream: staging.clone(),
+                ahead: tracking.0,
+                behind: tracking.1,
+            }
+        );
+    }
+}
+
+#[test]
+fn a_matching_or_missing_upstream_decides_as_before() {
+    use ravix::remote::head_push_state;
+
+    assert_eq!(
+        head_push_state("main", Some("origin/main"), &origin(), Some((2, 0))),
+        PushState::Ahead(2)
+    );
+    assert_eq!(
+        head_push_state("main", None, &origin(), None),
+        PushState::NoUpstream
+    );
+}

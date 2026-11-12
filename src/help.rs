@@ -47,6 +47,10 @@ pub fn context_help(context: InputContext) -> HelpPage {
             title: "Copy branch",
             bindings: BRANCH_PICKER,
         },
+        InputContext::PushChooser => HelpPage {
+            title: "Push chooser",
+            bindings: PUSH_CHOOSER,
+        },
         InputContext::BranchReview => HelpPage {
             title: "Branch review",
             bindings: BRANCH_REVIEW,
@@ -130,6 +134,12 @@ const BRANCH_PICKER: &[(&str, &str)] = &[
     ("Enter", "copy the selected branch"),
     ("1-9", "copy that numbered branch"),
     ("Y / Esc", "close"),
+];
+
+const PUSH_CHOOSER: &[(&str, &str)] = &[
+    ("j / k", "select next / previous destination"),
+    ("Enter", "push to the selected destination"),
+    ("P / Esc", "close"),
 ];
 
 const WORKING: &[(&str, &str)] = &[

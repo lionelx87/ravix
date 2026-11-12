@@ -132,6 +132,7 @@ pub struct RepoMeta {
     pub name: String,
     pub head_branch: Option<String>,
     pub badges: HashMap<Oid, Vec<RefBadge>>,
+    pub remotes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +311,13 @@ impl Repo {
         Some((up_name, up_oid))
     }
 
+    pub fn remote_names(&self) -> Vec<String> {
+        self.inner
+            .remotes()
+            .map(|names| names.iter().flatten().flatten().map(String::from).collect())
+            .unwrap_or_default()
+    }
+
     pub fn head_tracking(&self) -> Option<(usize, usize)> {
         let name = self.head_branch()?;
         let branch = self.inner.find_branch(&name, BranchType::Local).ok()?;
@@ -475,6 +483,7 @@ impl Repo {
             name: self.name(),
             head_branch: self.head_branch(),
             badges: self.collect_badges()?,
+            remotes: self.remote_names(),
         })
     }
 

@@ -60,6 +60,20 @@ _Avoid_: Selection, basket, marked commit
 The local branch that receives the picks on the cherry-pick bench; never the same branch as the source.
 _Avoid_: Target, onto branch
 
+### Remotes
+
+**Upstream**:
+The remote branch a local branch is linked to; ahead/behind counts and a plain push are measured against it.
+_Avoid_: Tracking branch, remote branch, base
+
+**Mismatched upstream**:
+An upstream whose branch name differs from the local branch's name, regardless of which remote it lives on.
+_Avoid_: Foreign upstream, wrong upstream, borrowed upstream
+
+**Push chooser**:
+A modal shown when pushing a branch with a mismatched upstream, offering to push to its own name on the upstream's remote and relink, or to push into the mismatched upstream.
+_Avoid_: Push menu, push picker
+
 ### Navigation
 
 **Pin switcher**:

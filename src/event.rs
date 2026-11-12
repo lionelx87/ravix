@@ -41,6 +41,7 @@ impl InputMap {
             InputContext::Palette => on_palette_key(key),
             InputContext::PinSwitcher => on_pin_switcher_key(key),
             InputContext::CopyChooser => on_copy_chooser_key(key),
+            InputContext::PushChooser => on_push_chooser_key(key),
             InputContext::Password => on_password_key(key),
             InputContext::BranchReview => on_review_key(key),
             InputContext::ReviewBase => on_review_base_key(key),
@@ -383,6 +384,18 @@ fn on_copy_chooser_key(key: KeyEvent) -> Option<Action> {
             .to_digit(10)
             .map(|number| Action::CopyChooserPick(number as usize)),
         KeyCode::Char('Y') | KeyCode::Esc => Some(Action::Dismiss),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('q') => Some(Action::Quit),
+        _ => None,
+    }
+}
+
+fn on_push_chooser_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::SelectNext),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::SelectPrev),
+        KeyCode::Enter => Some(Action::PushChooserSubmit),
+        KeyCode::Char('P') | KeyCode::Esc => Some(Action::Dismiss),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::Quit),
         _ => None,
